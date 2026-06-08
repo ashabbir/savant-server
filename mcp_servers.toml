@@ -1,0 +1,19 @@
+[mcp_servers.savant-workspace]
+transport = "sse"
+url = "http://127.0.0.1:8091/sse"
+tools = ["*"]
+
+[mcp_servers.savant-abilities]
+transport = "sse"
+url = "http://127.0.0.1:8092/sse"
+tools = ["*"]
+
+[mcp_servers.savant-context]
+transport = "sse"
+url = "http://127.0.0.1:8093/sse"
+tools = ["*"]
+
+[mcp_servers.savant-knowledge]
+transport = "sse"
+url = "http://127.0.0.1:8094/sse"
+tools = ["*"]

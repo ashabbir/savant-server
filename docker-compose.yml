@@ -1,0 +1,80 @@
+services:
+  savant-db:
+    image: pgvector/pgvector:pg16
+    container_name: savant-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: savant_user
+      POSTGRES_PASSWORD: savant_secure_password
+      POSTGRES_DB: savant
+    ports:
+      - "5432:5432"
+    volumes:
+      # Persisted on host filesystem — data survives container restarts/rebuilds
+      - ${SAVANT_DB_DIR:-~/.savant/db-data}:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U savant_user -d savant"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  savant-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SAVANT_UID: ${SAVANT_UID:-501}
+        SAVANT_GID: ${SAVANT_GID:-20}
+    image: savant-server:latest
+    container_name: savant-server
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 512
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m
+      - /run:rw,noexec,nosuid,size=64m
+    ports:
+      - "8090:8090"
+      - "8091:8091"
+      - "8092:8092"
+      - "8093:8093"
+      - "8094:8094"
+      - "8095:8095"
+    depends_on:
+      savant-db:
+        condition: service_healthy
+    environment:
+      RUNNING_IN_DOCKER: 'true'
+      SAVANT_DATABASE_URL: postgresql://savant_user:savant_secure_password@savant-db:5432/savant
+      SAVANT_ABILITIES_SEED_DIR: /app/migrations/data
+      HOME: /data/savant
+      HF_HOME: /data/savant/hf
+      HUGGINGFACE_HUB_CACHE: /data/savant/hf/hub
+      TRANSFORMERS_CACHE: /data/savant/hf/transformers
+      SAVANT_SERVER_DATA_DIR: /data/savant
+      EMBEDDING_MODEL_DIR: /data/savant/models-v1
+      BASE_CODE_DIR: /base-code
+      BASE_CODE_HOST_DIR: ${BASE_CODE_HOST_DIR:-/Users/home/code}
+      SAVANT_API_ONLY: "1"
+      SAVANT_API_KEY: "sk-ahmed-savant-001"
+      SESSION_DIR: /nonexistent
+      CLAUDE_DIR: /nonexistent
+      GEMINI_DIR: /nonexistent
+      CODEX_DIR: /nonexistent
+      SAVANT_DIR: /nonexistent
+      META_DIR: /nonexistent
+    volumes:
+      # Abilities & model cache persist on host
+      - ${SAVANT_DATA_DIR:-~/.savant/server-data}:/data/savant
+      - ${BASE_CODE_HOST_DIR:-/Users/home/code}:/base-code:ro
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health/ready', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 30s

@@ -1,0 +1,32 @@
+{
+  "mcpServers": {
+    "workspace": {
+      "type": "sse",
+      "url": "http://127.0.0.1:8091/sse",
+      "tools": [
+        "*"
+      ]
+    },
+    "abilities": {
+      "type": "sse",
+      "url": "http://127.0.0.1:8092/sse",
+      "tools": [
+        "*"
+      ]
+    },
+    "context": {
+      "type": "sse",
+      "url": "http://127.0.0.1:8093/sse",
+      "tools": [
+        "*"
+      ]
+    },
+    "knowledge": {
+      "type": "sse",
+      "url": "http://127.0.0.1:8094/sse",
+      "tools": [
+        "*"
+      ]
+    }
+  }
+}

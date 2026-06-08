@@ -1,0 +1,514 @@
+"""TaskDB — PostgreSQL backend."""
+
+from db.base import _now, _row_to_dict
+from postgres_client import get_connection, release_connection
+
+
+class TaskDB:
+
+    @staticmethod
+    def ensure_indexes():
+        """No-op: indexes created in schema."""
+        pass
+
+    @staticmethod
+    def _get_by_id_with_conn(task_id: str, conn, user_id: str = "") -> dict | None:
+        with conn.cursor() as cur:
+            if user_id:
+                cur.execute("SELECT * FROM tasks WHERE task_id = %s AND user_id = %s", (task_id, user_id))
+            else:
+                cur.execute("SELECT * FROM tasks WHERE task_id = %s", (task_id,))
+            row = cur.fetchone()
+        if row is None:
+            return None
+        return TaskDB._enrich_with_deps(_row_to_dict(row), conn=conn)
+
+    @staticmethod
+    def _next_seq(conn=None) -> int:
+        local_conn = False
+        if conn is None:
+            conn = get_connection()
+            local_conn = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE counters SET value = value + 1 WHERE name = 'task_seq' RETURNING value")
+                row = cur.fetchone()
+                if row is None:
+                    # Counter missing — initialize it
+                    cur.execute("INSERT INTO counters (name, value) VALUES ('task_seq', 1) ON CONFLICT (name) DO NOTHING")
+                    conn.commit()
+                    return 1
+                conn.commit()
+                return row["value"]
+        finally:
+            if local_conn:
+                release_connection(conn)
+
+    @staticmethod
+    def _enrich_with_deps(task: dict, conn=None) -> dict:
+        """Attach depends_on list from task_deps table."""
+        local_conn = False
+        if conn is None:
+            conn = get_connection()
+            local_conn = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT depends_on FROM task_deps WHERE task_id = %s",
+                    (task["task_id"],),
+                )
+                rows = cur.fetchall()
+            task["depends_on"] = [r["depends_on"] for r in rows]
+            return task
+        finally:
+            if local_conn:
+                release_connection(conn)
+
+    @staticmethod
+    def _enrich_list(tasks: list[dict], conn=None) -> list[dict]:
+        """Batch-enrich a list of tasks with dependencies."""
+        if not tasks:
+            return tasks
+        local_conn = False
+        if conn is None:
+            conn = get_connection()
+            local_conn = True
+        try:
+            task_ids = [t["task_id"] for t in tasks]
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT task_id, depends_on FROM task_deps WHERE task_id = ANY(%s)",
+                    (task_ids,),
+                )
+                rows = cur.fetchall()
+            deps_map: dict[str, list[str]] = {}
+            for r in rows:
+                deps_map.setdefault(r["task_id"], []).append(r["depends_on"])
+            for t in tasks:
+                t["depends_on"] = deps_map.get(t["task_id"], [])
+            return tasks
+        finally:
+            if local_conn:
+                release_connection(conn)
+
+    @staticmethod
+    def create(task: dict) -> dict:
+        conn = get_connection()
+        try:
+            now = _now()
+            seq = task.get("seq") or TaskDB._next_seq(conn=conn)
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO tasks
+                       (task_id, seq, workspace_id, title, description, status, priority,
+                        date, "order", created_at, updated_at, created_session_id, user_id)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (
+                        task["task_id"], seq, task["workspace_id"],
+                        task.get("title", ""), task.get("description", ""),
+                        task.get("status", "todo"), task.get("priority", "medium"),
+                        task.get("date"), task.get("order", 0),
+                        task.get("created_at", now), task.get("updated_at", now),
+                        task.get("created_session_id"), task.get("user_id", ""),
+                    ),
+                )
+                # Insert dependencies if provided
+                for dep_id in task.get("depends_on", []):
+                    cur.execute(
+                        "INSERT INTO task_deps (task_id, depends_on) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                        (task["task_id"], dep_id),
+                    )
+            conn.commit()
+            return TaskDB._get_by_id_with_conn(task["task_id"], conn, user_id=task.get("user_id", ""))
+        finally:
+            release_connection(conn)
+
+    @staticmethod
+    def bulk_upsert(tasks: list[dict]) -> int:
+        conn = get_connection()
+        try:
+            now = _now()
+            count = 0
+            with conn.cursor() as cur:
+                for task in tasks:
+                    cur.execute(
+                        """INSERT INTO tasks
+                           (task_id, seq, workspace_id, title, description, status, priority,
+                            date, "order", created_at, updated_at, created_session_id, user_id)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                           ON CONFLICT (task_id) DO UPDATE SET
+                             seq=EXCLUDED.seq, workspace_id=EXCLUDED.workspace_id,
+                             title=EXCLUDED.title, description=EXCLUDED.description,
+                             status=EXCLUDED.status, priority=EXCLUDED.priority,
+                             date=EXCLUDED.date, "order"=EXCLUDED."order",
+                             updated_at=EXCLUDED.updated_at,
+                             created_session_id=EXCLUDED.created_session_id,
+                             user_id=EXCLUDED.user_id""",
+                        (
+                            task["task_id"], task.get("seq"), task["workspace_id"],
+                            task.get("title", ""), task.get("description", ""),
+                            task.get("status", "todo"), task.get("priority", "medium"),
+                            task.get("date"), task.get("order", 0),
+                            task.get("created_at", now), task.get("updated_at", now),
+                            task.get("created_session_id"), task.get("user_id", ""),
+                        ),
+                    )
+                    # Upsert deps
+                    cur.execute("DELETE FROM task_deps WHERE task_id = %s", (task["task_id"],))
+                    for dep_id in task.get("depends_on", []):
+                        cur.execute(
+                            "INSERT INTO task_deps (task_id, depends_on) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                            (task["task_id"], dep_id),
+                        )
+                    count += 1
+            conn.commit()
+            return count
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            release_connection(conn)
+
+    @staticmethod
+    def get_by_id(task_id: str, user_id: str = "") -> dict | None:
+        conn = get_connection()
+        try:
+            return TaskDB._get_by_id_with_conn(task_id, conn, user_id=user_id)
+        finally:
+            release_connection(conn)
+
+    @staticmethod
+    def get_by_seq(seq: int, user_id: str = "") -> dict | None:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                if user_id:
+                    cur.execute("SELECT * FROM tasks WHERE seq = %s AND user_id = %s", (seq, user_id))
+                else:
+                    cur.execute("SELECT * FROM tasks WHERE seq = %s", (seq,))
+                row = cur.fetchone()
+            if row is None:
+                return None
+            return TaskDB._enrich_with_deps(_row_to_dict(row), conn=conn)
+        finally:
+            release_connection(conn)
+
+    @staticmethod
+    def resolve_id(ref: str, user_id: str = "") -> dict | None:
+        """Resolve 'T-42' style refs or plain task_id."""
+        if ref and ref.upper().startswith("T-"):
+            try:
+                seq = int(ref.split("-", 1)[1])
+                return TaskDB.get_by_seq(seq, user_id=user_id)
+            except (ValueError, IndexError):
+                pass
+        return TaskDB.get_by_id(ref, user_id=user_id)
+
+    @staticmethod
+    def list_all(workspace_id: str | None = None, user_id: str = "") -> list[dict]:
+        conn = get_connection()
+        try:
+            clauses = []
+            params = []
+            if workspace_id:
+                clauses.append("workspace_id = %s")
+                params.append(workspace_id)
+            if user_id:
+                clauses.append("user_id = %s")
+                params.append(user_id)
+            where = "WHERE " + " AND ".join(clauses) if clauses else ""
+            with conn.cursor() as cur:
+                cur.execute(
+                    f'SELECT * FROM tasks {where} ORDER BY date ASC, "order" ASC, created_at ASC',
+                    params,
+                )
+                rows = cur.fetchall()
+            return TaskDB._enrich_list([dict(r) for r in rows], conn=conn)
+        finally:
+            release_connection(conn)
+
+    @staticmethod
+    def list_by_date(date_str: str, user_id: str = "") -> list[dict]:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                if user_id:
+                    cur.execute(
+                        'SELECT * FROM tasks WHERE date = %s AND user_id = %s ORDER BY "order" ASC, created_at ASC',
+                        (date_str, user_id),
+                    )
+                else:
+                    cur.execute(
+                        'SELECT * FROM tasks WHERE date = %s ORDER BY "order" ASC, created_at ASC',
+                        (date_str,),
+                    )
+                rows = cur.fetchall()
+            return TaskDB._enrich_list([dict(r) for r in rows], conn=conn)
+        finally:
+            release_connection(conn)
+
+    @staticmethod
+    def list_by_workspace(workspace_id: str, status: str | None = None, limit: int = 1000, user_id: str = "") -> list[dict]:
+        conn = get_connection()
+        try:
+            clauses = ["workspace_id = %s"]
+            params: list = [workspace_id]
+            if status:
+                clauses.append("status = %s")
+                params.append(status)
+            if user_id:
+                clauses.append("user_id = %s")
+                params.append(user_id)
+            where = "WHERE " + " AND ".join(clauses)
+            params.append(limit)
+            with conn.cursor() as cur:
+                cur.execute(
+                    f'SELECT * FROM tasks {where} ORDER BY date ASC, "order" ASC LIMIT %s',
+                    params,
+                )
+                rows = cur.fetchall()
+            return TaskDB._enrich_list([dict(r) for r in rows], conn=conn)
+        finally:
+            release_connection(conn)
+
+    @staticmethod
+    def list_by_status(status: str, limit: int = 1000, user_id: str = "") -> list[dict]:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                if user_id:
+                    cur.execute(
+                        "SELECT * FROM tasks WHERE status = %s AND user_id = %s ORDER BY created_at DESC LIMIT %s",
+                        (status, user_id, limit),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT * FROM tasks WHERE status = %s ORDER BY created_at DESC LIMIT %s",
+                        (status, limit),
+                    )
+                rows = cur.fetchall()
+            return TaskDB._enrich_list([dict(r) for r in rows], conn=conn)
+        finally:
+            release_connection(conn)
+
+    @staticmethod
+    def list_dates(user_id: str = "") -> list[str]:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                if user_id:
+                    cur.execute(
+                        "SELECT DISTINCT date FROM tasks WHERE date IS NOT NULL AND user_id = %s ORDER BY date ASC",
+                        (user_id,),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT DISTINCT date FROM tasks WHERE date IS NOT NULL ORDER BY date ASC"
+                    )
+                rows = cur.fetchall()
+            return [r["date"] for r in rows]
+        finally:
+            release_connection(conn)
+
+    @staticmethod
+    def update(task_id: str, updates: dict, user_id: str = "") -> dict | None:
+        conn = get_connection()
+        try:
+            updates["updated_at"] = _now()
+            valid_cols = {
+                "title", "description", "status", "priority",
+                "date", "order", "updated_at", "workspace_id", "created_session_id",
+            }
+            filtered = {k: v for k, v in updates.items() if k in valid_cols}
+            if not filtered:
+                return TaskDB._get_by_id_with_conn(task_id, conn, user_id=user_id)
+
+            set_clause = ", ".join(
+                f'"order" = %s' if k == "order" else f"{k} = %s"
+                for k in filtered
+            )
+            values = list(filtered.values()) + [task_id]
+            where = "WHERE task_id = %s"
+            if user_id:
+                where += " AND user_id = %s"
+                values.append(user_id)
+            with conn.cursor() as cur:
+                cur.execute(f"UPDATE tasks SET {set_clause} {where}", values)
+            conn.commit()
+            return TaskDB._get_by_id_with_conn(task_id, conn, user_id=user_id)
+        finally:
+            release_connection(conn)
+
+    @staticmethod
+    def update_status(task_id: str, status: str, user_id: str = "") -> dict | None:
+        return TaskDB.update(task_id, {"status": status}, user_id=user_id)
+
+    @staticmethod
+    def delete(task_id: str, user_id: str = "") -> bool:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                if user_id:
+                    cur.execute("DELETE FROM tasks WHERE task_id = %s AND user_id = %s", (task_id, user_id))
+                else:
+                    cur.execute("DELETE FROM tasks WHERE task_id = %s", (task_id,))
+                count = cur.rowcount
+            conn.commit()
+            return count > 0
+        finally:
+            release_connection(conn)
+
+    @staticmethod
+    def add_dependency(task_id: str, depends_on: str) -> bool:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO task_deps (task_id, depends_on) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                    (task_id, depends_on),
+                )
+            conn.commit()
+            return True
+        except Exception:
+            return False
+        finally:
+            release_connection(conn)
+
+    @staticmethod
+    def remove_dependency(task_id: str, depends_on: str) -> bool:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM task_deps WHERE task_id = %s AND depends_on = %s",
+                    (task_id, depends_on),
+                )
+                count = cur.rowcount
+            conn.commit()
+            return count > 0
+        finally:
+            release_connection(conn)
+
+    @staticmethod
+    def reorder(date_str: str, ordered_ids: list[str], user_id: str = "") -> None:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                for idx, task_id in enumerate(ordered_ids):
+                    if user_id:
+                        cur.execute(
+                            'UPDATE tasks SET "order" = %s WHERE task_id = %s AND user_id = %s',
+                            (idx, task_id, user_id),
+                        )
+                    else:
+                        cur.execute(
+                            'UPDATE tasks SET "order" = %s WHERE task_id = %s',
+                            (idx, task_id),
+                        )
+            conn.commit()
+        finally:
+            release_connection(conn)
+
+    @staticmethod
+    def move_incomplete_tasks(from_date: str, to_date: str, user_id: str = "") -> int:
+        conn = get_connection()
+        try:
+            now = _now()
+            with conn.cursor() as cur:
+                if user_id:
+                    cur.execute(
+                        "UPDATE tasks SET date = %s, updated_at = %s WHERE date = %s AND status != 'done' AND user_id = %s",
+                        (to_date, now, from_date, user_id),
+                    )
+                else:
+                    cur.execute(
+                        "UPDATE tasks SET date = %s, updated_at = %s WHERE date = %s AND status != 'done'",
+                        (to_date, now, from_date),
+                    )
+                count = cur.rowcount
+            conn.commit()
+            return count
+        finally:
+            release_connection(conn)
+
+    @staticmethod
+    def move_incomplete_tasks_on_or_before(end_date: str, to_date: str, user_id: str = "") -> tuple[int, list[str]]:
+        conn = get_connection()
+        try:
+            now = _now()
+            with conn.cursor() as cur:
+                if user_id:
+                    cur.execute(
+                        "SELECT DISTINCT date FROM tasks "
+                        "WHERE date <= %s AND status != 'done' AND user_id = %s "
+                        "ORDER BY date ASC",
+                        (end_date, user_id),
+                    )
+                    source_dates = [r["date"] for r in cur.fetchall()]
+                    cur.execute(
+                        "UPDATE tasks SET date = %s, updated_at = %s "
+                        "WHERE date <= %s AND status != 'done' AND user_id = %s",
+                        (to_date, now, end_date, user_id),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT DISTINCT date FROM tasks "
+                        "WHERE date <= %s AND status != 'done' "
+                        "ORDER BY date ASC",
+                        (end_date,),
+                    )
+                    source_dates = [r["date"] for r in cur.fetchall()]
+                    cur.execute(
+                        "UPDATE tasks SET date = %s, updated_at = %s "
+                        "WHERE date <= %s AND status != 'done'",
+                        (to_date, now, end_date),
+                    )
+                count = cur.rowcount
+            conn.commit()
+            return int(count or 0), source_dates
+        finally:
+            release_connection(conn)
+
+    @staticmethod
+    def distinct_task_dates_on_or_before(end_date: str, user_id: str = "") -> list[str]:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                if user_id:
+                    cur.execute(
+                        "SELECT DISTINCT date FROM tasks "
+                        "WHERE date IS NOT NULL AND date <= %s AND user_id = %s "
+                        "ORDER BY date ASC",
+                        (end_date, user_id),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT DISTINCT date FROM tasks "
+                        "WHERE date IS NOT NULL AND date <= %s "
+                        "ORDER BY date ASC",
+                        (end_date,),
+                    )
+                rows = cur.fetchall()
+            return [r["date"] for r in rows if r["date"]]
+        finally:
+            release_connection(conn)
+
+    @staticmethod
+    def count_by_date_status(date_str: str, user_id: str = "") -> dict:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                if user_id:
+                    cur.execute(
+                        "SELECT status, COUNT(*) as cnt FROM tasks WHERE date = %s AND user_id = %s GROUP BY status",
+                        (date_str, user_id),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT status, COUNT(*) as cnt FROM tasks WHERE date = %s GROUP BY status",
+                        (date_str,),
+                    )
+                rows = cur.fetchall()
+            return {r["status"]: r["cnt"] for r in rows}
+        finally:
+            release_connection(conn)
