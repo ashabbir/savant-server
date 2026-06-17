@@ -58,18 +58,17 @@ _args, _ = _parser.parse_known_args()
 mcp = FastMCP(
     "savant-knowledge",
     instructions=(
-        "Business & stack knowledge graph for projectx engineering. "
+        "BUSINESS & ARCHITECTURE METADATA GRAPH: Use this server to retrieve/store high-level developer insights, "
+        "incident issues, system capability domains, partner clients, and technology stack info. "
+        "DO NOT use this server to search raw repository source code files, syntax definitions, or code syntax call-graphs "
+        "(use 'savant-context' for those).\n"
         "Node types: client (Fidelity, UBS…), domain (Auth/SSO, Holdings…), "
         "service (icn, simonapp…), library (icn-user-acl…), technology (Rails, Redis…), "
         "insight (curated developer knowledge), issue (known bugs and problems), "
         "project (repositories and codebases), concept (abstract ideas and patterns), "
-        "repo (source code repositories), session (AI coding session entries). "
-        "Workflow: store() creates staged nodes (requires workspace_id) → "
-        "commit_workspace() publishes them. Use update_node() to edit existing "
-        "nodes (no workspace required). Use graph_type to classify nodes into "
-        "logical namespaces (business, technical, operational, etc.). "
-        "search() retrieves context; connect() wires relationships; "
-        "neighbors() explores the graph; prune() cleans up dangling edges."
+        "repo (source code repositories), session (AI coding session entries).\n"
+        "Workflow: store() creates staged nodes (requires workspace_id) -> commit_workspace() publishes them. "
+        "Use search() to query, neighbors() to traverse connections, and connect() to link nodes."
     ),
     host=_args.host,
     port=_args.port,
@@ -378,6 +377,23 @@ def prune(remove_orphan_nodes: bool = False) -> dict[str, Any]:
     Returns: { "edges_removed": int, "nodes_removed": int }
     """
     return _api("POST", "/api/knowledge/prune", json={"remove_orphan_nodes": remove_orphan_nodes})
+
+
+@mcp.tool()
+def search_graphify(query: str, workspace_id: str, limit: int = 20) -> dict[str, Any]:
+    """
+    Search Graphify nodes by text query within a specific workspace/repository context.
+    
+    workspace_id: The repository/workspace identifier (e.g. project name) to scope the search.
+    query: Text search query.
+    limit: Max results (default 20, max 100).
+    """
+    return _api("POST", "/api/knowledge/graphify/search", json={
+        "query": query,
+        "workspace_id": workspace_id,
+        "limit": min(max(1, limit), 100),
+    })
+
 
 
 # ---------------------------------------------------------------------------

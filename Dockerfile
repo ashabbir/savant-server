@@ -59,5 +59,6 @@ EXPOSE 8091
 EXPOSE 8092
 EXPOSE 8093
 EXPOSE 8094
+EXPOSE 8095
 
 CMD ["/app/docker-entrypoint.sh"]

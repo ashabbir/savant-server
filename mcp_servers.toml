@@ -17,3 +17,4 @@ tools = ["*"]
 transport = "sse"
 url = "http://127.0.0.1:8094/sse"
 tools = ["*"]
+

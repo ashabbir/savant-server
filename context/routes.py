@@ -301,6 +301,63 @@ def repos_status():
     return jsonify({"repo_count": len(stats), "status": stats})
 
 
+@context_bp.route("/api/context/repos/browse", methods=["GET"])
+def browse_directory():
+    """Browse host/server directory contents relative to BASE_CODE_DIR."""
+    if not _ensure_init():
+        return jsonify({"error": "Context not initialized"}), 503
+    
+    # path_param is now expected to be relative to BASE_CODE_DIR
+    rel_path = request.args.get("path", "").strip()
+    
+    import os
+    from pathlib import Path
+
+    base_dir = os.environ.get("BASE_CODE_DIR", "").strip()
+    if not base_dir:
+        return jsonify({"error": "BASE_CODE_DIR not set on server"}), 500
+    
+    # Securely join base_dir with rel_path
+    # Prevent directory traversal by resolving and checking prefix
+    try:
+        base_path = Path(base_dir).resolve()
+        if rel_path:
+            # Remove leading slashes to ensure it's treated as relative
+            safe_rel = rel_path.lstrip("/").lstrip("\\")
+            target_path = (base_path / safe_rel).resolve()
+        else:
+            target_path = base_path
+
+        if not str(target_path).startswith(str(base_path)):
+            return jsonify({"error": "Invalid path: outside of BASE_CODE_DIR"}), 403
+
+        if not target_path.exists():
+            return jsonify({"error": f"Path not found: {rel_path}"}), 404
+        if not target_path.is_dir():
+            return jsonify({"error": f"Path is not a directory: {rel_path}"}), 400
+        
+        entries = []
+        for entry in os.scandir(target_path):
+            if entry.name.startswith(".") or entry.name == "node_modules":
+                continue
+            
+            # Calculate path relative to BASE_CODE_DIR
+            entry_rel_path = str(Path(entry.path).resolve().relative_to(base_path))
+
+            entries.append({
+                "name": entry.name,
+                "isDirectory": entry.is_dir(),
+                "path": entry_rel_path
+            })
+            
+        entries.sort(key=lambda x: (not x["isDirectory"], x["name"].lower()))
+        return jsonify(entries)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @context_bp.route("/api/context/repos/sources")
 def repo_sources():
     from .ingestion import get_source_availability

@@ -28,7 +28,14 @@ from context.routes import context_bp
 from knowledge.routes import knowledge_bp
 from tools.routes import tools_bp
 from reminders.routes import reminders_bp
-from server_paths import get_server_data_dir, get_server_db_path, get_server_abilities_base_dir
+from graphify.routes import graphify_bp
+from server_paths import (
+    get_server_data_dir, 
+    get_server_db_path, 
+    get_server_abilities_base_dir,
+    container_to_host_path,
+    host_to_container_path
+)
 
 app = Flask(__name__)
 # Enable CORS for all routes, allowing the X-API-Key header for preflight requests
@@ -105,6 +112,9 @@ app.register_blueprint(tools_bp)
 
 # Register reminders API blueprint
 app.register_blueprint(reminders_bp)
+
+# Register graphify API blueprint
+app.register_blueprint(graphify_bp)
 
 # Register skills API blueprint
 from abilities.skills_routes import skills_bp
@@ -1046,24 +1056,6 @@ SAVANT_DIR = os.environ.get("SAVANT_DIR",
 SAVANT_SESSIONS_DIR = os.path.join(SAVANT_DIR, "sessions")
 SAVANT_META_DIR = os.path.join(SAVANT_DIR, ".savant-meta")
 SAVANT_STATE_DB = os.path.join(SAVANT_DIR, "state.db")
-
-# --- Host path mapping (container→host for file open/reveal) ---
-_HOST_PATH_MAP = []
-for _env_key in ("_VOL_MAP_0", "_VOL_MAP_1", "_VOL_MAP_2", "_VOL_MAP_3", "_VOL_MAP_4", "_VOL_MAP_5"):
-    _val = os.environ.get(_env_key, "")
-    if ":" in _val:
-        _parts = _val.split(":", 1)
-        _HOST_PATH_MAP.append((_parts[1], _parts[0]))  # (container_prefix, host_prefix)
-# Sort longest container prefix first for most-specific match
-_HOST_PATH_MAP.sort(key=lambda x: -len(x[0]))
-
-
-def container_to_host_path(container_path):
-    """Map a container absolute path back to the host filesystem path."""
-    for container_prefix, host_prefix in _HOST_PATH_MAP:
-        if container_path.startswith(container_prefix):
-            return host_prefix + container_path[len(container_prefix):]
-    return container_path
 
 import time as _time
 import random as _random
@@ -2374,7 +2366,7 @@ def api_preferences_update():
 
 @app.route("/health/live", methods=["GET"])
 def health_live():
-    return jsonify({"status": "ok"})
+    return jsonify({"status": "ok", "version": "2"})
 
 
 @app.route("/health/ready", methods=["GET"])
@@ -2386,9 +2378,9 @@ def health_ready():
         with conn.cursor() as cur:
             cur.execute("SELECT 1")
             cur.fetchone()
-        return jsonify({"status": "ok"})
+        return jsonify({"status": "ok", "version": "2"})
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 503
+        return jsonify({"status": "error", "message": str(e), "version": "2"}), 503
     finally:
         if conn:
             release_connection(conn)

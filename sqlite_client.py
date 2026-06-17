@@ -202,12 +202,14 @@ CREATE TABLE IF NOT EXISTS notifications (
     workspace_id    TEXT,
     session_id      TEXT,
     read            INTEGER DEFAULT 0,
-    created_at      TEXT NOT NULL
+    created_at      TEXT NOT NULL,
+    user_id         TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_notif_created ON notifications(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_notif_read ON notifications(read);
 CREATE INDEX IF NOT EXISTS idx_notif_workspace ON notifications(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_notif_session ON notifications(session_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id);
 
 -- Preferences (replaces preferences.json)
 CREATE TABLE IF NOT EXISTS preferences (

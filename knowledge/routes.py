@@ -988,3 +988,189 @@ def purge_workspace():
         "deleted_count": len(exclusive),
         "unlinked_count": len(shared),
     })
+
+
+# ---------------------------------------------------------------------------
+# Graphify Integration Endpoints
+# ---------------------------------------------------------------------------
+
+@knowledge_bp.route("/api/knowledge/import-graphify", methods=["POST"])
+def import_graphify():
+    """Import Graphify JSON data, converting it to Savant KG format."""
+    import json as _json
+    data = request.get_json(force=True, silent=True) or {}
+    workspace_id = data.get("workspace_id", "").strip()
+    graph_data = data.get("graph", {}) or {}
+    
+    if not workspace_id:
+        return jsonify({"error": "workspace_id is required"}), 400
+        
+    nodes = graph_data.get("nodes", [])
+    links = graph_data.get("links", []) or graph_data.get("edges", [])
+    
+    def sanitize_id(raw_id):
+        sanitized = re.sub(r'[^a-zA-Z0-9_\-]', '_', str(raw_id))
+        return f"gf_{sanitized}"[:128]
+
+    imported_nodes_count = 0
+    node_id_map = {}
+    
+    for n in nodes:
+        raw_id = n.get("id") or n.get("node_id")
+        if not raw_id:
+            continue
+        san_id = sanitize_id(raw_id)
+        node_id_map[raw_id] = san_id
+        
+        title = n.get("label") or n.get("title") or str(raw_id)
+        gtype = (n.get("type") or "concept").lower()
+        
+        mapped_type = "concept"
+        if gtype in VALID_NODE_TYPES:
+            mapped_type = gtype
+        elif gtype in ("file", "code", "function", "class", "method", "variable"):
+            mapped_type = "concept"
+        elif gtype in ("documentation", "doc", "paper", "markdown", "text", "readme"):
+            mapped_type = "insight"
+        elif gtype in ("repo", "directory", "folder"):
+            mapped_type = "repo"
+            
+        meta = n.get("metadata") or {}
+        if isinstance(meta, str):
+            try:
+                meta = _json.loads(meta)
+            except Exception:
+                meta = {}
+        meta["graphify"] = True
+        meta["graphify_type"] = gtype
+        meta["workspaces"] = [workspace_id]
+        if "source_file" in n:
+            meta["source_file"] = n["source_file"]
+            
+        existing_node = KnowledgeGraphDB.get_node(san_id)
+        if existing_node:
+            KnowledgeGraphDB.update_node(san_id, {
+                "title": title,
+                "content": n.get("content") or "",
+                "node_type": mapped_type,
+                "metadata": meta
+            })
+        else:
+            KnowledgeGraphDB.create_node({
+                "node_id": san_id,
+                "node_type": mapped_type,
+                "title": title,
+                "content": n.get("content") or "",
+                "metadata": meta,
+                "status": "committed"
+            })
+        imported_nodes_count += 1
+        
+    imported_edges_count = 0
+    for link in links:
+        src = link.get("source") or link.get("source_id")
+        tgt = link.get("target") or link.get("target_id")
+        if not src or not tgt:
+            continue
+        
+        san_src = node_id_map.get(src) or sanitize_id(src)
+        san_tgt = node_id_map.get(tgt) or sanitize_id(tgt)
+        
+        raw_edge_type = (link.get("type") or link.get("edge_type") or "relates_to").lower()
+        mapped_edge_type = "relates_to"
+        if raw_edge_type in VALID_EDGE_TYPES:
+            mapped_edge_type = raw_edge_type
+        elif raw_edge_type in ("calls", "invokes"):
+            mapped_edge_type = "uses"
+        elif raw_edge_type in ("defines", "contains", "has"):
+            mapped_edge_type = "part_of"
+        elif raw_edge_type in ("imports", "requires"):
+            mapped_edge_type = "depends_on"
+        elif raw_edge_type in ("references", "refers"):
+            mapped_edge_type = "relates_to"
+            
+        edge_id = f"edge_{san_src}_{san_tgt}"[:128]
+        
+        if KnowledgeGraphDB.get_node(san_src) and KnowledgeGraphDB.get_node(san_tgt):
+            try:
+                KnowledgeGraphDB.create_edge({
+                    "edge_id": edge_id,
+                    "source_id": san_src,
+                    "target_id": san_tgt,
+                    "edge_type": mapped_edge_type,
+                    "status": "committed",
+                    "metadata": {
+                        "graphify": True,
+                        "graphify_edge_type": raw_edge_type,
+                        "workspaces": [workspace_id]
+                    }
+                })
+                imported_edges_count += 1
+            except Exception:
+                pass
+                
+    return jsonify({
+        "success": True,
+        "nodes_imported": imported_nodes_count,
+        "edges_imported": imported_edges_count
+    })
+
+
+@knowledge_bp.route("/api/knowledge/graphify/stats", methods=["GET"])
+def get_graphify_stats():
+    """Get Graphify node stats scoped to a workspace/repo."""
+    import json as _json
+    workspace_id = request.args.get("workspace_id", "").strip()
+    if not workspace_id:
+        return jsonify({"error": "workspace_id is required"}), 400
+    
+    nodes = KnowledgeGraphDB.list_nodes(limit=10000, include_staged=True)
+    stats = {}
+    total = 0
+    for n in nodes:
+        meta = n.get("metadata") or {}
+        if isinstance(meta, str):
+            try:
+                meta = _json.loads(meta)
+            except Exception:
+                meta = {}
+        workspaces = meta.get("workspaces", []) or []
+        if workspace_id in workspaces and meta.get("graphify"):
+            gtype = meta.get("graphify_type", "unknown")
+            stats[gtype] = stats.get(gtype, 0) + 1
+            total += 1
+            
+    return jsonify({"stats": stats, "total": total})
+
+
+@knowledge_bp.route("/api/knowledge/graphify/search", methods=["POST"])
+def search_graphify_nodes():
+    """Search Graphify nodes scoped to a workspace/repo."""
+    import json as _json
+    data = request.get_json(force=True, silent=True) or {}
+    query = data.get("query", "").strip()
+    workspace_id = data.get("workspace_id", "").strip()
+    
+    if not query:
+        return jsonify({"error": "query is required"}), 400
+    if not workspace_id:
+        return jsonify({"error": "workspace_id is required"}), 400
+        
+    limit = _safe_int(data.get("limit", 20), default=20, min_val=1, max_val=100)
+    results = KnowledgeGraphDB.search_nodes(query, limit=500, include_staged=True)
+    
+    filtered = []
+    for n in results:
+        meta = n.get("metadata") or {}
+        if isinstance(meta, str):
+            try:
+                meta = _json.loads(meta)
+            except Exception:
+                meta = {}
+        if meta.get("graphify") and workspace_id in (meta.get("workspaces", []) or []):
+            filtered.append(n)
+            if len(filtered) >= limit:
+                break
+                
+    return jsonify({"result": filtered})
+

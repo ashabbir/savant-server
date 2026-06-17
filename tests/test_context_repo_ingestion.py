@@ -10,6 +10,7 @@ from context.ingestion import (
     ingest_directory,
     ingest_repo,
 )
+from context.walker import FileWalker
 
 
 def _cp(args, returncode=0, stdout="", stderr=""):
@@ -190,3 +191,21 @@ def test_add_repo_route_rejects_source_url_mismatch(client, monkeypatch):
 
     assert resp.status_code == 400
     assert "does not match source" in resp.get_json()["error"]
+
+
+def test_file_walker_respects_gitignore_and_node_modules(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    subprocess.run(["git", "-C", str(repo), "init"], check=True, capture_output=True)
+    (repo / ".gitignore").write_text("generated/\n")
+    (repo / "src").mkdir()
+    (repo / "src" / "main.ts").write_text("export const ok = true;\n")
+    (repo / "generated").mkdir()
+    (repo / "generated" / "auto.ts").write_text("export const auto = true;\n")
+    (repo / "node_modules").mkdir()
+    (repo / "node_modules" / "pkg.js").write_text("module.exports = {};\n")
+
+    files = sorted(str(path).replace("\\", "/") for path in FileWalker(repo).walk())
+
+    assert files == ["src/main.ts"]

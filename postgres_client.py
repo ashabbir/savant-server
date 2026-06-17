@@ -302,7 +302,8 @@ CREATE TABLE IF NOT EXISTS notifications (
     workspace_id    TEXT,
     session_id      TEXT,
     read            INTEGER DEFAULT 0,
-    created_at      TIMESTAMPTZ NOT NULL
+    created_at      TIMESTAMPTZ NOT NULL,
+    user_id         TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_notif_created   ON notifications(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_notif_read      ON notifications(read);
@@ -366,6 +367,42 @@ CREATE INDEX IF NOT EXISTS idx_kge_source ON kg_edges(source_id);
 CREATE INDEX IF NOT EXISTS idx_kge_target ON kg_edges(target_id);
 CREATE INDEX IF NOT EXISTS idx_kge_type   ON kg_edges(edge_type);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_kge_unique ON kg_edges(source_id, target_id, edge_type);
+
+-- Graphify: Nodes
+CREATE TABLE IF NOT EXISTS graphify_nodes (
+    node_id      TEXT NOT NULL,
+    workspace_id TEXT NOT NULL REFERENCES ctx_repos(name) ON DELETE CASCADE,
+    node_type    TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    content      TEXT DEFAULT '',
+    metadata     TEXT DEFAULT '{}',
+    created_at   TIMESTAMPTZ NOT NULL,
+    updated_at   TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (workspace_id, node_id)
+);
+CREATE INDEX IF NOT EXISTS idx_gfn_ws      ON graphify_nodes(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_gfn_type    ON graphify_nodes(node_type);
+CREATE INDEX IF NOT EXISTS idx_gfn_title   ON graphify_nodes(title);
+CREATE INDEX IF NOT EXISTS idx_gfn_created ON graphify_nodes(created_at DESC);
+
+-- Graphify: Edges
+CREATE TABLE IF NOT EXISTS graphify_edges (
+    edge_id      TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES ctx_repos(name) ON DELETE CASCADE,
+    source_id    TEXT NOT NULL,
+    target_id    TEXT NOT NULL,
+    edge_type    TEXT NOT NULL,
+    weight       REAL DEFAULT 1.0,
+    label        TEXT DEFAULT '',
+    created_at   TIMESTAMPTZ NOT NULL,
+    FOREIGN KEY (workspace_id, source_id) REFERENCES graphify_nodes(workspace_id, node_id) ON DELETE CASCADE,
+    FOREIGN KEY (workspace_id, target_id) REFERENCES graphify_nodes(workspace_id, node_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_gfe_ws     ON graphify_edges(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_gfe_source ON graphify_edges(source_id);
+CREATE INDEX IF NOT EXISTS idx_gfe_target ON graphify_edges(target_id);
+CREATE INDEX IF NOT EXISTS idx_gfe_type   ON graphify_edges(edge_type);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_gfe_unique ON graphify_edges(workspace_id, source_id, target_id, edge_type);
 
 -- Job queue
 CREATE TABLE IF NOT EXISTS jobs (
@@ -460,6 +497,10 @@ CREATE TABLE IF NOT EXISTS ctx_vec_chunks (
 -- HNSW index for fast approximate nearest-neighbour search (cosine distance)
 CREATE INDEX IF NOT EXISTS idx_ctx_vec_hnsw
     ON ctx_vec_chunks USING hnsw (embedding vector_cosine_ops);
+
+-- Schema upgrades/migrations for existing databases
+ALTER TABLE notifications ADD COLUMN IF NOT EXISTS user_id TEXT DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id);
 """
 
 
@@ -469,10 +510,72 @@ def init_schema() -> None:
     with db_cursor() as cur:
         cur.execute("SELECT pg_advisory_lock(%s)", (0x5A0A17,))
         try:
+            # Run migrations for graphify tables to support multi-repo isolation
+            try:
+                cur.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_name = 'graphify_nodes'
+                    ) as tbl_exists;
+                """)
+                exists_row = cur.fetchone()
+                table_exists = exists_row["tbl_exists"] if isinstance(exists_row, dict) else exists_row[0]
+                if table_exists:
+                    cur.execute("""
+                        SELECT COUNT(*) as cnt
+                        FROM information_schema.table_constraints tc
+                        JOIN information_schema.key_column_usage kcu
+                          ON tc.constraint_name = kcu.constraint_name
+                         AND tc.table_schema = kcu.table_schema
+                        WHERE tc.table_name = 'graphify_nodes'
+                          AND tc.constraint_type = 'PRIMARY KEY';
+                    """)
+                    cnt_row = cur.fetchone()
+                    pk_col_count = cnt_row["cnt"] if isinstance(cnt_row, dict) else cnt_row[0]
+                    if pk_col_count == 1:
+                        logger.info("Migrating graphify tables for multi-repo isolation...")
+                        cur.execute("ALTER TABLE graphify_edges DROP CONSTRAINT IF EXISTS graphify_edges_source_id_fkey;")
+                        cur.execute("ALTER TABLE graphify_edges DROP CONSTRAINT IF EXISTS graphify_edges_target_id_fkey;")
+                        cur.execute("ALTER TABLE graphify_nodes DROP CONSTRAINT IF EXISTS graphify_nodes_pkey;")
+                        cur.execute("ALTER TABLE graphify_nodes ADD CONSTRAINT graphify_nodes_pkey PRIMARY KEY (workspace_id, node_id);")
+                        cur.execute("""
+                            ALTER TABLE graphify_edges 
+                            ADD CONSTRAINT graphify_edges_source_fk 
+                            FOREIGN KEY (workspace_id, source_id) REFERENCES graphify_nodes(workspace_id, node_id) 
+                            ON DELETE CASCADE;
+                        """)
+                        cur.execute("""
+                            ALTER TABLE graphify_edges 
+                            ADD CONSTRAINT graphify_edges_target_fk 
+                            FOREIGN KEY (workspace_id, target_id) REFERENCES graphify_nodes(workspace_id, node_id) 
+                            ON DELETE CASCADE;
+                        """)
+                        logger.info("Graphify table migration completed successfully.")
+            except Exception as migrate_err:
+                logger.warning(f"Graphify migration check skipped or failed: {migrate_err}")
+                cur.connection.rollback()
+
             # Execute statement by statement to avoid psycopg2 multi-statement issues
             statements = [s.strip() for s in _SCHEMA_SQL.split(";") if s.strip()]
             for stmt in statements:
-                cur.execute(stmt)
+                try:
+                    cur.execute(stmt)
+                except Exception as e:
+                    logger.error(f"Failed to execute SQL statement: {stmt}")
+                    logger.error(f"Error detail: {e}")
+                    raise
+            cur.connection.commit()
+        except Exception as e:
+            cur.connection.rollback()
+            raise
         finally:
-            cur.execute("SELECT pg_advisory_unlock(%s)", (0x5A0A17,))
+            try:
+                cur.execute("SELECT pg_advisory_unlock(%s)", (0x5A0A17,))
+                cur.connection.commit()
+            except Exception as lock_err:
+                logger.error(f"Failed to release advisory lock: {lock_err}")
+                try:
+                    cur.connection.rollback()
+                except Exception:
+                    pass
     logger.info("Schema initialisation complete.")

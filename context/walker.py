@@ -1,6 +1,7 @@
 """File system walker with .gitignore support."""
 
 import logging
+import subprocess
 from pathlib import Path
 from typing import Iterator, Optional
 
@@ -16,7 +17,7 @@ class FileWalker:
         "node_modules", ".git", ".venv", "venv", "env", "__pycache__",
         ".pytest_cache", ".tox", "dist", "build", "*.egg-info", ".mypy_cache",
         ".vscode", ".idea", ".DS_Store", "target", "out", ".next", ".nuxt",
-        ".cache", "coverage", "tmp_wheels", "tmp_wheels_urls", "tmp",
+        ".cache", "coverage", "tmp_wheels", "tmp_wheels_urls", "tmp", "graphify-out",
     }
 
     SKIP_EXTENSIONS = {
@@ -28,7 +29,7 @@ class FileWalker:
     }
 
     SKIP_FILENAME_PATTERNS = {
-        ".eslintcache", ".stylelintcache", "tsconfig.tsbuildinfo", ".coverage",
+        ".gitignore", ".eslintcache", ".stylelintcache", "tsconfig.tsbuildinfo", ".coverage",
         ".pytest_cache", "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
         "composer.lock", "Gemfile.lock", "Pipfile.lock", "poetry.lock",
         ".env.local", ".env.*.local", "dist", "build", "out",
@@ -48,6 +49,52 @@ class FileWalker:
                 self.gitignore_spec = pathspec.PathSpec.from_lines("gitwildmatch", patterns)
             except Exception as e:
                 logger.warning(f"Failed to load .gitignore: {e}")
+
+    def _walk_filesystem(self) -> Iterator[Path]:
+        """Yield files by recursively scanning the filesystem, skipping directories early."""
+        import os
+        for root, dirs, files in os.walk(str(self.repo_path)):
+            # Prune directories in-place to avoid descending into them
+            dirs[:] = [d for d in dirs if d not in self.DEFAULT_SKIP_PATTERNS]
+            for file in files:
+                abs_path = Path(root) / file
+                if not self._should_skip(abs_path):
+                    try:
+                        yield abs_path.relative_to(self.repo_path)
+                    except ValueError:
+                        pass
+
+    def _walk_git_repo(self) -> Iterator[Path]:
+        """Yield files from git's own ignore-aware file listing."""
+        try:
+            proc = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(self.repo_path),
+                    "ls-files",
+                    "-z",
+                    "--cached",
+                    "--others",
+                    "--exclude-standard",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if proc.returncode != 0:
+                raise RuntimeError(proc.stderr.strip() or "git ls-files failed")
+
+            for raw_path in proc.stdout.split("\0"):
+                if not raw_path:
+                    continue
+                rel_path = Path(raw_path)
+                abs_path = self.repo_path / rel_path
+                if abs_path.is_file() and not self._should_skip(abs_path):
+                    yield rel_path
+        except Exception as e:
+            logger.warning(f"Git-aware walk failed, falling back to filesystem scan: {e}")
+            yield from self._walk_filesystem()
 
     def _should_skip(self, path: Path) -> bool:
         filename = path.name.lower()
@@ -70,7 +117,11 @@ class FileWalker:
 
         if self.gitignore_spec:
             try:
-                rel_path = path.relative_to(self.repo_path)
+                # If path is already relative, use it; otherwise get relative path
+                if path.is_absolute():
+                    rel_path = path.relative_to(self.repo_path)
+                else:
+                    rel_path = path
                 if self.gitignore_spec.match_file(str(rel_path)):
                     return True
             except (ValueError, Exception):
@@ -81,9 +132,11 @@ class FileWalker:
     def walk(self) -> Iterator[Path]:
         """Yield all non-skipped file paths relative to repo root."""
         try:
-            for item in self.repo_path.rglob("*"):
-                if item.is_file() and not self._should_skip(item):
-                    yield item.relative_to(self.repo_path)
+            if (self.repo_path / ".git").exists():
+                yield from self._walk_git_repo()
+                return
+
+            yield from self._walk_filesystem()
         except Exception as e:
             logger.error(f"Error walking repository: {e}")
 

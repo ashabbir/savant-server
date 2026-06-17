@@ -43,15 +43,17 @@ from auth import auth_headers, install_header_capture
 mcp = FastMCP(
     "savant-context",
     instructions=(
-        "Semantic code search, AST structure exploration, and memory bank across indexed repositories. "
-        "Use code_search(query, repo) for semantic search across repo source code. "
-        "Use memory_bank_search(query, repo) for semantic search within memory bank markdown. "
-        "Use memory_resources_list(repo) to browse available memory bank files; memory_resources_read(uri) to read one. "
-        "Use repos_list() to see all indexed repos with README excerpts; repo_status() for index health. "
-        "Use structure_search(query) to find classes, functions, or language elements via substring AST matching. "
-        "Use analyze_code(name, repo, path, node_type, diff, code) to get before/after complexity and findings for a class or file. "
-        "The response includes a recommendation to refactor with TDD: write failing tests first, implement the smallest fix, then re-run analysis. "
-        "All tools accept an optional repo filter (string name or list of names)."
+        "PHYSICAL CODEBASE CONTEXT SEARCH: Use this server to query actual source code, syntax, class structures, "
+        "and code-level dependency graphs. DO NOT use this server for high-level business capability domains, "
+        "partner clients, deployable service applications, or developer architecture decisions (use 'savant-knowledge' for those).\n"
+        "Tools:\n"
+        "  - code_search(query, repo): Semantic search across source code.\n"
+        "  - structure_search(query): AST structural match (find classes, functions).\n"
+        "  - code_graph_search(query, repo): Look up codebase graph imports, callers, and class dependencies.\n"
+        "  - code_research(query, repo): Runs code, structure, memory, and graph searches together.\n"
+        "  - memory_bank_search(query, repo): Semantic search within local repository memory bank markdown files.\n"
+        "  - analyze_code(name, repo, path...): Get before/after complexity metrics.\n"
+        "All tools accept a 'repo' filter to scope lookup to a specific repository."
     ),
     host=_args.host,
     port=_args.port,
@@ -186,6 +188,92 @@ def repos_list(filter: str = None, max_length: int = 4096) -> dict:
 def repo_status() -> dict:
     """List per-repo index status counts."""
     return _get("/api/context/repos/status")
+
+
+@mcp.tool()
+def code_graph_search(
+    query: str,
+    repo: str = None,
+    limit: int = 20,
+) -> dict:
+    """Search codebase relationships, class hierarchies, and dependencies in the Graphify graph.
+
+    query: The text term to search for in titles or descriptions
+    repo: Optional repository/workspace name to search within (recommended).
+    limit: Maximum number of results to return (default: 20)
+    """
+    payload = {"query": query, "limit": limit}
+    if repo:
+        payload["workspace_id"] = repo
+    return _post("/api/graphify/search", payload)
+
+
+@mcp.tool()
+def get_code_graph_stats(
+    repo: str,
+) -> dict:
+    """Get counts of Graphify nodes and edges grouped by type for a repository.
+
+    repo: The name of the repository to get stats for
+    """
+    return _get("/api/graphify/stats", {"workspace_id": repo})
+
+
+@mcp.tool()
+def code_research(
+    query: str,
+    repo: str = None,
+    limit: int = 10,
+) -> dict:
+    """Perform a comprehensive code research task by searching source code, structure, memory banks, and codebase graphs.
+
+    query: The search term or concept to research.
+    repo: Optional repository name to limit research within.
+    limit: Maximum results per search type (default: 10).
+    """
+    results = {}
+
+    # 1. Semantic source code search
+    try:
+        results["code_search"] = code_search(query=query, repo=repo, limit=limit)
+    except Exception as e:
+        results["code_search"] = {"error": str(e)}
+
+    # 2. Memory bank markdown search
+    try:
+        results["memory_bank_search"] = memory_bank_search(query=query, repo=repo, limit=limit)
+    except Exception as e:
+        results["memory_bank_search"] = {"error": str(e)}
+
+    # 3. Structure / AST search
+    struct_results = {}
+    try:
+        struct_results = structure_search(query=query, repo=repo)
+        results["structure_search"] = struct_results
+    except Exception as e:
+        results["structure_search"] = {"error": str(e)}
+
+    # 4. Code graph / Graphify search (using matched symbol names or original query as fallback)
+    graph_queries = set()
+    if struct_results and "results" in struct_results and isinstance(struct_results["results"], list):
+        for item in struct_results["results"]:
+            if isinstance(item, dict) and item.get("name"):
+                graph_queries.add(item["name"])
+
+    # Fallback to the original query if no structure names matched
+    if not graph_queries:
+        graph_queries.add(query)
+
+    graph_results = {}
+    for g_query in sorted(graph_queries):
+        try:
+            graph_results[g_query] = code_graph_search(query=g_query, repo=repo, limit=limit)
+        except Exception as e:
+            graph_results[g_query] = {"error": str(e)}
+
+    results["code_graph_search"] = graph_results
+
+    return results
 
 
 # ---------------------------------------------------------------------------
