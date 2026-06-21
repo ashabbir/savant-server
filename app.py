@@ -1519,12 +1519,11 @@ def api_workspace_session_links_upsert(ws_id):
     if not WorkspaceDB.get_by_id(ws_id, user_id=g.user_id):
         return jsonify({"error": "Workspace not found"}), 404
     data = request.get_json(force=True) or {}
-    provider = data.get("provider")
     session_id = str(data.get("session_id") or "").strip()
-    if not provider or not session_id:
-        return jsonify({"error": "provider and session_id are required"}), 400
+    if not session_id:
+        return jsonify({"error": "session_id is required"}), 400
     try:
-        link = WorkspaceSessionLinkDB.upsert(ws_id, provider, session_id)
+        link = WorkspaceSessionLinkDB.upsert(ws_id, "session", session_id)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     _emit_event("session_assigned", "Session assigned to workspace", {"session_id": session_id, "workspace_id": ws_id})

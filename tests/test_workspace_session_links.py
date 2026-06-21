@@ -21,16 +21,16 @@ def test_workspace_session_links_table_constraints(_isolated_db):
     # Table exists and accepts a valid row.
     conn.execute(
         "INSERT INTO workspace_session_links (workspace_id, provider, session_id, attached_at) VALUES (?, ?, ?, datetime('now'))",
-        ("ws-a", "codex", "sess-1"),
+        ("ws-a", "session", "sess-1"),
     )
     conn.commit()
 
-    # PK(provider, session_id) enforces uniqueness.
+    # PK(session_id) semantics are enforced by the DB helper layer.
     dup_ok = False
     try:
         conn.execute(
             "INSERT INTO workspace_session_links (workspace_id, provider, session_id, attached_at) VALUES (?, ?, ?, datetime('now'))",
-            ("ws-a", "codex", "sess-1"),
+            ("ws-a", "session", "sess-1"),
         )
         conn.commit()
         dup_ok = True
@@ -43,7 +43,7 @@ def test_workspace_session_links_table_constraints(_isolated_db):
     try:
         conn.execute(
             "INSERT INTO workspace_session_links (workspace_id, provider, session_id, attached_at) VALUES (?, ?, ?, datetime('now'))",
-            ("ws-missing", "codex", "sess-2"),
+            ("ws-missing", "session", "sess-2"),
         )
         conn.commit()
         fk_ok = True
@@ -59,12 +59,12 @@ def test_workspace_session_links_api_assign_reassign_unassign_and_resolve(client
     # Assign
     assign = client.post(
         f"/api/workspaces/{ws1}/session-links",
-        json={"provider": "codex", "session_id": "sess-abc"},
+        json={"session_id": "sess-abc"},
     )
     assert assign.status_code == 200
     body = assign.get_json()
     assert body["workspace_id"] == ws1
-    assert body["provider"] == "codex"
+    assert body["provider"] == "session"
     assert body["session_id"] == "sess-abc"
 
     # List on ws1
@@ -72,18 +72,18 @@ def test_workspace_session_links_api_assign_reassign_unassign_and_resolve(client
     assert listed.status_code == 200
     links = listed.get_json()["links"]
     assert len(links) == 1
-    assert links[0]["provider"] == "codex"
+    assert links[0]["provider"] == "session"
     assert links[0]["session_id"] == "sess-abc"
 
     # Resolve
-    resolved = client.get("/api/session-links/resolve", query_string={"provider": "codex", "session_id": "sess-abc"})
+    resolved = client.get("/api/session-links/resolve", query_string={"provider": "ignored", "session_id": "sess-abc"})
     assert resolved.status_code == 200
     assert resolved.get_json()["workspace_id"] == ws1
 
-    # Reassign same provider+session to ws2 (upsert)
+    # Reassign same session to ws2 (upsert)
     reassigned = client.post(
         f"/api/workspaces/{ws2}/session-links",
-        json={"provider": "codex", "session_id": "sess-abc"},
+        json={"session_id": "sess-abc"},
     )
     assert reassigned.status_code == 200
 
@@ -92,15 +92,15 @@ def test_workspace_session_links_api_assign_reassign_unassign_and_resolve(client
     ws2_after = client.get(f"/api/workspaces/{ws2}/session-links").get_json()["links"]
     assert len(ws2_after) == 1
 
-    resolved2 = client.get("/api/session-links/resolve", query_string={"provider": "codex", "session_id": "sess-abc"})
+    resolved2 = client.get("/api/session-links/resolve", query_string={"provider": "ignored", "session_id": "sess-abc"})
     assert resolved2.status_code == 200
     assert resolved2.get_json()["workspace_id"] == ws2
 
     # Unassign from ws2
-    deleted = client.delete(f"/api/workspaces/{ws2}/session-links/codex/sess-abc")
+    deleted = client.delete(f"/api/workspaces/{ws2}/session-links/session/sess-abc")
     assert deleted.status_code == 200
     assert deleted.get_json()["deleted"] is True
 
-    resolved3 = client.get("/api/session-links/resolve", query_string={"provider": "codex", "session_id": "sess-abc"})
+    resolved3 = client.get("/api/session-links/resolve", query_string={"provider": "ignored", "session_id": "sess-abc"})
     assert resolved3.status_code == 200
     assert resolved3.get_json()["workspace_id"] is None

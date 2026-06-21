@@ -24,7 +24,7 @@ def _row_to_dict(row):
 
 
 VALID_NODE_TYPES = {"insight", "project", "session", "concept", "repo",
-                   "client", "domain", "service", "library", "technology", "issue"}
+                   "client", "domain", "service", "library", "technology", "issue", "person"}
 VALID_EDGE_TYPES = {"relates_to", "learned_from", "applies_to", "uses",
                    "evolved_from", "contributed_to", "part_of",
                    "integrates_with", "depends_on", "built_with"}

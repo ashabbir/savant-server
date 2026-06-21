@@ -20,7 +20,7 @@ _id_lock = threading.Lock()
 # ---------------------------------------------------------------------------
 
 VALID_NODE_TYPES = {"insight", "client", "domain", "service", "library", "technology",
-                    "project", "concept", "repo", "session", "issue"}
+                    "project", "concept", "repo", "session", "issue", "person"}
 VALID_EDGE_TYPES = {"relates_to", "learned_from", "applies_to", "uses",
                     "evolved_from", "contributed_to", "part_of", "integrates_with",
                     "depends_on", "built_with"}
@@ -1173,4 +1173,3 @@ def search_graphify_nodes():
                 break
                 
     return jsonify({"result": filtered})
-

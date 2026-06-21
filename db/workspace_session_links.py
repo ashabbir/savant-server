@@ -3,16 +3,13 @@
 from db.base import _now, _row_to_dict, _rows_to_dicts
 from postgres_client import get_connection, release_connection
 
-_ALLOWED_PROVIDERS = {"copilot", "claude", "codex", "gemini", "savant"}
+_INTERNAL_PROVIDER = "session"
 
 
 class WorkspaceSessionLinkDB:
     @staticmethod
     def _normalize_provider(provider: str) -> str:
-        value = str(provider or "").strip().lower()
-        if value not in _ALLOWED_PROVIDERS:
-            raise ValueError("Invalid provider")
-        return value
+        return _INTERNAL_PROVIDER
 
     @staticmethod
     def _get_link_with_conn(provider: str, session_id: str, conn) -> dict | None:
@@ -20,8 +17,10 @@ class WorkspaceSessionLinkDB:
             cur.execute(
                 """SELECT workspace_id, provider, session_id, attached_at
                    FROM workspace_session_links
-                   WHERE provider = %s AND session_id = %s""",
-                (provider, session_id),
+                   WHERE session_id = %s
+                   ORDER BY attached_at DESC
+                   LIMIT 1""",
+                (session_id,),
             )
             row = cur.fetchone()
         return _row_to_dict(row)
@@ -114,8 +113,8 @@ class WorkspaceSessionLinkDB:
             with conn.cursor() as cur:
                 cur.execute(
                     """DELETE FROM workspace_session_links
-                       WHERE workspace_id = %s AND provider = %s AND session_id = %s""",
-                    (workspace_id, WorkspaceSessionLinkDB._normalize_provider(provider), str(session_id or "")),
+                       WHERE workspace_id = %s AND session_id = %s""",
+                    (workspace_id, str(session_id or "")),
                 )
                 count = cur.rowcount
             conn.commit()

@@ -1,4 +1,4 @@
-"""Tests for CR-7: issue node type, prune_graph, and workspace metadata preservation."""
+"""Tests for knowledge node types, prune_graph, and workspace metadata preservation."""
 
 import sys
 import os
@@ -18,6 +18,9 @@ class TestIssueNodeType:
 
     def test_issue_in_valid_node_types(self):
         assert "issue" in VALID_NODE_TYPES
+
+    def test_person_in_valid_node_types(self):
+        assert "person" in VALID_NODE_TYPES
 
     def test_create_issue_node(self, _isolated_db):
         node = KnowledgeGraphDB.create_node({

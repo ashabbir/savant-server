@@ -114,6 +114,23 @@ SESSION_ID_HELP = (
 )
 
 
+def _detect_session_provider(session_id: str) -> str:
+    """Best-effort provider detection for an explicitly supplied session ID."""
+    sid = (session_id or "").strip()
+    env_provider_pairs = (
+        ("codex", ("CODEX_SESSION_ID", "SAVANT_SESSION_ID")),
+        ("claude", ("CLAUDE_SESSION_ID",)),
+        ("gemini", ("GEMINI_SESSION_ID",)),
+        ("copilot", ("SESSION_ID", "COPILOT_SESSION_ID")),
+    )
+    for provider, env_names in env_provider_pairs:
+        for env_name in env_names:
+            env_value = (os.environ.get(env_name) or "").strip()
+            if env_value and env_value == sid:
+                return provider
+    return "copilot"
+
+
 def _require_session_id(session_id: str) -> str:
     """Validate that session_id was explicitly provided."""
     sid = (session_id or "").strip()
@@ -265,7 +282,7 @@ def assign_session_to_workspace(workspace_id: str, session_id: str = "") -> dict
     """
     sid = _require_session_id(session_id)
     return _api("POST", f"/api/workspaces/{workspace_id}/session-links",
-                json={"provider": "copilot", "session_id": sid})
+                json={"session_id": sid})
 
 
 @mcp.tool()
