@@ -13,7 +13,7 @@ export TMPDIR="$SAVANT_LOCAL_TMP_DIR"
 export TEMP="$SAVANT_LOCAL_TMP_DIR"
 export TMP="$SAVANT_LOCAL_TMP_DIR"
 export PIP_CACHE_DIR="${PIP_CACHE_DIR:-$SAVANT_LOCAL_TMP_DIR/pip-cache}"
-export BASE_CODE_DIR="~/code"
+export BASE_CODE_DIR="$HOME/code"
 mkdir -p "$TMPDIR" "$PIP_CACHE_DIR"
 
 # Create .venv if it doesn't exist

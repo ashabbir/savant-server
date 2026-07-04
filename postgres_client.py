@@ -368,6 +368,19 @@ CREATE INDEX IF NOT EXISTS idx_kge_target ON kg_edges(target_id);
 CREATE INDEX IF NOT EXISTS idx_kge_type   ON kg_edges(edge_type);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_kge_unique ON kg_edges(source_id, target_id, edge_type);
 
+-- -------------------------------------------------------------------------
+-- Context / Embedding tables (replaces sqlite-vec)
+-- -------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS ctx_repos (
+    id          SERIAL PRIMARY KEY,
+    name        TEXT NOT NULL UNIQUE,
+    path        TEXT NOT NULL,
+    status      TEXT DEFAULT 'added',
+    indexed_at  TIMESTAMPTZ,
+    created_at  TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Graphify: Nodes
 CREATE TABLE IF NOT EXISTS graphify_nodes (
     node_id      TEXT NOT NULL,
@@ -440,19 +453,6 @@ CREATE TABLE IF NOT EXISTS reminders (
 CREATE INDEX IF NOT EXISTS idx_reminders_status  ON reminders(status);
 CREATE INDEX IF NOT EXISTS idx_reminders_due     ON reminders(due_date);
 CREATE INDEX IF NOT EXISTS idx_reminders_created ON reminders(created_at DESC);
-
--- -------------------------------------------------------------------------
--- Context / Embedding tables (replaces sqlite-vec)
--- -------------------------------------------------------------------------
-
-CREATE TABLE IF NOT EXISTS ctx_repos (
-    id          SERIAL PRIMARY KEY,
-    name        TEXT NOT NULL UNIQUE,
-    path        TEXT NOT NULL,
-    status      TEXT DEFAULT 'added',
-    indexed_at  TIMESTAMPTZ,
-    created_at  TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-);
 
 CREATE TABLE IF NOT EXISTS ctx_files (
     id              SERIAL PRIMARY KEY,

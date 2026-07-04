@@ -5,6 +5,7 @@ project management, and indexing.
 """
 
 import logging
+import os
 from pathlib import Path
 
 from flask import Blueprint, jsonify, request
@@ -34,10 +35,20 @@ def _ensure_init():
         return False
 
 
+def _resolve_repo_path(raw_path: str) -> Path:
+    """Remap /base-code/ prefix to BASE_CODE_DIR when not running in Docker."""
+    p = Path(raw_path)
+    base_code_dir = os.environ.get("BASE_CODE_DIR", "").strip()
+    if base_code_dir and str(p).startswith("/base-code/"):
+        rel = str(p)[len("/base-code/"):]
+        return Path(base_code_dir).expanduser() / rel
+    return p
+
+
 def _validate_repo_path(repo):
-    repo_path = Path(repo.get("path", ""))
+    repo_path = _resolve_repo_path(repo.get("path", ""))
     if not repo_path.exists():
-        return None, f"Project path no longer exists: {repo_path}"
+        return None, f"Project path no longer exists: {repo_path}. Re-add the project from Context > Add Project or fix the server mount path."
     if not repo_path.is_dir():
         return None, f"Project path is not a directory: {repo_path}"
     return repo_path, None

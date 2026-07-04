@@ -206,7 +206,7 @@ class Experience(BaseModel):
 class KGNode(BaseModel):
     """Knowledge graph node — the atoms of knowledge"""
     node_id: str = Field(..., description="Unique node identifier")
-    node_type: str = Field(..., description="Node type: insight, project, session, concept, repo, client, domain, service, library, technology, issue")
+    node_type: str = Field(..., description="Node type: insight, project, session, concept, repo, client, domain, service, library, technology, issue, person")
     title: str = Field(..., description="Short label shown on graph")
     content: str = Field(default="", description="Long-form content (markdown)")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Type-specific metadata. May include graph_type (str) for namespace classification and workspaces (list[str]) for workspace associations.")

@@ -40,7 +40,7 @@ from server_paths import (
 app = Flask(__name__)
 # Enable CORS for all routes, allowing the X-API-Key header for preflight requests
 CORS(app, resources={r"/*": {"origins": "*"}}, allow_headers=["Content-Type", "X-API-Key", "Authorization"])
-app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024  # 10 MB request body limit
+app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100 MB request body limit
 _API_ONLY_MODE = os.environ.get("SAVANT_API_ONLY", "").strip().lower() in {"1", "true", "yes", "on"}
 
 # Configure logging
@@ -63,7 +63,7 @@ def handle_404(e):
 
 @app.errorhandler(413)
 def handle_413(e):
-    return jsonify({"error": "Request body too large (max 10 MB)"}), 413
+    return jsonify({"error": "Request body too large (max 100 MB)"}), 413
 
 @app.errorhandler(429)
 def handle_429(e):

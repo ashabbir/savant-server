@@ -19,12 +19,15 @@ def _cp(args, returncode=0, stdout="", stderr=""):
 
 def test_sources_endpoint_reflects_env(client, monkeypatch):
     from context import routes
+    import context.ingestion as ingestion
 
     monkeypatch.setattr(routes, "_ensure_init", lambda: True)
     monkeypatch.setenv("GITHUB_TOKEN", "gh-test")
     monkeypatch.setenv("GITLAB_TOKEN", "")
     monkeypatch.setenv("BASE_CODE_DIR", "/tmp/repos")
     monkeypatch.setenv("BASE_CODE_HOST_DIR", "/Users/me/code/archived")
+    # Patch _detect_base_host_dir to simulate no mountinfo match → falls back to env var
+    monkeypatch.setattr(ingestion, "_detect_base_host_dir", lambda base_dir: "/Users/me/code/archived")
 
     resp = client.get("/api/context/repos/sources")
     assert resp.status_code == 200

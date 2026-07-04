@@ -76,9 +76,45 @@ def inspect_project_source(repo_path: str) -> Dict[str, str]:
     }
 
 
+def _detect_base_host_dir(base_dir: str) -> Optional[str]:
+    """Detect the host path of the base code mount.
+
+    Parses /proc/self/mountinfo (Linux/Docker). Handles Docker Desktop on macOS
+    where the filesystem type is 'fakeowner' and the real host path is assembled
+    from the 'root' subpath field + the mount source base.
+
+    Falls back to BASE_CODE_HOST_DIR env var if detection fails.
+    """
+    mountinfo = Path("/proc/self/mountinfo")
+    if mountinfo.exists():
+        try:
+            for line in mountinfo.read_text().splitlines():
+                parts = line.split()
+                # Format: mount_id parent_id major:minor root mountpoint mount_opts [opts] - fs_type source super_opts
+                if len(parts) >= 5 and parts[4] == base_dir:
+                    root_subpath = parts[3]  # subpath within the source fs
+                    if " - " in line:
+                        after = line.split(" - ", 1)[1]
+                        fs_parts = after.split()
+                        fs_type = fs_parts[0] if fs_parts else ""
+                        source = fs_parts[1] if len(fs_parts) > 1 else ""
+                        # Docker Desktop macOS: fakeowner fs, source=/run/host_mark/X
+                        # real host path = source + root_subpath, strip /run/host_mark
+                        if fs_type == "fakeowner" and "/run/host_mark" in source:
+                            candidate = source.replace("/run/host_mark", "", 1) + root_subpath
+                            if candidate.startswith("/"):
+                                return candidate
+                        # Standard Linux bind mount: source IS the host path
+                        if source.startswith("/") and source != base_dir:
+                            return source
+        except Exception:
+            pass
+    return os.environ.get("BASE_CODE_HOST_DIR", "").strip() or None
+
+
 def get_source_availability() -> SourceAvailability:
     base_dir = os.environ.get("BASE_CODE_DIR", "").strip() or None
-    base_host_dir = os.environ.get("BASE_CODE_HOST_DIR", "").strip() or None
+    base_host_dir = _detect_base_host_dir(base_dir) if base_dir else None
     return SourceAvailability(
         github=bool(os.environ.get("GITHUB_TOKEN", "").strip()),
         gitlab=bool(os.environ.get("GITLAB_TOKEN", "").strip()),

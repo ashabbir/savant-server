@@ -135,6 +135,126 @@ class GraphifyDB:
             release_connection(conn)
 
     @staticmethod
+    def clear_workspace(workspace_id: str) -> None:
+        """Deletes all nodes and edges for a workspace. Used to begin a chunked upload."""
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM graphify_edges WHERE workspace_id = %s", (workspace_id,))
+                cur.execute("DELETE FROM graphify_nodes WHERE workspace_id = %s", (workspace_id,))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            release_connection(conn)
+
+    @staticmethod
+    def import_chunk(workspace_id: str, nodes: list, edges: list, node_ids_so_far: set = None) -> dict:
+        """Inserts a batch of nodes and/or edges without clearing the workspace first.
+        Returns the set of node_ids inserted in this chunk so the caller can track them.
+        """
+        conn = get_connection()
+        inserted_nodes = 0
+        inserted_edges = 0
+        new_node_ids = set()
+        now = _now()
+        try:
+            with conn.cursor() as cur:
+                for node in nodes:
+                    nid = str(node.get("id") or node.get("node_id") or "")
+                    if not nid:
+                        continue
+                    title = str(node.get("title") or node.get("label") or node.get("name") or nid)
+                    ntype = str(node.get("type") or node.get("node_type") or "")
+                    if not ntype:
+                        if any(title.endswith(ext) for ext in [".js", ".jsx", ".ts", ".tsx", ".py", ".json", ".css", ".md", ".html", ".sh", ".yml", ".yaml"]):
+                            ntype = "file"
+                        elif title.endswith("()"):
+                            ntype = "function"
+                        elif title.isupper() and "_" in title:
+                            ntype = "constant"
+                        elif title[0].isupper() if title else False:
+                            ntype = "class"
+                        else:
+                            ntype = "variable"
+                    content = str(node.get("content") or node.get("description") or "")
+                    metadata = node.get("metadata")
+                    if not isinstance(metadata, dict):
+                        metadata = {}
+                    for k, v in node.items():
+                        if k not in ["id", "node_id", "type", "node_type", "title", "label", "name", "content", "description", "metadata"]:
+                            metadata[k] = v
+                    cur.execute(
+                        """INSERT INTO graphify_nodes
+                           (node_id, workspace_id, node_type, title, content, metadata, created_at, updated_at)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                           ON CONFLICT (workspace_id, node_id) DO UPDATE SET
+                           node_type = EXCLUDED.node_type, title = EXCLUDED.title,
+                           content = EXCLUDED.content, metadata = EXCLUDED.metadata,
+                           updated_at = EXCLUDED.updated_at""",
+                        (nid, workspace_id, ntype, title, content, json.dumps(metadata), now, now),
+                    )
+                    new_node_ids.add(nid)
+                    inserted_nodes += 1
+
+                known_ids = (node_ids_so_far or set()) | new_node_ids
+                edge_counter = 0
+                for edge in edges:
+                    source = str(edge.get("source") or edge.get("source_id") or "")
+                    target = str(edge.get("target") or edge.get("target_id") or "")
+                    if not source or not target or source not in known_ids or target not in known_ids:
+                        continue
+                    eid = str(edge.get("id") or edge.get("edge_id") or "")
+                    etype = str(edge.get("type") or edge.get("edge_type") or edge.get("relation") or "depends_on")
+                    weight = float(edge.get("weight") or 1.0)
+                    label = str(edge.get("label") or etype)
+                    if not eid:
+                        edge_counter += 1
+                        eid = f"gfe_{workspace_id}_{edge_counter}_{now}"
+                    cur.execute(
+                        """INSERT INTO graphify_edges
+                           (edge_id, workspace_id, source_id, target_id, edge_type, weight, label, created_at)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                           ON CONFLICT (workspace_id, source_id, target_id, edge_type) DO UPDATE SET
+                           weight = EXCLUDED.weight, label = EXCLUDED.label""",
+                        (eid, workspace_id, source, target, etype, weight, label, now),
+                    )
+                    inserted_edges += 1
+
+            conn.commit()
+            return {"nodes_inserted": inserted_nodes, "edges_inserted": inserted_edges, "node_ids": list(new_node_ids)}
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            release_connection(conn)
+
+    @staticmethod
+    def finalize_import(workspace_id: str, meta_data: dict = None) -> dict:
+        """Saves optional metadata and returns final node/edge counts after a chunked upload."""
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                if meta_data and isinstance(meta_data, dict):
+                    cur.execute(
+                        """INSERT INTO meta (key, value) VALUES (%s, %s)
+                           ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value""",
+                        (f"graphify_meta_{workspace_id}", json.dumps(meta_data))
+                    )
+                cur.execute("SELECT COUNT(*) as cnt FROM graphify_nodes WHERE workspace_id = %s", (workspace_id,))
+                nodes_imported = cur.fetchone()["cnt"]
+                cur.execute("SELECT COUNT(*) as cnt FROM graphify_edges WHERE workspace_id = %s", (workspace_id,))
+                edges_imported = cur.fetchone()["cnt"]
+            conn.commit()
+            return {"status": "success", "nodes_imported": nodes_imported, "edges_imported": edges_imported}
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            release_connection(conn)
+
+    @staticmethod
     def get_stats(workspace_id: str) -> dict:
         """Returns node and edge counts grouped by node_type and edge_type for the workspace."""
         if not workspace_id:

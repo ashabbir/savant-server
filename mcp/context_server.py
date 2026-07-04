@@ -227,6 +227,9 @@ def code_research(
 ) -> dict:
     """Perform a comprehensive code research task by searching source code, structure, memory banks, and codebase graphs.
 
+    HINT: If you don't know where to start or are unfamiliar with the codebase, start here first.
+    This tool fans out across all search types and gives you the broadest orientation in one call.
+
     query: The search term or concept to research.
     repo: Optional repository name to limit research within.
     limit: Maximum results per search type (default: 10).
