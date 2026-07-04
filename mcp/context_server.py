@@ -1,6 +1,6 @@
 """Context MCP server — FastMCP SSE bridge on port 8093.
 
-Proxies 6 tools to the Flask /api/context/* REST API.
+Proxies 10 tools to the Flask /api/context/* REST API.
 Follows the same pattern as workspace (8091) and abilities (8092) servers.
 
 Tools:
@@ -12,6 +12,7 @@ Tools:
   memory_resources_read — Read a specific memory bank resource by URI
   repos_list           — List indexed repos with README excerpts
   repo_status          — Per-repo index status counts
+  research             — Preferred AI-facing tool for broad code exploration
 """
 
 import argparse
@@ -50,7 +51,7 @@ mcp = FastMCP(
         "  - code_search(query, repo): Semantic search across source code.\n"
         "  - structure_search(query): AST structural match (find classes, functions).\n"
         "  - code_graph_search(query, repo): Look up codebase graph imports, callers, and class dependencies.\n"
-        "  - code_research(query, repo): Runs code, structure, memory, and graph searches together.\n"
+        "  - research(query, repo): Preferred AI-facing tool that runs code, structure, memory, and code graph searches together.\n"
         "  - memory_bank_search(query, repo): Semantic search within local repository memory bank markdown files.\n"
         "  - analyze_code(name, repo, path...): Get before/after complexity metrics.\n"
         "All tools accept a 'repo' filter to scope lookup to a specific repository."
@@ -81,7 +82,7 @@ def _post(path: str, json: dict = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 6 MCP Tools (same signatures as standalone savant-context)
+# 10 MCP Tools (same signatures as standalone savant-context)
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
@@ -220,7 +221,7 @@ def get_code_graph_stats(
 
 
 @mcp.tool()
-def code_research(
+def research(
     query: str,
     repo: str = None,
     limit: int = 10,
@@ -277,6 +278,10 @@ def code_research(
     results["code_graph_search"] = graph_results
 
     return results
+
+
+# Backward-compatible Python alias. Do not expose as an MCP tool.
+code_research = research
 
 
 # ---------------------------------------------------------------------------

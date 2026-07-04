@@ -85,13 +85,13 @@
     "semantic_hash": ""
   },
   "app.py": {
-    "mtime": 1781921603.6460865,
-    "ast_hash": "fa5ea09c152e5b66bce52f515b21258a",
+    "mtime": 1783172893.0838125,
+    "ast_hash": "9e61d92ea9bdaacd178f7fa2b4509ae1",
     "semantic_hash": ""
   },
   "build-and-push.sh": {
-    "mtime": 1782179864.0455253,
-    "ast_hash": "b482f203974afc4bf65e13ad1df00393",
+    "mtime": 1783172893.0838542,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
     "semantic_hash": ""
   },
   "build.sh": {
@@ -135,8 +135,8 @@
     "semantic_hash": ""
   },
   "context/ingestion.py": {
-    "mtime": 1780180835.9427967,
-    "ast_hash": "5bf45bc3a2edebd175b8467ba20e0977",
+    "mtime": 1783172893.084341,
+    "ast_hash": "9a1516b609be2b6b84880c6e989011b3",
     "semantic_hash": ""
   },
   "context/job_worker.py": {
@@ -150,8 +150,8 @@
     "semantic_hash": ""
   },
   "context/routes.py": {
-    "mtime": 1781659819.2781522,
-    "ast_hash": "2d0b1ab5ba322ea7280d73e33b8b7027",
+    "mtime": 1783172893.0844417,
+    "ast_hash": "512894f7735b09d915d6eef2d9dfeadf",
     "semantic_hash": ""
   },
   "context/walker.py": {
@@ -175,8 +175,8 @@
     "semantic_hash": ""
   },
   "db/graphify.py": {
-    "mtime": 1781659998.3658369,
-    "ast_hash": "750864a12f2aec11108d85f4729085fd",
+    "mtime": 1783172893.084527,
+    "ast_hash": "0d9b31f59ca59e1c49e0621ce5c0b8e0",
     "semantic_hash": ""
   },
   "db/jira_tickets.py": {
@@ -240,8 +240,8 @@
     "semantic_hash": ""
   },
   "dev-start.sh": {
-    "mtime": 1780180835.9463353,
-    "ast_hash": "ef88e994a1ecb7244e48dad8896474a8",
+    "mtime": 1783173080.6433747,
+    "ast_hash": "d118c9eeebc908161d5832a0ede1286a",
     "semantic_hash": ""
   },
   "docker-entrypoint.sh": {
@@ -255,8 +255,8 @@
     "semantic_hash": ""
   },
   "graphify/routes.py": {
-    "mtime": 1781646854.9954267,
-    "ast_hash": "57b0715f9246a4b8854be3966ad4122b",
+    "mtime": 1783172893.0848548,
+    "ast_hash": "8a40e1e151064e725b43b0e633e076fa",
     "semantic_hash": ""
   },
   "hardening.py": {
@@ -290,8 +290,8 @@
     "semantic_hash": ""
   },
   "mcp/context_server.py": {
-    "mtime": 1781661914.0959709,
-    "ast_hash": "8949f892d5bfc504f2dc46e5b8fbea3a",
+    "mtime": 1783174255.6592667,
+    "ast_hash": "2bccce71f49c89b0acc7274f4310cef8",
     "semantic_hash": ""
   },
   "mcp/knowledge_server.py": {
@@ -315,13 +315,13 @@
     "semantic_hash": ""
   },
   "models.py": {
-    "mtime": 1780180835.9734633,
-    "ast_hash": "a186952c2cb562e001a599567df3a583",
+    "mtime": 1783172893.0851555,
+    "ast_hash": "0debac34d65ff92e758f5784000362ed",
     "semantic_hash": ""
   },
   "postgres_client.py": {
-    "mtime": 1781659434.1630633,
-    "ast_hash": "8e20781c3fd6ae5cf8908129e462903e",
+    "mtime": 1783172893.0852382,
+    "ast_hash": "aed3fec6a9d81ddf30d330221f0dd69c",
     "semantic_hash": ""
   },
   "reminders/__init__.py": {
@@ -405,8 +405,8 @@
     "semantic_hash": ""
   },
   "tests/test_context_repo_ingestion.py": {
-    "mtime": 1781542944.35966,
-    "ast_hash": "80290150fadc8cfb20e1451c608ea826",
+    "mtime": 1783172893.085508,
+    "ast_hash": "0997aa9f711f83eda91fb72fc2446f1c",
     "semantic_hash": ""
   },
   "tests/test_cr7.py": {
@@ -695,8 +695,8 @@
     "semantic_hash": ""
   },
   "CLAUDE.md": {
-    "mtime": 1780180835.9405458,
-    "ast_hash": "f7314c14e071b9030a4e3d87af350db1",
+    "mtime": 1783172893.0837085,
+    "ast_hash": "420b3f3064c4999d950d60a265784119",
     "semantic_hash": ""
   },
   "data/abilities/personas/architect.md": {
@@ -750,8 +750,8 @@
     "semantic_hash": ""
   },
   "docker-compose.yml": {
-    "mtime": 1782179861.4166884,
-    "ast_hash": "405499bbc66f47fd1e9d114ec0578819",
+    "mtime": 1783173490.753148,
+    "ast_hash": "c3e466fef0757bf7871e1545271ebb4b",
     "semantic_hash": ""
   },
   "mcp/requirements.txt": {
@@ -782,6 +782,11 @@
   "requirements.txt": {
     "mtime": 1780762043.5192552,
     "ast_hash": "122e32469ec4bee319126e0ee90447e3",
+    "semantic_hash": ""
+  },
+  "scripts/migrate_sqlite_to_postgres.py": {
+    "mtime": 1783172893.085404,
+    "ast_hash": "56613d75d97429375b122fc0ac858fb3",
     "semantic_hash": ""
   }
 }

@@ -27,8 +27,8 @@ services:
       - "8095:8095"
     environment:
       RUNNING_IN_DOCKER: 'true'
-      # Points at savant-db-new (the real DB on port 5433) — never change this to a compose-managed DB
-      SAVANT_DATABASE_URL: postgresql://savant_user:savant_secure_password@host.docker.internal:5433/savant
+      # Points at the existing savant-db container running on the host network.
+      SAVANT_DATABASE_URL: postgresql://savant_user:savant_secure_password@savant-db:5432/savant
       SAVANT_ABILITIES_SEED_DIR: /app/migrations/data
       HOME: /data/savant
       HF_HOME: /data/savant/hf
