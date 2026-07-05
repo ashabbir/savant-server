@@ -148,67 +148,6 @@ def import_commit():
         logger.error(f"Failed to commit chunked import: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
-    """Start a chunked upload session. Clears existing data for the workspace."""
-    try:
-        data = request.get_json(force=True) or {}
-        workspace_id = data.get("workspace_id")
-        if not workspace_id:
-            return jsonify({"error": "workspace_id is required"}), 400
-        upload_id = str(uuid.uuid4())
-        _upload_sessions[upload_id] = {"workspace_id": workspace_id, "node_ids": set()}
-        GraphifyDB.clear_workspace(workspace_id)
-        return jsonify({"upload_id": upload_id}), 200
-    except Exception as e:
-        logger.error(f"Failed to begin chunked import: {e}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
-
-
-@graphify_bp.route("/api/graphify/import/chunk", methods=["POST"])
-def import_chunk():
-    """Upload a batch of nodes and/or edges for an active chunked upload session."""
-    try:
-        data = request.get_json(force=True) or {}
-        upload_id = data.get("upload_id")
-        if not upload_id or upload_id not in _upload_sessions:
-            return jsonify({"error": "invalid or expired upload_id"}), 400
-
-        session = _upload_sessions[upload_id]
-        workspace_id = session["workspace_id"]
-        nodes = data.get("nodes", [])
-        edges = data.get("edges", [])
-
-        result = GraphifyDB.import_chunk(workspace_id, nodes, edges, node_ids_so_far=session["node_ids"])
-        session["node_ids"].update(result.get("node_ids", []))
-
-        return jsonify({
-            "nodes_inserted": result["nodes_inserted"],
-            "edges_inserted": result["edges_inserted"],
-            "total_node_ids": len(session["node_ids"])
-        }), 200
-    except Exception as e:
-        logger.error(f"Failed to import chunk: {e}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
-
-
-@graphify_bp.route("/api/graphify/import/commit", methods=["POST"])
-def import_commit():
-    """Finalize a chunked upload session and return total counts."""
-    try:
-        data = request.get_json(force=True) or {}
-        upload_id = data.get("upload_id")
-        if not upload_id or upload_id not in _upload_sessions:
-            return jsonify({"error": "invalid or expired upload_id"}), 400
-
-        session = _upload_sessions.pop(upload_id)
-        workspace_id = session["workspace_id"]
-        meta_data = data.get("meta")
-
-        result = GraphifyDB.finalize_import(workspace_id, meta_data)
-        return jsonify(result), 200
-    except Exception as e:
-        logger.error(f"Failed to commit chunked import: {e}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
-
 @graphify_bp.route("/api/graphify/stats", methods=["GET"])
 def get_stats():
     try:

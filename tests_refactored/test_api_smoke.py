@@ -106,6 +106,87 @@ def test_mcp_health_endpoint_shape():
     assert "status" in data
 
 
+def test_mcp_tools_endpoint_lists_servers(monkeypatch):
+    c = _client()
+
+    def fake_list_mcp_tools(server_name=None):
+        rows = [
+            {
+                "name": "workspace",
+                "url": "http://127.0.0.1:8091/sse",
+                "port": 8091,
+                "status": "ok",
+                "tool_count": 2,
+                "tools": [{"name": "list_workspaces"}, {"name": "create_workspace"}],
+            },
+            {
+                "name": "abilities",
+                "url": "http://127.0.0.1:8092/sse",
+                "port": 8092,
+                "status": "ok",
+                "tool_count": 1,
+                "tools": [{"name": "list_personas"}],
+            },
+        ]
+        if server_name:
+            return [row for row in rows if row["name"] == server_name]
+        return rows
+
+    monkeypatch.setattr("app._list_mcp_tools", fake_list_mcp_tools)
+
+    r = c.get("/api/mcp/tools")
+    assert r.status_code == 200
+    data = r.get_json()
+    assert [s["name"] for s in data["servers"]] == ["workspace", "abilities"]
+    assert data["servers"][0]["tool_count"] == 2
+    assert data["servers"][0]["tools"][0]["name"] == "list_workspaces"
+
+
+def test_mcp_tools_endpoint_filters_single_server(monkeypatch):
+    c = _client()
+
+    monkeypatch.setattr("app._list_mcp_tools", lambda server_name=None: [
+        {"name": "workspace", "tools": [{"name": "list_workspaces"}]},
+    ] if not server_name or server_name == "workspace" else [])
+
+    r = c.get("/api/mcp/tools?server=workspace")
+    assert r.status_code == 200
+    data = r.get_json()
+    assert [s["name"] for s in data["servers"]] == ["workspace"]
+
+
+def test_mcp_tool_endpoint_returns_single_server(monkeypatch):
+    c = _client()
+
+    monkeypatch.setattr("app._list_mcp_tools", lambda server_name=None: [
+        {
+            "name": "workspace",
+            "url": "http://127.0.0.1:8091/sse",
+            "port": 8091,
+            "status": "ok",
+            "tool_count": 2,
+            "tools": [{"name": "list_workspaces"}, {"name": "create_workspace"}],
+        }
+    ] if server_name in (None, "workspace") else [])
+
+    r = c.get("/api/mcp/tools/workspace")
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["server"]["name"] == "workspace"
+    assert data["server"]["tool_count"] == 2
+    assert data["server"]["tools"][1]["name"] == "create_workspace"
+
+
+def test_mcp_tool_endpoint_returns_404_for_missing_server(monkeypatch):
+    c = _client()
+    monkeypatch.setattr("app._list_mcp_tools", lambda server_name=None: [])
+
+    r = c.get("/api/mcp/tools/unknown")
+    assert r.status_code == 404
+    data = r.get_json()
+    assert data["server"] == "unknown"
+
+
 def test_abilities_bootstrap_endpoint_seeds_when_empty(monkeypatch, tmp_path):
     data_dir = tmp_path / "data"
     seed_dir = tmp_path / "seed"

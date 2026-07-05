@@ -92,6 +92,12 @@ Seed data is embedded in `abilities/bootstrap.py`. On first startup, abilities a
 - `GET /health/live` — process alive
 - `GET /health/ready` — DB initialized, abilities bootstrapped
 
+### Version Info
+
+- `GET /version` or `GET /api/version` — returns the server build version, branch, commit, and build timestamp
+- Version is read from `build-info.json`
+- `GET /health/live` and `GET /health/ready` also include the same build version in their JSON response
+
 ## Docker Isolation (API-only mode)
 
 - `SAVANT_API_ONLY=1`: non-API routes return 404

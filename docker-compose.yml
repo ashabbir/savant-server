@@ -1,4 +1,23 @@
 services:
+  savant-db:
+    image: pgvector/pgvector:pg16
+    container_name: savant-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: savant_user
+      POSTGRES_PASSWORD: savant_secure_password
+      POSTGRES_DB: savant
+    ports:
+      - "5432:5432"
+    volumes:
+      - ${SAVANT_DB_DIR:-~/.savant/db-data}:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U savant_user -d savant"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
   savant-server:
     build:
       context: .
@@ -27,7 +46,7 @@ services:
       - "8095:8095"
     environment:
       RUNNING_IN_DOCKER: 'true'
-      # Points at the existing savant-db container running on the host network.
+      # Points at the compose-managed savant-db container.
       SAVANT_DATABASE_URL: postgresql://savant_user:savant_secure_password@savant-db:5432/savant
       SAVANT_ABILITIES_SEED_DIR: /app/migrations/data
       HOME: /data/savant

@@ -2,6 +2,7 @@ import os
 import json
 import re
 import time
+import asyncio
 import uuid
 import logging
 import hashlib
@@ -428,7 +429,7 @@ def enforce_api_only_mode():
     if not _API_ONLY_MODE:
         return None
     p = request.path or "/"
-    if p.startswith("/api/") or p in {"/health/live", "/health/ready"}:
+    if p.startswith("/api/") or p in {"/version", "/health/live", "/health/ready"}:
         return None
     abort(404)
 
@@ -941,6 +942,75 @@ def api_mcp():
             for name, details in (info.get("mcp_servers") or {}).items()
         ],
     })
+
+
+async def _fetch_mcp_tools(url: str) -> list[dict]:
+    """Connect to a live MCP SSE server and return its tool inventory."""
+    from mcp.client.session import ClientSession
+    from mcp.client.sse import sse_client
+
+    async with sse_client(url) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            result = await session.list_tools()
+            return [tool.model_dump(mode="json", exclude_none=True) for tool in (result.tools or [])]
+
+
+def _list_mcp_tools(server_name: str | None = None) -> list[dict]:
+    info = api_system_info().get_json() if hasattr(api_system_info(), "get_json") else {}
+    servers = (info.get("mcp_servers") or {}).items()
+    if server_name:
+        server_name = server_name.strip().lower()
+        servers = [(name, details) for name, details in servers if name == server_name]
+
+    async def _gather():
+        async def _one(name: str, details: dict) -> dict:
+            url = details.get("url") or ""
+            status = details.get("status") or "offline"
+            port = details.get("port")
+            try:
+                tools = await _fetch_mcp_tools(url)
+                status = "ok"
+                return {
+                    "name": name,
+                    "url": url,
+                    "port": port,
+                    "status": status,
+                    "tool_count": len(tools),
+                    "tools": tools,
+                }
+            except Exception as exc:
+                return {
+                    "name": name,
+                    "url": url,
+                    "port": port,
+                    "status": "error",
+                    "error": str(exc),
+                    "tools": [],
+                }
+
+        return await asyncio.gather(*(_one(name, details) for name, details in servers))
+
+    return asyncio.run(_gather())
+
+
+@app.route("/api/mcp/tools")
+def api_mcp_tools():
+    server_name = request.args.get("server", "").strip() or None
+    return jsonify({
+        "servers": _list_mcp_tools(server_name),
+    })
+
+
+@app.route("/api/mcp/tools/<server_name>")
+def api_mcp_tool(server_name: str):
+    server_name = str(server_name or "").strip()
+    if not server_name:
+        return jsonify({"error": "server_name is required"}), 400
+    servers = _list_mcp_tools(server_name)
+    if not servers:
+        return jsonify({"error": "MCP server not found", "server": server_name}), 404
+    return jsonify({"server": servers[0]})
 
 
 @app.route("/api/check-mcp")
@@ -2361,11 +2431,34 @@ def api_preferences_update():
     return jsonify(data)
 
 
+def _get_build_info() -> dict:
+    build_info_path = Path(__file__).resolve().parent / "build-info.json"
+    if not build_info_path.exists():
+        return {}
+    try:
+        return json.loads(build_info_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+@app.route("/version", methods=["GET"])
+@app.route("/api/version", methods=["GET"])
+def api_version():
+    build_info = _get_build_info()
+    return jsonify({
+        "version": build_info.get("version") or "unknown",
+        "branch": build_info.get("branch") or "unknown",
+        "commit": build_info.get("commit") or "",
+        "built_at": build_info.get("built_at"),
+    })
+
+
 # ── Health Checks ─────────────────────────────────────────────────────────────
 
 @app.route("/health/live", methods=["GET"])
 def health_live():
-    return jsonify({"status": "ok", "version": "2"})
+    build_info = _get_build_info()
+    return jsonify({"status": "ok", "version": build_info.get("version") or "unknown"})
 
 
 @app.route("/health/ready", methods=["GET"])
@@ -2377,9 +2470,11 @@ def health_ready():
         with conn.cursor() as cur:
             cur.execute("SELECT 1")
             cur.fetchone()
-        return jsonify({"status": "ok", "version": "2"})
+        build_info = _get_build_info()
+        return jsonify({"status": "ok", "version": build_info.get("version") or "unknown"})
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e), "version": "2"}), 503
+        build_info = _get_build_info()
+        return jsonify({"status": "error", "message": str(e), "version": build_info.get("version") or "unknown"}), 503
     finally:
         if conn:
             release_connection(conn)

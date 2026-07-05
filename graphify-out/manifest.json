@@ -1,7 +1,7 @@
 {
   "README.md": {
-    "mtime": 1780180970.270373,
-    "ast_hash": "b9b2ffd463caec3a9be6339a535ad8fc",
+    "mtime": 1783174433.204259,
+    "ast_hash": "f34390a1811e36f5c2ccfc9441c5a3eb",
     "semantic_hash": ""
   },
   "/Users/home/code/project-x/savant-gateway/adapters.js": {
@@ -85,13 +85,13 @@
     "semantic_hash": ""
   },
   "app.py": {
-    "mtime": 1783172893.0838125,
-    "ast_hash": "9e61d92ea9bdaacd178f7fa2b4509ae1",
+    "mtime": 1783284847.008302,
+    "ast_hash": "341a4fe7ffceb305c979a53e360056f3",
     "semantic_hash": ""
   },
   "build-and-push.sh": {
-    "mtime": 1783172893.0838542,
-    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "mtime": 1783174982.7539089,
+    "ast_hash": "004b30e793865a738470468f51b94466",
     "semantic_hash": ""
   },
   "build.sh": {
@@ -255,8 +255,8 @@
     "semantic_hash": ""
   },
   "graphify/routes.py": {
-    "mtime": 1783172893.0848548,
-    "ast_hash": "8a40e1e151064e725b43b0e633e076fa",
+    "mtime": 1783176440.7467558,
+    "ast_hash": "85343bd483cc1bfed43835697a95e9c5",
     "semantic_hash": ""
   },
   "hardening.py": {
@@ -275,8 +275,8 @@
     "semantic_hash": ""
   },
   "mcp-config.json": {
-    "mtime": 1781661012.190691,
-    "ast_hash": "ed07cc1f5bb9c04dcb7d6eb713aadcb3",
+    "mtime": 1783176706.4017868,
+    "ast_hash": "559748d44b8105b2729f24094f87bbe5",
     "semantic_hash": ""
   },
   "mcp/abilities_server.py": {
@@ -305,8 +305,8 @@
     "semantic_hash": ""
   },
   "mcp/server.py": {
-    "mtime": 1781921420.9533257,
-    "ast_hash": "5ed62401208ad52211d4774c0212a8b7",
+    "mtime": 1783177376.4005427,
+    "ast_hash": "c7e3c84221f650f06f214adb679a8ef6",
     "semantic_hash": ""
   },
   "mcp/stdio.py": {
@@ -495,8 +495,8 @@
     "semantic_hash": ""
   },
   "tests/test_mcp_assign_session_provider.py": {
-    "mtime": 1781921681.9111788,
-    "ast_hash": "47bf7663a511bcff357a35c3703f989a",
+    "mtime": 1783177384.224518,
+    "ast_hash": "a3e0d0677a04861b024deeb228fc3bf3",
     "semantic_hash": ""
   },
   "tests/test_mcp_sse_integration.py": {
@@ -635,8 +635,8 @@
     "semantic_hash": ""
   },
   "tests_refactored/test_api_smoke.py": {
-    "mtime": 1780180836.6355042,
-    "ast_hash": "00d10a7e6ffc70c6924a6e9b7134a1dc",
+    "mtime": 1783284858.6382592,
+    "ast_hash": "852927df55f5fca58666a8b6fca25593",
     "semantic_hash": ""
   },
   "tests_refactored/test_db_base_core.py": {
@@ -695,8 +695,8 @@
     "semantic_hash": ""
   },
   "CLAUDE.md": {
-    "mtime": 1783172893.0837085,
-    "ast_hash": "420b3f3064c4999d950d60a265784119",
+    "mtime": 1783174433.2051744,
+    "ast_hash": "4ad8e1592a4cea3f04b8c75486edb283",
     "semantic_hash": ""
   },
   "data/abilities/personas/architect.md": {
@@ -750,8 +750,8 @@
     "semantic_hash": ""
   },
   "docker-compose.yml": {
-    "mtime": 1783173490.753148,
-    "ast_hash": "c3e466fef0757bf7871e1545271ebb4b",
+    "mtime": 1783176337.1434424,
+    "ast_hash": "6ce28446e867e0a72933a8c50daeb2ef",
     "semantic_hash": ""
   },
   "mcp/requirements.txt": {
@@ -787,6 +787,11 @@
   "scripts/migrate_sqlite_to_postgres.py": {
     "mtime": 1783172893.085404,
     "ast_hash": "56613d75d97429375b122fc0ac858fb3",
+    "semantic_hash": ""
+  },
+  "releases/v12.0.0.md": {
+    "mtime": 1783174444.473329,
+    "ast_hash": "12d4cf76372fded6d862c8e9393580f5",
     "semantic_hash": ""
   }
 }

@@ -114,7 +114,7 @@ SESSION_ID_HELP = (
 )
 
 
-def _detect_session_provider(session_id: str) -> str:
+def _detect_session_provider(session_id: str) -> str | None:
     """Best-effort provider detection for an explicitly supplied session ID."""
     sid = (session_id or "").strip()
     env_provider_pairs = (
@@ -128,7 +128,7 @@ def _detect_session_provider(session_id: str) -> str:
             env_value = (os.environ.get(env_name) or "").strip()
             if env_value and env_value == sid:
                 return provider
-    return "copilot"
+    return None
 
 
 def _require_session_id(session_id: str) -> str:
@@ -170,8 +170,10 @@ def get_current_workspace(session_id: str = "") -> dict[str, Any]:
     sid = _require_session_id(session_id)
     ws_id = None
 
-    # First check workspace_session_links table (works for all providers)
-    for provider in ("copilot", "claude", "codex", "gemini", "savant"):
+    # First check workspace_session_links table. If we can infer a provider,
+    # try it first, but never require provider detection for the lookup.
+    provider_order = [p for p in (_detect_session_provider(sid), "copilot", "claude", "codex", "gemini", "savant") if p]
+    for provider in dict.fromkeys(provider_order):
         try:
             resp = requests.get(
                 f"{API_BASE}/api/session-links/resolve",

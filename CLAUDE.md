@@ -89,6 +89,7 @@ Config: `mcp_servers.toml` / `mcp-config.json`
 - **Knowledge graph staging:** Nodes created via `store()` are staged; call `commit_workspace(workspace_id)` to publish.
 - **Abilities assets:** Markdown files with YAML frontmatter in `<data>/abilities/{personas,rules,policies,styles,repos}/`. Use `resolver.py` to compose prompts.
 - **Semantic search:** `context/embeddings.py` wraps stsb-distilbert (768-dim). Embeddings stored in pgvector. Use `ContextDB` for search.
+- **Versioning:** `build-info.json` is the source of truth for the server build version. `GET /version` and `GET /api/version` return `version`, `branch`, `commit`, and `built_at`. `GET /health/live` and `GET /health/ready` also echo the build version.
 
 ## Adding a new feature
 
