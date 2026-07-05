@@ -12,8 +12,6 @@ Example:
 import os
 import sys
 import subprocess
-import re
-from pathlib import Path
 
 # Map of server names to their filenames
 SERVERS = {
@@ -25,54 +23,9 @@ SERVERS = {
 }
 
 
-def _discover_savant_api_base() -> str | None:
-    """Best-effort discovery of the running Savant Flask URL for stdio launches."""
-    if os.environ.get("SAVANT_API_BASE"):
-        return os.environ["SAVANT_API_BASE"]
-
-    try:
-        pgrep = subprocess.run(
-            ["pgrep", "-f", r"savant/app\.py|Contents/Resources/savant/app\.py"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        pids = [line.strip() for line in pgrep.stdout.splitlines() if line.strip()]
-        for pid in reversed(pids):
-            lsof = subprocess.run(
-                ["lsof", "-nP", "-a", "-p", pid, "-iTCP", "-sTCP:LISTEN"],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            for line in lsof.stdout.splitlines():
-                match = re.search(r"127\.0\.0\.1:(\d+)\s+\(LISTEN\)", line)
-                if match:
-                    return f"http://127.0.0.1:{match.group(1)}"
-    except Exception:
-        pass
-
-    log_path = Path.home() / "Library" / "Application Support" / "savant" / "savant-main.log"
-    if not log_path.exists():
-        return None
-
-    try:
-        with log_path.open("r", encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()[-4000:]
-    except Exception:
-        return None
-
-    patterns = [
-        re.compile(r"Flask ready .* on port (\d+)"),
-        re.compile(r"Flask port allocated: (\d+)"),
-    ]
-
-    for line in reversed(lines):
-        for pattern in patterns:
-            match = pattern.search(line)
-            if match:
-                return f"http://127.0.0.1:{match.group(1)}"
-    return None
+def _discover_savant_api_base() -> str:
+    """Return the Docker-exposed Savant API base unless explicitly overridden."""
+    return os.environ.get("SAVANT_API_BASE", "http://127.0.0.1:8090")
 
 def main():
     if len(sys.argv) < 2:

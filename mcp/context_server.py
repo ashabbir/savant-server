@@ -1,18 +1,20 @@
 """Context MCP server — FastMCP SSE bridge on port 8093.
 
-Proxies 10 tools to the Flask /api/context/* REST API.
+Proxies 11 tools to the Flask /api/context/* and /api/graphify/* REST APIs.
 Follows the same pattern as workspace (8091) and abilities (8092) servers.
 
 Tools:
-  code_search          — Semantic search across indexed repo code
-  structure_search     — AST structure search for classes, functions
-  analyze_code         — Analyze a class/file before and after changes
-  memory_bank_search   — Semantic search within memory bank markdown files
+  code_search           — Semantic search across indexed repo code
+  structure_search      — AST structure search for classes, functions
+  analyze_code          — Analyze a class/file before and after changes
+  memory_bank_search    — Semantic search within memory bank markdown files
   memory_resources_list — List all memory bank resources (optional repo filter)
   memory_resources_read — Read a specific memory bank resource by URI
-  repos_list           — List indexed repos with README excerpts
-  repo_status          — Per-repo index status counts
-  research             — Preferred AI-facing tool for broad code exploration
+  repos_list            — List indexed repos with README excerpts
+  repo_status           — Per-repo index status counts
+  code_graph_search     — Search Graphify relationships and dependencies
+  get_code_graph_stats  — Graphify node/edge counts by type
+  research              — Preferred AI-facing tool for broad code exploration
 """
 
 import argparse
@@ -50,10 +52,15 @@ mcp = FastMCP(
         "Tools:\n"
         "  - code_search(query, repo): Semantic search across source code.\n"
         "  - structure_search(query): AST structural match (find classes, functions).\n"
+        "  - analyze_code(repo, path, uri, name, class_name, symbol, node_type, diff, code): Analyze a class/file before and after changes.\n"
         "  - code_graph_search(query, repo): Look up codebase graph imports, callers, and class dependencies.\n"
+        "  - get_code_graph_stats(repo): Get Graphify node and edge counts by type.\n"
         "  - research(query, repo): Preferred AI-facing tool that runs code, structure, memory, and code graph searches together.\n"
         "  - memory_bank_search(query, repo): Semantic search within local repository memory bank markdown files.\n"
-        "  - analyze_code(name, repo, path...): Get before/after complexity metrics.\n"
+        "  - memory_resources_list(repo): List memory bank resources.\n"
+        "  - memory_resources_read(uri): Read a specific memory bank resource by URI.\n"
+        "  - repos_list(filter): List indexed repos with README excerpts.\n"
+        "  - repo_status(): List per-repo index status counts.\n"
         "All tools accept a 'repo' filter to scope lookup to a specific repository."
     ),
     host=_args.host,
@@ -82,7 +89,7 @@ def _post(path: str, json: dict = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 10 MCP Tools (same signatures as standalone savant-context)
+# MCP Tools (same signatures as standalone savant-context)
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
