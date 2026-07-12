@@ -85,13 +85,13 @@
     "semantic_hash": ""
   },
   "app.py": {
-    "mtime": 1783285008.0978713,
-    "ast_hash": "c471204cf54c8d141b1bf171b65b318e",
+    "mtime": 1783864625.7009099,
+    "ast_hash": "902dbc1ae3b55489e2e28118077a5761",
     "semantic_hash": ""
   },
   "build-and-push.sh": {
-    "mtime": 1783174982.7539089,
-    "ast_hash": "004b30e793865a738470468f51b94466",
+    "mtime": 1783864625.7010312,
+    "ast_hash": "cbd7ba517720d875ee1348e43e8b5bb3",
     "semantic_hash": ""
   },
   "build.sh": {
@@ -320,8 +320,8 @@
     "semantic_hash": ""
   },
   "postgres_client.py": {
-    "mtime": 1783172893.0852382,
-    "ast_hash": "aed3fec6a9d81ddf30d330221f0dd69c",
+    "mtime": 1783864625.7012,
+    "ast_hash": "f0d57bd8ed680708a3c34150b80f6bb3",
     "semantic_hash": ""
   },
   "reminders/__init__.py": {
@@ -750,8 +750,8 @@
     "semantic_hash": ""
   },
   "docker-compose.yml": {
-    "mtime": 1783176337.1434424,
-    "ast_hash": "6ce28446e867e0a72933a8c50daeb2ef",
+    "mtime": 1783864625.701116,
+    "ast_hash": "2d174e362b0f3a6141037647277d4255",
     "semantic_hash": ""
   },
   "mcp/requirements.txt": {
@@ -792,6 +792,11 @@
   "releases/v12.0.0.md": {
     "mtime": 1783174444.473329,
     "ast_hash": "12d4cf76372fded6d862c8e9393580f5",
+    "semantic_hash": ""
+  },
+  "tests_refactored/test_postgres_schema.py": {
+    "mtime": 1783864625.7013295,
+    "ast_hash": "61e780f11516c0093ba6ef83a590449f",
     "semantic_hash": ""
   }
 }

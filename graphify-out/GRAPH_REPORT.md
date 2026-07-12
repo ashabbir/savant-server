@@ -1,16 +1,16 @@
-# Graph Report - savant-server  (2026-07-05)
+# Graph Report - savant-server  (2026-07-12)
 
 ## Corpus Check
-- 148 files · ~117,690 words
+- 149 files · ~118,072 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 3622 nodes · 5927 edges · 272 communities (177 shown, 95 thin omitted)
+- 3638 nodes · 5961 edges · 269 communities (177 shown, 92 thin omitted)
 - Extraction: 97% EXTRACTED · 3% INFERRED · 0% AMBIGUOUS · INFERRED: 168 edges (avg confidence: 0.52)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `8a2b51d9`
+- Built from commit: `1c858dc6`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -160,7 +160,6 @@
 - [[_COMMUNITY_Community 143|Community 143]]
 - [[_COMMUNITY_Community 144|Community 144]]
 - [[_COMMUNITY_Community 145|Community 145]]
-- [[_COMMUNITY_Community 146|Community 146]]
 - [[_COMMUNITY_Community 147|Community 147]]
 - [[_COMMUNITY_Community 148|Community 148]]
 - [[_COMMUNITY_Community 149|Community 149]]
@@ -200,7 +199,6 @@
 - [[_COMMUNITY_Community 183|Community 183]]
 - [[_COMMUNITY_Community 184|Community 184]]
 - [[_COMMUNITY_Community 185|Community 185]]
-- [[_COMMUNITY_Community 186|Community 186]]
 - [[_COMMUNITY_Community 187|Community 187]]
 - [[_COMMUNITY_Community 188|Community 188]]
 - [[_COMMUNITY_Community 189|Community 189]]
@@ -233,11 +231,9 @@
 - [[_COMMUNITY_Community 216|Community 216]]
 - [[_COMMUNITY_Community 217|Community 217]]
 - [[_COMMUNITY_Community 218|Community 218]]
-- [[_COMMUNITY_Community 219|Community 219]]
 - [[_COMMUNITY_Community 220|Community 220]]
 - [[_COMMUNITY_Community 221|Community 221]]
 - [[_COMMUNITY_Community 222|Community 222]]
-- [[_COMMUNITY_Community 223|Community 223]]
 - [[_COMMUNITY_Community 224|Community 224]]
 - [[_COMMUNITY_Community 225|Community 225]]
 - [[_COMMUNITY_Community 226|Community 226]]
@@ -245,7 +241,6 @@
 - [[_COMMUNITY_Community 228|Community 228]]
 - [[_COMMUNITY_Community 229|Community 229]]
 - [[_COMMUNITY_Community 230|Community 230]]
-- [[_COMMUNITY_Community 231|Community 231]]
 - [[_COMMUNITY_Community 232|Community 232]]
 - [[_COMMUNITY_Community 234|Community 234]]
 - [[_COMMUNITY_Community 235|Community 235]]
@@ -272,8 +267,8 @@
 - [[_COMMUNITY_Community 274|Community 274]]
 
 ## God Nodes (most connected - your core abstractions)
-1. `get_connection()` - 201 edges
-2. `release_connection()` - 200 edges
+1. `get_connection()` - 202 edges
+2. `release_connection()` - 201 edges
 3. `_now()` - 59 edges
 4. `_row_to_dict()` - 51 edges
 5. `_read()` - 51 edges
@@ -284,8 +279,6 @@
 10. `_make()` - 38 edges
 
 ## Surprising Connections (you probably didn't know these)
-- `_Store` --uses--> `Block`  [INFERRED]
-  tests_refactored/test_resolver_core.py → abilities/store.py
 - `Path` --uses--> `AnalysisTarget`  [INFERRED]
   tests/test_context_ast.py → context/analysis.py
 - `Path` --uses--> `ContextDB`  [INFERRED]
@@ -294,27 +287,29 @@
   tests/test_job_queue.py → context/db.py
 - `TestIndexingStatusBackwardCompat` --uses--> `ContextDB`  [INFERRED]
   tests/test_job_queue.py → context/db.py
+- `TestJobDB` --uses--> `ContextDB`  [INFERRED]
+  tests/test_job_queue.py → context/db.py
 
 ## Import Cycles
 - None detected.
 
-## Communities (272 total, 95 thin omitted)
+## Communities (269 total, 92 thin omitted)
 
 ### Community 0 - "Community 0"
-Cohesion: 0.22
-Nodes (3): No-op: task_stats are computed dynamically., Compute task stats dynamically from tasks table., WorkspaceDB
+Cohesion: 0.05
+Nodes (16): No-op: task_stats are computed dynamically., Compute task stats dynamically from tasks table., WorkspaceDB, Regression tests for TaskDB — data layer., Task creation must return task_id, seq, and all fields., Dependency add/remove and enrichment must work correctly., Deletion must remove task and its dependencies., Auto-close: incomplete tasks move forward, done tasks stay. (+8 more)
 
 ### Community 1 - "Community 1"
 Cohesion: 0.04
-Nodes (47): api_claude_session_assign_mr(), api_claude_session_notes(), api_claude_usage(), api_codex_session_assign_mr(), api_codex_session_notes(), api_codex_usage(), api_db_health(), api_environment_info() (+39 more)
+Nodes (48): api_claude_session_assign_jira(), api_claude_session_unassign_jira(), api_claude_session_unassign_mr(), api_claude_usage(), api_codex_session_assign_jira(), api_codex_session_unassign_jira(), api_codex_session_unassign_mr(), api_codex_usage() (+40 more)
 
 ### Community 2 - "Community 2"
 Cohesion: 0.05
 Nodes (19): _create_ticket(), _create_workspace(), Regression tests for Jira ticket REST API endpoints.  Covers: create, get, list,, GET /api/jira-tickets/<key> should resolve by ticket_key., Tickets must survive a re-read (verifies SQLite persistence, not just in-memory), PUT /api/jira-tickets/<key> should resolve by ticket_key., Test the JiraTicketDB class directly (not through Flask routes)., Empty workspace_id must not raise FK constraint error. (+11 more)
 
 ### Community 3 - "Community 3"
-Cohesion: 0.07
-Nodes (32): _now(), Shared database utilities — DRY base for all DB layers., Convert sqlite3.Row → dict with optional JSON deserialization.      Args:, Convert list of sqlite3.Row → list of dicts., UTC timestamp as ISO 8601 string., _row_to_dict(), _rows_to_dicts(), ExperienceDB — PostgreSQL backend for the knowledge/experience layer. (+24 more)
+Cohesion: 0.05
+Nodes (35): _now(), Shared database utilities — DRY base for all DB layers., Convert sqlite3.Row → dict with optional JSON deserialization.      Args:, Convert list of sqlite3.Row → list of dicts., UTC timestamp as ISO 8601 string., _row_to_dict(), _rows_to_dicts(), ExperienceDB — PostgreSQL backend for the knowledge/experience layer. (+27 more)
 
 ### Community 4 - "Community 4"
 Cohesion: 0.07
@@ -341,8 +336,8 @@ Cohesion: 0.08
 Nodes (23): _create_edge(), _create_node(), _create_workspace(), TDD tests for v5.5 Change Request PRD.  Tests written FIRST — expected to fail u, GET /api/knowledge/graph?workspace_id=X should return nodes with that workspace, Workspace graph should include edges between workspace nodes., MCP store with workspace_id should add it to metadata.workspaces., PRD #4/#5: Export KG from workspace, import into another. (+15 more)
 
 ### Community 10 - "Community 10"
-Cohesion: 0.06
-Nodes (22): _coerce_vec(), ContextDB, Any, Context DB layer using PostgreSQL + pgvector.  All context tables use the ctx_ p, Delete all files and chunks for a repo (for reindex)., Delete only chunk/vector data for a repo., Delete only AST data for a repo., Convert a float list to a plain Python list for psycopg2 + pgvector. (+14 more)
+Cohesion: 0.08
+Nodes (17): api_db_health(), health_ready(), _coerce_vec(), ContextDB, Any, Context DB layer using PostgreSQL + pgvector.  All context tables use the ctx_ p, Delete all files and chunks for a repo (for reindex)., Delete only chunk/vector data for a repo. (+9 more)
 
 ### Community 11 - "Community 11"
 Cohesion: 0.05
@@ -353,8 +348,8 @@ Cohesion: 0.07
 Nodes (39): _create_workspace(), integration_client(), Tests for Savant integration into cross-provider aggregation endpoints.  Validat, Workspace notes endpoint should aggregate notes from savant sessions., Session notes should be written with workspace_id so workspace notes can aggrega, Workspace search should find savant sessions by summary., Workspace search should find matching notes inside savant sessions., Workspace search should find savant sessions by project name. (+31 more)
 
 ### Community 13 - "Community 13"
-Cohesion: 0.09
-Nodes (40): Return pgvector version string, or None., vec_version(), _clear_status(), Request cancellation of an in-progress indexing job., request_cancel(), ast_list(), ast_search(), code_list() (+32 more)
+Cohesion: 0.08
+Nodes (41): Return pgvector version string, or None., vec_version(), _clear_status(), Request cancellation of an in-progress indexing job., request_cancel(), analyze(), ast_list(), ast_search() (+33 more)
 
 ### Community 14 - "Community 14"
 Cohesion: 0.10
@@ -365,24 +360,24 @@ Cohesion: 0.08
 Nodes (18): _create_edge(), _create_node(), _get_node(), Tests for knowledge graph node merge feature., Content merging behavior., Edge re-pointing and deduplication., Edges from absorbed nodes to external nodes get re-pointed to survivor., Edges between merged nodes become self-referential and should be removed. (+10 more)
 
 ### Community 16 - "Community 16"
-Cohesion: 0.09
-Nodes (11): api_notes_backfill_workspaces(), Backfill workspace_id on notes using workspace_session_links., NoteDB, No-op: indexes created in schema., Resolve 'T-42' style refs or plain task_id., Attach depends_on list from task_deps table., Batch-enrich a list of tasks with dependencies., TaskDB (+3 more)
+Cohesion: 0.10
+Nodes (5): No-op: indexes created in schema., Resolve 'T-42' style refs or plain task_id., Attach depends_on list from task_deps table., Batch-enrich a list of tasks with dependencies., TaskDB
 
 ### Community 17 - "Community 17"
-Cohesion: 0.11
-Nodes (17): AbilityStore, Any, Resolver — composes deterministic prompts from persona + tags + optional repo ov, AbilityStore, Block, Any, Path, AbilityStore — loads, indexes, and validates ability blocks from the filesystem. (+9 more)
+Cohesion: 0.12
+Nodes (12): AbilityStore, Any, Path, Return a JSON-serializable dict for an asset., Loads and indexes ability blocks from a filesystem directory., Return all assets grouped by type., Create a new asset file and reload the store., Update an existing asset file (full overwrite of provided fields). (+4 more)
 
 ### Community 18 - "Community 18"
-Cohesion: 0.08
-Nodes (14): close_sqlite(), get_sqlite(), SQLite client and connection management for Savant.  Drop-in replacement for mon, client(), _isolated_db(), Shared fixtures for Savant tests., Every test gets its own fresh SQLite database., Flask test client with default auth (ahmed's API key). (+6 more)
+Cohesion: 0.10
+Nodes (23): close_sqlite(), get_sqlite(), init_sqlite(), Connection, SQLite client and connection management for Savant.  Drop-in replacement for mon, Thread-safe SQLite client with singleton pattern.      Each thread transparently, Open a new sqlite3.Connection with standard pragma config., Create all tables and indexes, then auto-run any pending migrations. (+15 more)
 
 ### Community 19 - "Community 19"
 Cohesion: 0.06
 Nodes (9): _make_savant_session(), Tests for Savant session ingestion and provider endpoints., Build a realistic Savant session JSON payload., Pagination beyond available sessions returns empty list., Session with no terminal git commands should return empty results., Set up a temporary Savant sessions directory with a test session., savant_dir(), test_savant_session_git_changes_empty() (+1 more)
 
 ### Community 20 - "Community 20"
-Cohesion: 0.14
-Nodes (27): AnalysisRule, AnalysisTarget, analyze_code(), _apply_unified_diff(), _clamp(), DeadCodeRule, _detect_dead_code(), _detect_modernization() (+19 more)
+Cohesion: 0.15
+Nodes (26): AnalysisRule, AnalysisTarget, analyze_code(), _apply_unified_diff(), _clamp(), DeadCodeRule, _detect_dead_code(), _detect_modernization() (+18 more)
 
 ### Community 21 - "Community 21"
 Cohesion: 0.06
@@ -397,16 +392,16 @@ Cohesion: 0.07
 Nodes (16): Verify terminal BrowserView focus/resize code in main.js., termView.webContents.on('focus', ...) handler must exist., enter-full-screen event handler must exist., leave-full-screen event handler must exist., restore event handler must exist for window unminimize., _calcTermBounds pure function must exist for bounds calculation., _sendTermFocus helper must exist for focus management., _broadcastDrawerState helper must exist for drawer state sync. (+8 more)
 
 ### Community 24 - "Community 24"
-Cohesion: 0.17
-Nodes (26): abilities_asset_count(), abilities_bootstrap_status(), _asset_dirs(), _iter_asset_files(), _materialize_embedded_seed_base(), Path, _resolve_seed_base(), seed_abilities_if_missing() (+18 more)
+Cohesion: 0.16
+Nodes (27): abilities_asset_count(), abilities_bootstrap_status(), _asset_dirs(), _iter_asset_files(), _materialize_embedded_seed_base(), Path, _resolve_seed_base(), seed_abilities_if_missing() (+19 more)
 
 ### Community 25 - "Community 25"
 Cohesion: 0.11
 Nodes (26): _check_orphaned(), _extract_inline_scripts(), _js_files(), Tests for JavaScript syntax integrity after modularization. Validates extracted, Assert no inline <script> block exceeds 10000 chars., Extract all onclick='functionName(...)' from HTML, verify each function exists i, Return sorted list of .js file paths in static/js/., Run node --check on remaining inline <script> blocks. (+18 more)
 
 ### Community 26 - "Community 26"
-Cohesion: 0.12
-Nodes (22): api_llm_providers_create(), api_sessions_ingest(), api_tasks(), api_user_by_id(), api_user_rotate_api_key(), api_user_workspaces(), api_users(), api_utils_markdown() (+14 more)
+Cohesion: 0.09
+Nodes (28): api_llm_providers_create(), api_models_create(), api_sessions_ingest(), api_tasks(), api_user_by_id(), api_user_rotate_api_key(), api_user_workspaces(), api_users() (+20 more)
 
 ### Community 27 - "Community 27"
 Cohesion: 0.17
@@ -417,16 +412,16 @@ Cohesion: 0.05
 Nodes (59): _api(), create_asset(), export_abilities(), import_abilities(), learn(), list_personas(), list_policies(), list_repos() (+51 more)
 
 ### Community 29 - "Community 29"
-Cohesion: 0.14
-Nodes (19): _build_auth_url(), detect_repo_provider(), ingest_directory(), ingest_repo(), IngestedProject, _normalize_remote_url(), _parse_repo_url(), _repo_slug_from_url() (+11 more)
+Cohesion: 0.17
+Nodes (11): ingest_directory(), IngestedProject, add_repo(), Add a project from a configured source (does NOT index it)., test_add_repo_route_updates_existing_repo_without_duplicate(), test_ingest_directory_rejects_missing_path(), test_ingest_directory_rejects_traversal(), test_ingest_directory_valid() (+3 more)
 
 ### Community 30 - "Community 30"
 Cohesion: 0.08
 Nodes (10): TDD tests for app.py refactoring — god function decomposition & error handling., No bare except: in the codebase., All except clauses must specify an exception type., api_workspaces_context should be broken into helper functions., The route handler should be a thin orchestrator., api_session_conversation should be broken into helper functions., The route handler should be a thin orchestrator., TestConversationParserDecomposition (+2 more)
 
 ### Community 31 - "Community 31"
-Cohesion: 0.08
-Nodes (4): Cannot delete a running job., Direct DB layer tests., Submitting the same (type, target) twice returns existing job., TestJobDB
+Cohesion: 0.05
+Nodes (7): Cannot delete a running job., Flask route tests via test client., Direct DB layer tests., Submitting same job twice returns existing job., Submitting the same (type, target) twice returns existing job., TestJobDB, TestJobRoutes
 
 ### Community 32 - "Community 32"
 Cohesion: 0.14
@@ -441,44 +436,40 @@ Cohesion: 0.13
 Nodes (7): _active(), _nav(), Top nav (workspaces, tasks, etc.) still works when UI tab is active., TestProviderSubtabs, TestTabNavigation, TestTasksTab, TestWorkspacesTab
 
 ### Community 35 - "Community 35"
-Cohesion: 0.20
-Nodes (9): Resolver, Block, _b(), _Store, test_expand_includes_unknown_include_raises(), test_render_section_empty_and_non_empty(), test_resolve_composes_sections_and_manifest_with_trace(), test_resolve_ignores_non_repo_repo_match_and_handles_empty_sections() (+1 more)
+Cohesion: 0.16
+Nodes (14): AbilityStore, Any, Resolver — composes deterministic prompts from persona + tags + optional repo ov, Resolver, Block, AbilityStore — loads, indexes, and validates ability blocks from the filesystem., Block, _b() (+6 more)
 
 ### Community 36 - "Community 36"
 Cohesion: 0.07
-Nodes (17): _hash_key(), SHA-256 hash of an API key for storage., Ensure default users exist. Returns the default user records., Look up user by raw API key (hashed for comparison)., Return the first admin user (dev fallback when no API key provided)., UserDB, TDD tests for UserDB — RED phase first, then verify GREEN., Tests for Flask auth middleware (header/query API key). (+9 more)
+Nodes (19): _hash_key(), UserDB — PostgreSQL backend for user management and API key auth., SHA-256 hash of an API key for storage., Ensure default users exist. Returns the default user records., Look up user by raw API key (hashed for comparison)., Return the first admin user (dev fallback when no API key provided)., UserDB, TDD tests for UserDB — RED phase first, then verify GREEN. (+11 more)
 
 ### Community 37 - "Community 37"
-Cohesion: 0.13
-Nodes (4): _gen_id(), KnowledgeGraphDB, Graph-based knowledge store with nodes and typed edges., _row_to_dict()
+Cohesion: 0.08
+Nodes (19): api_notes_backfill_workspaces(), api_workspaces_search(), Backfill workspace_id on notes using workspace_session_links., Deep search across all workspaces — names, descriptions, session summaries, note, Check if job status has been set to 'cancelling' by the cancel endpoint., Mark a job for cancellation. Returns True if the job was running/queued., Remove finished jobs older than max_age_hours., _gen_id() (+11 more)
 
 ### Community 38 - "Community 38"
 Cohesion: 0.09
 Nodes (24): api_claude_session_file_diff(), api_claude_session_git_changes(), api_codex_session_file_diff(), api_codex_session_git_changes(), api_gemini_session_file_diff(), api_gemini_session_git_changes(), api_savant_session_file_diff(), api_savant_session_git_changes() (+16 more)
 
 ### Community 39 - "Community 39"
-Cohesion: 0.06
-Nodes (35): commit_nodes(), disconnect_edge(), export_workspace_kg(), get_graph(), get_graphify_stats(), get_neighbors(), kg_info(), list_concepts() (+27 more)
+Cohesion: 0.08
+Nodes (21): commit_nodes(), disconnect_edge(), export_workspace_kg(), get_graphify_stats(), kg_info(), list_concepts(), project_context(), prune_graph() (+13 more)
 
 ### Community 40 - "Community 40"
 Cohesion: 0.08
 Nodes (13): Test that savant_get_all_sessions returns all fields the frontend needs., model_call_counts should be populated in list (not just detail)., tool_call_counts should be populated in list., activity_buckets should be a list of 24 ints for the sparkline., checkpoint_count: number of child sessions in the chain., disk_size should be > 0 for sessions with JSON files., resume_command should be a savant resume string., first_event_time and last_event_time from root start / tip end. (+5 more)
 
 ### Community 41 - "Community 41"
-Cohesion: 0.11
-Nodes (12): init_sqlite(), bare_page(), flask_server(), _free_port(), page(), UI tests for the Savant dashboard using Playwright + pytest.  Usage:     cd sava, Create a real session dir so /session/<id> returns 200., Page with NO hero suppression - used for hero modal tests. (+4 more)
+Cohesion: 0.09
+Nodes (12): bare_page(), flask_server(), _free_port(), page(), UI tests for the Savant dashboard using Playwright + pytest.  Usage:     cd sava, Create a real session dir so /session/<id> returns 200., Page with NO hero suppression - used for hero modal tests., Fresh isolated context per test. Hero modal suppressed. (+4 more)
 
 ### Community 42 - "Community 42"
-Cohesion: 0.12
-Nodes (19): init_context_schema(), Context tables are created by postgres_client.init_schema().     This is a no-op, Indexer, Regex-based AST extraction fallback when tree_sitter_languages is unavailable., Repository indexer with background threading and progress tracking., Path, _seed_js_repo(), _seed_python_repo() (+11 more)
+Cohesion: 0.18
+Nodes (15): init_context_schema(), Context tables are created by postgres_client.init_schema().     This is a no-op, Indexer, Regex-based AST extraction fallback when tree_sitter_languages is unavailable., Repository indexer with background threading and progress tracking., Path, _seed_js_repo(), _seed_python_repo() (+7 more)
 
 ### Community 43 - "Community 43"
-Cohesion: 0.10
-Nodes (18): ContentChunker, Content chunking for efficient indexing., Return list of (chunk_index, chunk_content) tuples., Split file content into searchable chunks., EmbeddingModel, Check if model is loaded into memory., Embed text(s). Returns 2D array of shape (n, 768)., Singleton embedding model with lazy loading. (+10 more)
-
-### Community 44 - "Community 44"
-Cohesion: 0.18
-Nodes (3): NotificationDB, NotificationDB — PostgreSQL backend., _row_to_dict()
+Cohesion: 0.12
+Nodes (14): ContentChunker, Content chunking for efficient indexing., Return list of (chunk_index, chunk_content) tuples., Split file content into searchable chunks., _CancelledError, _clear_cancel(), get_indexing_status(), _is_cancelled() (+6 more)
 
 ### Community 45 - "Community 45"
 Cohesion: 0.14
@@ -493,12 +484,12 @@ Cohesion: 0.09
 Nodes (12): Verify tree-based split pane and tab navigation code in terminal.html., Tree root and focused leaf tracking must exist., _splitFocusedPane must exist for nested split support., _splitFocusedPane must refresh all terminals after split., _closeFocusedPane must refresh after closing a pane., _buildTree must exist for rendering the split tree DOM., _getLeaves must exist for traversing the tree., _findLeaf must exist for locating leaves by id. (+4 more)
 
 ### Community 48 - "Community 48"
-Cohesion: 0.08
-Nodes (30): api_claude_session_file(), api_claude_session_file_raw(), api_claude_session_project_files(), api_codex_session_file(), api_codex_session_file_raw(), api_codex_session_project_files(), api_gemini_session_file(), api_gemini_session_file_raw() (+22 more)
+Cohesion: 0.10
+Nodes (21): api_claude_session_file_raw(), api_claude_session_project_files(), api_codex_session_file_raw(), api_codex_session_project_files(), api_gemini_session_file_raw(), api_gemini_session_project_files(), api_savant_session_file_raw(), api_savant_session_project_files() (+13 more)
 
 ### Community 49 - "Community 49"
-Cohesion: 0.16
-Nodes (15): ensure_transformer_deps(), _have_module(), _pip_install(), Dependency helpers for auto-installing ML dependencies on first use., Ensure sentence-transformers stack is importable.      Auto-installs if missing, bundled_model_dir(), default_model_dir(), download_model() (+7 more)
+Cohesion: 0.12
+Nodes (19): ensure_transformer_deps(), _have_module(), _pip_install(), Dependency helpers for auto-installing ML dependencies on first use., Ensure sentence-transformers stack is importable.      Auto-installs if missing, bundled_model_dir(), default_model_dir(), download_model() (+11 more)
 
 ### Community 50 - "Community 50"
 Cohesion: 0.24
@@ -517,12 +508,12 @@ Cohesion: 0.07
 Nodes (18): _global_rate_limit(), check_rate_limit(), rate_limit(), Production hardening utilities for Savant workspace system Includes: retry logic, Check if IP has exceeded rate limit, Decorator for rate limiting endpoints (default: 100 req/min), Decorator for validating request data, Ensure query limit is within safe bounds (+10 more)
 
 ### Community 54 - "Community 54"
-Cohesion: 0.17
-Nodes (24): CompletedProcess, _assert_under_base(), _base_code_dir(), _clone_checkout(), _default_remote_branch(), _detect_base_host_dir(), _detect_provider_from_remote(), _ensure_branch_exists() (+16 more)
+Cohesion: 0.18
+Nodes (27): CompletedProcess, _assert_under_base(), _base_code_dir(), _build_auth_url(), _clone_checkout(), _default_remote_branch(), _detect_provider_from_remote(), detect_repo_provider() (+19 more)
 
 ### Community 55 - "Community 55"
-Cohesion: 0.07
-Nodes (4): Tests for server/db/users.py UserDB class., Verify api_key_hash is stored for security., TestUserDB, TestUserManagementAPI
+Cohesion: 0.12
+Nodes (3): Tests for server/db/users.py UserDB class., Verify api_key_hash is stored for security., TestUserDB
 
 ### Community 56 - "Community 56"
 Cohesion: 0.10
@@ -538,11 +529,11 @@ Nodes (7): TDD tests for detail.html refactoring — renderMetaTab decomposition
 
 ### Community 59 - "Community 59"
 Cohesion: 0.11
-Nodes (11): _create_workspace(), Comprehensive tests for the Knowledge/Experience layer.  Covers:   - ExperienceD, Health endpoint must return ok., Create several experiences with varying sources and content., POST/DELETE /api/knowledge/edges., GET /api/knowledge/graph and /neighbors., sample_experiences(), TestKnowledgeGraphEdges (+3 more)
+Nodes (11): _create_workspace(), Comprehensive tests for the Knowledge/Experience layer.  Covers:   - ExperienceD, Delete must remove the experience and return success/failure., Health endpoint must return ok., GET /api/knowledge/project_context must aggregate workspace context., Create several experiences with varying sources and content., sample_experiences(), TestExperienceDelete (+3 more)
 
 ### Community 60 - "Community 60"
 Cohesion: 0.12
-Nodes (9): _create_node(), 5. Committed node appears in default (no include_staged) graph., Uncommit should move committed nodes back out of the main graph., Create a node via API. Returns response JSON., 9b. Search includes staged nodes with include_staged=True., 9c. Search API excludes staged by default., 9d. Search API includes staged with include_staged=true., 1. New node defaults to status='staged'. (+1 more)
+Nodes (9): _create_node(), Uncommit should move committed nodes back out of the main graph., Create a node via API. Returns response JSON., 9b. Search includes staged nodes with include_staged=True., 9c. Search API excludes staged by default., 9d. Search API includes staged with include_staged=true., 1. New node defaults to status='staged'., 2b. Staged node is NOT returned by default get_full_graph(). (+1 more)
 
 ### Community 61 - "Community 61"
 Cohesion: 0.11
@@ -557,8 +548,8 @@ Cohesion: 0.16
 Nodes (6): _extract_function(), Split operations must exist and refresh terminals., Extract a JS function body by name (greedy up to next top-level function or sect, BrowserView lifecycle and bounds must be correct., TestMainJSBrowserView, TestSplitPaneManagement
 
 ### Community 64 - "Community 64"
-Cohesion: 0.16
-Nodes (17): _execute_job(), _process_next_job(), Job Worker — Single-threaded FIFO job processor.  Polls the jobs table every 2 s, Look up repo in ContextDB and return (Path, repo_name)., Run index for a single repo., Run AST generation for a single repo., Index all un-indexed repos., Generate AST for all repos. (+9 more)
+Cohesion: 0.14
+Nodes (19): _CancelledError, _execute_job(), _process_next_job(), Job Worker — Single-threaded FIFO job processor.  Polls the jobs table every 2 s, Look up repo in ContextDB and return (Path, repo_name)., Run index for a single repo., Run AST generation for a single repo., Index all un-indexed repos. (+11 more)
 
 ### Community 65 - "Community 65"
 Cohesion: 0.11
@@ -577,8 +568,8 @@ Cohesion: 0.11
 Nodes (13): Each external terminal option is accepted., Terminal preferences are stored in the preferences API., Terminal prefs saved via /api/preferences., Terminal preferences are stored in the preferences API., Terminal prefs saved via /api/preferences., Terminal prefs persist across reads., When no terminal prefs set, should return empty or defaults., Updating terminal prefs doesn't lose other prefs. (+5 more)
 
 ### Community 70 - "Community 70"
-Cohesion: 0.29
-Nodes (7): api_claude_session_unassign_jira(), api_codex_session_unassign_jira(), api_gemini_session_unassign_jira(), api_savant_session_unassign_jira(), api_session_unassign_jira(), Remove a Jira ticket assignment from a session., _unassign_jira_handler()
+Cohesion: 0.14
+Nodes (14): get_graph(), get_neighbors(), list_experiences(), Search Graphify nodes scoped to a workspace/repo., Get graph (nodes + edges) for visualization.      ?slim=true returns only node_i, Get connected nodes (1-hop or n-hop)., Parse int from query/body value, clamping to [min_val, max_val]., Search knowledge by text query (searches graph nodes). (+6 more)
 
 ### Community 71 - "Community 71"
 Cohesion: 0.12
@@ -597,8 +588,8 @@ Cohesion: 0.12
 Nodes (5): Both index.html and detail.html should import shared modules., detail.html should NOT define escapeHtml inline (it's in utils.js)., index.html should NOT define updateStatusBarClock inline., detail.html's left tab styles should use CSS vars, not hardcoded RGBA., TestSharedModuleIntegration
 
 ### Community 75 - "Community 75"
-Cohesion: 0.29
-Nodes (7): api_claude_session_unassign_mr(), api_codex_session_unassign_mr(), api_gemini_session_unassign_mr(), api_savant_session_unassign_mr(), api_session_unassign_mr(), Remove a merge request assignment from a session., _unassign_mr_handler()
+Cohesion: 0.17
+Nodes (12): bulk_delete_nodes(), _classify_workspace_nodes(), delete_item(), delete_node(), purge_workspace(), purge_workspace_preview(), Delete a node and cascade-delete its edges., Delete a knowledge node (or legacy experience) by ID. (+4 more)
 
 ### Community 76 - "Community 76"
 Cohesion: 0.11
@@ -606,15 +597,15 @@ Nodes (18): add_jira_note(), _api(), complete_task(), get_jira_ticket(), get_mer
 
 ### Community 77 - "Community 77"
 Cohesion: 0.11
-Nodes (10): 4c. Workspace commit only affects nodes in that workspace., 4d. Workspace commit with no staged nodes returns count 0., 7. Commit with neither workspace_id nor node_ids returns 400., 8. Commit with non-existent IDs succeeds but count is 0., 9. Search excludes staged nodes by default., 2. Staged node is NOT returned by default list_nodes()., 3b. Staged node visible in graph when include_staged=true., 4. commit via node_ids (backward compat) changes status to 'committed'. (+2 more)
+Nodes (10): 4c. Workspace commit only affects nodes in that workspace., 4d. Workspace commit with no staged nodes returns count 0., 7. Commit with neither workspace_id nor node_ids returns 400., 8. Commit with non-existent IDs succeeds but count is 0., 9. Search excludes staged nodes by default., 2. Staged node is NOT returned by default list_nodes()., 3. Staged node visible when include_staged=True., 3b. Staged node visible in graph when include_staged=true. (+2 more)
 
 ### Community 78 - "Community 78"
 Cohesion: 0.12
 Nodes (4): Shared utility functions extracted into /static/js/utils.js., formatDuration should handle hours/minutes/seconds., File should not have obvious syntax errors., TestUtilsModule
 
 ### Community 79 - "Community 79"
-Cohesion: 0.19
-Nodes (9): Connection, Thread-safe SQLite client with singleton pattern.      Each thread transparently, Open a new sqlite3.Connection with standard pragma config., Create all tables and indexes, then auto-run any pending migrations., Write schema version to meta table., Run schema migrations automatically on startup. Each migration is         idempo, Return this thread's private connection, creating one if needed., SQLiteClient (+1 more)
+Cohesion: 0.22
+Nodes (11): bulk_create_edges(), create_edge(), delete_edge(), merge_nodes(), Merge multiple nodes into one.      Body: { node_ids: [id1, id2, ...], node_type, Create an edge between two nodes., Sanitize a node/edge ID — alphanumeric, dash, underscore only., Return edge_type if valid, else 'relates_to'. (+3 more)
 
 ### Community 80 - "Community 80"
 Cohesion: 0.12
@@ -633,32 +624,28 @@ Cohesion: 0.13
 Nodes (13): add_mr_note(), add_task_dependency(), get_workspace(), list_jira_notes(), list_mr_notes(), savant-workspace MCP Server  Thin MCP bridge to the Savant Dashboard Flask API (, Get a specific workspace by ID or name (fuzzy match).     Provide either workspa, Update fields on an existing task. Only provided fields are changed.     Status (+5 more)
 
 ### Community 85 - "Community 85"
-Cohesion: 0.16
-Nodes (6): Insert an edge referencing a non-existent node, bypassing FK enforcement., Edges referencing non-existent nodes should be removed., remove_orphan_nodes=False should leave orphaned nodes., remove_orphan_nodes=True should remove nodes with no edges., Nodes with edges should not be removed even when flag is True., TestPruneGraph
-
-### Community 86 - "Community 86"
-Cohesion: 0.22
-Nodes (5): Tests for knowledge node types, prune_graph, and workspace metadata preservation, Updating title/content/repo must not drop the workspaces array., Explicitly providing workspaces in update payload should update them., PUT /api/knowledge/nodes/<id> preserves workspaces even without them in payload., TestWorkspacePreservationOnUpdate
+Cohesion: 0.08
+Nodes (15): get_connection(), Insert an edge referencing a non-existent node, bypassing FK enforcement., Edges referencing non-existent nodes should be removed., remove_orphan_nodes=False should leave orphaned nodes., remove_orphan_nodes=True should remove nodes with no edges., Nodes with edges should not be removed even when flag is True., TestPruneGraph, jira_tickets.workspace_id should NOT have FK to workspaces. (+7 more)
 
 ### Community 89 - "Community 89"
 Cohesion: 0.15
 Nodes (6): Structural regression tests for terminal.html and main.js terminal management., Tab cycling must work across ALL tabs, not just one pane., When BrowserView gets focus, it must send focus-and-refresh., _read(), TestBrowserViewFocusEvent, TestTabCycling
 
 ### Community 90 - "Community 90"
-Cohesion: 0.10
-Nodes (8): Structural / regression tests for terminal BrowserView and dev-log panel fixes., Cross-check: all dev-log CSS classes in index.html also exist in detail.html., Extract all .dev-log-* CSS class selectors from text., Every .dev-log-* CSS class in index.html must also appear in detail.html., #dev-log-panel must exist in both index.html and detail.html., #dev-log-body must exist in both index.html and detail.html., _read(), TestDevLogCrossCheck
+Cohesion: 0.14
+Nodes (7): Cross-check: all dev-log CSS classes in index.html also exist in detail.html., Extract all .dev-log-* CSS class selectors from text., Every .dev-log-* CSS class in index.html must also appear in detail.html., #dev-log-panel must exist in both index.html and detail.html., #dev-log-body must exist in both index.html and detail.html., _read(), TestDevLogCrossCheck
 
 ### Community 91 - "Community 91"
 Cohesion: 0.13
 Nodes (8): Verify terminal focus-management and refresh code in terminal.html., _refreshAllTerminals must be declared., The 'focus-and-refresh' command must be handled., A visibilitychange event listener must exist for re-rendering., Click handler on #term-body must exist for focus capture., window.addEventListener('focus', ...) must exist., _refreshAllTerminals should be called in the visibilitychange handler., TestTerminalHTMLStructure
 
 ### Community 92 - "Community 92"
-Cohesion: 0.12
-Nodes (16): api_llm_providers_list(), api_llm_providers_update(), api_models_create(), api_models_list(), api_models_update(), Read LLM providers from SQLite., Write LLM providers to SQLite., Read models from SQLite. (+8 more)
+Cohesion: 0.14
+Nodes (14): api_llm_providers_list(), api_llm_providers_update(), api_models_list(), api_models_update(), Read LLM providers from SQLite., Write LLM providers to SQLite., Read models from SQLite., Write models to SQLite. (+6 more)
 
 ### Community 93 - "Community 93"
-Cohesion: 0.16
-Nodes (9): _CancelledError, _make_progress_callback(), Create a progress callback that writes to the DB and checks cancellation., Exception, TDD tests for the persistent job queue (v8.6.0).  Tests cover:   1. JobDB — CRUD, Worker thread logic tests (unit, not integration)., The /api/context/repos/indexing-status endpoint should include job queue data., TestIndexingStatusBackwardCompat (+1 more)
+Cohesion: 0.11
+Nodes (11): _make_progress_callback(), Create a progress callback that writes to the DB and checks cancellation., TDD tests for the persistent job queue (v8.6.0).  Tests cover:   1. JobDB — CRUD, Worker thread logic tests (unit, not integration)., The /api/context/repos/indexing-status endpoint should include job queue data., Verify the existing index/ast/stop routes now submit jobs., POST /api/context/repos/index should return a job_id., Double-submit returns same job_id. (+3 more)
 
 ### Community 94 - "Community 94"
 Cohesion: 0.29
@@ -681,8 +668,8 @@ Cohesion: 0.21
 Nodes (5): _create_task(), POST/DELETE /api/tasks/<id>/deps must persist dependency links., POST /api/tasks must return task with task_id and seq., TestTaskApiCreate, TestTaskApiDependencies
 
 ### Community 100 - "Community 100"
-Cohesion: 0.13
-Nodes (17): api_all_mrs(), api_workspace_session_links_upsert(), api_workspaces_delete(), api_workspaces_list(), api_workspaces_reorder(), api_workspaces_search(), api_workspaces_update(), _emit_event() (+9 more)
+Cohesion: 0.22
+Nodes (11): api_all_mrs(), api_workspaces_list(), api_workspaces_reorder(), api_workspaces_update(), Read workspaces from SQLite., Write workspaces to SQLite., Return all MRs aggregated across all sessions and providers.     Reads from the, Read MRs from the central registry file (thread-safe). (+3 more)
 
 ### Community 102 - "Community 102"
 Cohesion: 0.23
@@ -714,11 +701,11 @@ Nodes (7): Tests for terminal preferences storage via Flask API., VS Code clears
 
 ### Community 111 - "Community 111"
 Cohesion: 0.12
-Nodes (10): GraphifyDB, Deletes all nodes and edges for a workspace. Used to begin a chunked upload., Operations on graphify_nodes and graphify_edges tables., Inserts a batch of nodes and/or edges without clearing the workspace first., Imports Graphify nodes and edges into the database.          Clears existing gra, Saves optional metadata and returns final node/edge counts after a chunked uploa, Returns node and edge counts grouped by node_type and edge_type for the workspac, Performs a text search on Graphify nodes, optionally scoped to a workspace. (+2 more)
+Nodes (11): GraphifyDB, Deletes all nodes and edges for a workspace. Used to begin a chunked upload., Operations on graphify_nodes and graphify_edges tables., Inserts a batch of nodes and/or edges without clearing the workspace first., Imports Graphify nodes and edges into the database.          Clears existing gra, Saves optional metadata and returns final node/edge counts after a chunked uploa, Returns node and edge counts grouped by node_type and edge_type for the workspac, Performs a text search on Graphify nodes, optionally scoped to a workspace. (+3 more)
 
 ### Community 112 - "Community 112"
-Cohesion: 0.29
-Nodes (3): Regression tests for TaskDB — data layer., Auto-close: incomplete tasks move forward, done tasks stay., TestMoveIncompleteTasks
+Cohesion: 0.33
+Nodes (9): api_claude_session_file(), api_codex_session_file(), api_gemini_session_file(), api_savant_session_file(), api_session_file(), Read a file from a session directory., Write content to a file in a session directory., _session_file_handler() (+1 more)
 
 ### Community 113 - "Community 113"
 Cohesion: 0.17
@@ -732,13 +719,17 @@ Nodes (4): Shared CSS extracted into /static/css/shared.css., Should define them
 Cohesion: 0.17
 Nodes (4): VS Code terminals make URLs clickable via WebLinksAddon., xterm-addon-web-links.mjs must be served from Flask static., Each new tab and each reconnected tab needs its own addon instance., TestVSCodeParityWebLinks
 
+### Community 117 - "Community 117"
+Cohesion: 0.29
+Nodes (7): api_claude_session_assign_mr(), api_codex_session_assign_mr(), api_gemini_session_assign_mr(), api_savant_session_assign_mr(), api_session_assign_mr(), _assign_mr_handler(), Assign a merge request to a session.
+
 ### Community 118 - "Community 118"
 Cohesion: 0.29
 Nodes (4): MemoryBankDetector, Memory bank and language detection for files., Return (language_tag, is_memory_bank)., Detects if a file is part of a memory bank collection.
 
 ### Community 120 - "Community 120"
-Cohesion: 0.06
-Nodes (43): bulk_create_edges(), bulk_delete_nodes(), bulk_link_workspace(), _classify_workspace_nodes(), create_edge(), create_node(), delete_edge(), delete_item() (+35 more)
+Cohesion: 0.13
+Nodes (20): bulk_link_workspace(), create_node(), generate_prompt(), get_node(), import_graphify(), import_workspace_kg(), link_to_workspace(), Get a node with its edges. (+12 more)
 
 ### Community 122 - "Community 122"
 Cohesion: 0.25
@@ -751,6 +742,10 @@ Nodes (3): GET/POST/DELETE /api/savant/session/<id>/mr — merge request links.,
 ### Community 124 - "Community 124"
 Cohesion: 0.18
 Nodes (3): initStatusBar should accept overrides for page-specific functions., Shared status bar module extracted into /static/js/status-bar.js., TestStatusBarModule
+
+### Community 126 - "Community 126"
+Cohesion: 0.29
+Nodes (7): api_claude_session_notes(), api_codex_session_notes(), api_gemini_session_notes(), api_savant_session_notes(), api_session_notes(), Return notes for a session, with POST/DELETE support., _session_notes_handler()
 
 ### Community 128 - "Community 128"
 Cohesion: 0.22
@@ -773,12 +768,12 @@ Cohesion: 0.20
 Nodes (9): Tests for Savant session detection in MCP session_detect module., SAVANT_SESSION_ID env var should resolve via server mapping API., SAVANT_SESSION_ID without mapping should return workspace_id=None., Without SAVANT_SESSION_ID env var, detection should return None., detect_session() should find Savant sessions via env when no other provider matc, test_detect_session_finds_savant_via_env(), test_find_savant_session_by_env_no_env_var(), test_find_savant_session_by_env_no_workspace() (+1 more)
 
 ### Community 135 - "Community 135"
-Cohesion: 0.40
-Nodes (5): db_cursor(), init_schema(), cursor, Create all tables and indexes. Safe to call multiple times (IF NOT EXISTS)., Context manager that yields a RealDictCursor and auto-commits/rollbacks.      Us
+Cohesion: 0.15
+Nodes (17): db_cursor(), _execute_schema_sql(), init_schema(), _migrate_graphify_primary_key(), cursor, Create any missing current-schema tables and indexes., Apply and record every migration not yet present in schema_migrations., Repair known additive schema drift even when migrations are already stamped. (+9 more)
 
 ### Community 138 - "Community 138"
-Cohesion: 0.13
-Nodes (3): Flask route tests via test client., Submitting same job twice returns existing job., TestJobRoutes
+Cohesion: 0.33
+Nodes (5): _detect_base_host_dir(), get_source_availability(), Detect the host path of the base code mount.      Parses /proc/self/mountinfo (L, SourceAvailability, repo_sources()
 
 ### Community 140 - "Community 140"
 Cohesion: 0.22
@@ -799,10 +794,6 @@ Nodes (8): api_llm_config_get(), api_llm_config_update(), Read LLM configuration
 ### Community 145 - "Community 145"
 Cohesion: 0.25
 Nodes (7): BASE_CODE_DIR, PIP_CACHE_DIR, SAVANT_LOCAL_TMP_DIR, TEMP, TMP, TMPDIR, dev-start.sh script
-
-### Community 146 - "Community 146"
-Cohesion: 0.21
-Nodes (5): get_connection(), jira_tickets.workspace_id should NOT have FK to workspaces., TestSchemaMigration, Schema must include kg_nodes, kg_edges, and experiences tables., TestKnowledgeSchema
 
 ### Community 147 - "Community 147"
 Cohesion: 0.25
@@ -868,10 +859,6 @@ Nodes (5): _make_savant_session(), Tests for Savant session file, MR, and Jira t
 Cohesion: 0.29
 Nodes (3): _ensureFocus must call xterm.focus() before AND after fit/refresh., Old bug: _ensureFocus referenced tab.xterm._tabId which doesn't exist., TestEnsureFocusOrder
 
-### Community 175 - "Community 175"
-Cohesion: 0.29
-Nodes (7): api_claude_session_assign_jira(), api_codex_session_assign_jira(), api_gemini_session_assign_jira(), api_savant_session_assign_jira(), api_session_assign_jira(), _assign_jira_handler(), Assign a Jira ticket to a session.
-
 ### Community 176 - "Community 176"
 Cohesion: 0.33
 Nodes (4): _create_workspace(), Moving a task between workspaces must persist., Create a workspace and return its id., ws()
@@ -908,6 +895,10 @@ Nodes (8): Adding a new feature, Architecture, Canonical reference, Docker envir
 Cohesion: 0.38
 Nodes (9): _kg_node_ids(), _make_tool_zip(), _seed_tool_package(), test_delete_tool_removes_package_and_kg_nodes(), test_list_tools_and_download_archive(), test_upload_tool_rejects_duplicate_knowledge_node_ids(), test_upload_tool_rejects_duplicate_tool_name(), test_upload_tool_requires_readme_script_and_kg_manifest() (+1 more)
 
+### Community 189 - "Community 189"
+Cohesion: 0.16
+Nodes (5): ExperienceDB, Experiences must be retrievable by ID., DELETE /api/knowledge/<id> must remove nodes., TestExperienceRead, TestKnowledgeDelete
+
 ### Community 190 - "Community 190"
 Cohesion: 0.50
 Nodes (4): _discover_savant_api_base(), main(), Unified STDIO entry point for Savant MCP servers. Used primarily by AI tools tha, Return the Docker-exposed Savant API base unless explicitly overridden.
@@ -928,10 +919,6 @@ Nodes (4): api_events(), _get_notification_timestamp(), Poll for UI notification
 Cohesion: 0.50
 Nodes (3): _create_edge(), Tests for Knowledge Graph staging, purge, and multi-workspace features., Create an edge via API. Returns response JSON.
 
-### Community 202 - "Community 202"
-Cohesion: 0.50
-Nodes (4): _mk_ws(), Workspace-session link table and API contract tests., test_workspace_session_links_api_assign_reassign_unassign_and_resolve(), test_workspace_session_links_table_constraints()
-
 ### Community 204 - "Community 204"
 Cohesion: 0.67
 Nodes (3): api_merge_requests(), _parse_mr_url(), Parse GitLab/GitHub MR URL to extract project_id and mr_iid.
@@ -941,24 +928,24 @@ Cohesion: 0.50
 Nodes (3): Current state, Read order, Savant Server Memory Bank
 
 ## Knowledge Gaps
-- **79 isolated node(s):** `build-and-push.sh script`, `build.sh script`, `CompletedProcess`, `deploy.sh script`, `dev-start.sh script` (+74 more)
+- **78 isolated node(s):** `build-and-push.sh script`, `build.sh script`, `CompletedProcess`, `deploy.sh script`, `dev-start.sh script` (+73 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **95 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **92 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `KnowledgeGraphDB` connect `Community 37` to `Community 32`, `Community 1`, `Community 3`, `Community 101`, `Community 6`, `Community 39`, `Community 8`, `Community 201`, `Community 73`, `Community 77`, `Community 82`, `Community 85`, `Community 86`, `Community 87`, `Community 61`?**
-  _High betweenness centrality (0.049) - this node is a cross-community bridge._
-- **Why does `get_connection()` connect `Community 16` to `Community 128`, `Community 1`, `Community 0`, `Community 3`, `Community 135`, `Community 10`, `Community 139`, `Community 13`, `Community 36`, `Community 37`, `Community 43`, `Community 44`, `Community 45`, `Community 69`, `Community 83`, `Community 88`, `Community 95`, `Community 100`, `Community 111`?**
-  _High betweenness centrality (0.041) - this node is a cross-community bridge._
-- **Why does `release_connection()` connect `Community 10` to `Community 128`, `Community 1`, `Community 0`, `Community 3`, `Community 135`, `Community 139`, `Community 13`, `Community 16`, `Community 36`, `Community 37`, `Community 43`, `Community 44`, `Community 45`, `Community 69`, `Community 83`, `Community 88`, `Community 95`, `Community 100`, `Community 111`?**
-  _High betweenness centrality (0.040) - this node is a cross-community bridge._
+- **Why does `KnowledgeGraphDB` connect `Community 37` to `Community 32`, `Community 1`, `Community 101`, `Community 6`, `Community 39`, `Community 8`, `Community 201`, `Community 73`, `Community 77`, `Community 82`, `Community 85`, `Community 87`, `Community 61`?**
+  _High betweenness centrality (0.054) - this node is a cross-community bridge._
+- **Why does `get_connection()` connect `Community 37` to `Community 128`, `Community 1`, `Community 0`, `Community 3`, `Community 135`, `Community 10`, `Community 139`, `Community 13`, `Community 16`, `Community 36`, `Community 43`, `Community 44`, `Community 45`, `Community 189`, `Community 69`, `Community 83`, `Community 88`, `Community 95`, `Community 111`?**
+  _High betweenness centrality (0.039) - this node is a cross-community bridge._
+- **Why does `release_connection()` connect `Community 10` to `Community 128`, `Community 1`, `Community 0`, `Community 3`, `Community 135`, `Community 139`, `Community 13`, `Community 16`, `Community 36`, `Community 37`, `Community 43`, `Community 44`, `Community 45`, `Community 189`, `Community 69`, `Community 83`, `Community 88`, `Community 95`, `Community 111`?**
+  _High betweenness centrality (0.039) - this node is a cross-community bridge._
 - **What connects `Savant Abilities — prompt asset management engine.`, `Resolver — composes deterministic prompts from persona + tags + optional repo ov`, `Flask Blueprint for Abilities REST API.  All routes under /api/abilities/*. The` to the rest of the system?**
-  _1018 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _1022 weakly-connected nodes found - possible documentation gaps or missing edges._
+- **Should `Community 0` be split into smaller, more focused modules?**
+  _Cohesion score 0.04897959183673469 - nodes in this community are weakly interconnected._
 - **Should `Community 1` be split into smaller, more focused modules?**
-  _Cohesion score 0.03980099502487562 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.040825285338015806 - nodes in this community are weakly interconnected._
 - **Should `Community 2` be split into smaller, more focused modules?**
   _Cohesion score 0.05075187969924812 - nodes in this community are weakly interconnected._
-- **Should `Community 3` be split into smaller, more focused modules?**
-  _Cohesion score 0.07142857142857142 - nodes in this community are weakly interconnected._
