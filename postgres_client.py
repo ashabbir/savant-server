@@ -322,6 +322,13 @@ CREATE TABLE IF NOT EXISTS meta (
     value   TEXT NOT NULL
 );
 
+-- Applied database migrations
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version     INTEGER PRIMARY KEY,
+    name        TEXT NOT NULL,
+    applied_at  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Experiences
 CREATE TABLE IF NOT EXISTS experiences (
     experience_id   TEXT PRIMARY KEY,
@@ -498,84 +505,144 @@ CREATE TABLE IF NOT EXISTS ctx_vec_chunks (
 CREATE INDEX IF NOT EXISTS idx_ctx_vec_hnsw
     ON ctx_vec_chunks USING hnsw (embedding vector_cosine_ops);
 
--- Schema upgrades/migrations for existing databases
-ALTER TABLE notifications ADD COLUMN IF NOT EXISTS user_id TEXT DEFAULT '';
-CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id);
 """
+
+_SCHEMA_MIGRATIONS = (
+    (
+        1,
+        "reconcile additive columns and indexes",
+        (
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active INTEGER DEFAULT 1",
+            "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS user_id TEXT DEFAULT ''",
+            "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS color TEXT DEFAULT ''",
+            "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS user_id TEXT DEFAULT ''",
+            "ALTER TABLE notes ADD COLUMN IF NOT EXISTS user_id TEXT DEFAULT ''",
+            "ALTER TABLE merge_requests ADD COLUMN IF NOT EXISTS user_id TEXT DEFAULT ''",
+            "ALTER TABLE jira_tickets ADD COLUMN IF NOT EXISTS user_id TEXT DEFAULT ''",
+            "ALTER TABLE notifications ADD COLUMN IF NOT EXISTS user_id TEXT DEFAULT ''",
+            "ALTER TABLE reminders ADD COLUMN IF NOT EXISTS user_id TEXT DEFAULT ''",
+            "CREATE INDEX IF NOT EXISTS idx_workspaces_user ON workspaces(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_notes_user ON notes(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_merge_requests_user ON merge_requests(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_jira_tickets_user ON jira_tickets(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_reminders_user ON reminders(user_id)",
+        ),
+    ),
+)
+
+
+def _execute_schema_sql(cur: psycopg2.extensions.cursor) -> None:
+    """Create any missing current-schema tables and indexes."""
+    statements = [statement.strip() for statement in _SCHEMA_SQL.split(";") if statement.strip()]
+    for statement in statements:
+        cur.execute(statement)
+
+
+def _run_pending_migrations(cur: psycopg2.extensions.cursor) -> list[int]:
+    """Apply and record every migration not yet present in schema_migrations."""
+    cur.execute("SELECT version FROM schema_migrations ORDER BY version")
+    rows = cur.fetchall()
+    applied_versions = {
+        row["version"] if isinstance(row, dict) else row[0]
+        for row in rows
+    }
+    applied = []
+
+    for version, name, statements in _SCHEMA_MIGRATIONS:
+        if version in applied_versions:
+            continue
+        logger.info("Applying database migration %s: %s", version, name)
+        for statement in statements:
+            cur.execute(statement)
+        cur.execute(
+            """
+            INSERT INTO schema_migrations (version, name)
+            VALUES (%s, %s)
+            ON CONFLICT (version) DO NOTHING
+            """,
+            (version, name),
+        )
+        applied.append(version)
+
+    return applied
+
+
+def _reconcile_additive_schema(cur: psycopg2.extensions.cursor) -> None:
+    """Repair known additive schema drift even when migrations are already stamped."""
+    for _, _, statements in _SCHEMA_MIGRATIONS:
+        for statement in statements:
+            cur.execute(statement)
+
+
+def _migrate_graphify_primary_key(cur: psycopg2.extensions.cursor) -> None:
+    """Upgrade legacy graphify tables to their current composite primary key."""
+    cur.execute("""
+        SELECT COUNT(*) AS cnt
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu
+          ON tc.constraint_name = kcu.constraint_name
+         AND tc.table_schema = kcu.table_schema
+        WHERE tc.table_schema = current_schema()
+          AND tc.table_name = 'graphify_nodes'
+          AND tc.constraint_type = 'PRIMARY KEY'
+    """)
+    row = cur.fetchone()
+    primary_key_columns = row["cnt"] if isinstance(row, dict) else row[0]
+    if primary_key_columns != 1:
+        return
+
+    logger.info("Migrating graphify tables for multi-repo isolation")
+    cur.execute("ALTER TABLE graphify_edges DROP CONSTRAINT IF EXISTS graphify_edges_source_id_fkey")
+    cur.execute("ALTER TABLE graphify_edges DROP CONSTRAINT IF EXISTS graphify_edges_target_id_fkey")
+    cur.execute("ALTER TABLE graphify_nodes DROP CONSTRAINT IF EXISTS graphify_nodes_pkey")
+    cur.execute(
+        "ALTER TABLE graphify_nodes ADD CONSTRAINT graphify_nodes_pkey "
+        "PRIMARY KEY (workspace_id, node_id)"
+    )
+    cur.execute("""
+        ALTER TABLE graphify_edges
+        ADD CONSTRAINT graphify_edges_source_fk
+        FOREIGN KEY (workspace_id, source_id)
+        REFERENCES graphify_nodes(workspace_id, node_id)
+        ON DELETE CASCADE
+    """)
+    cur.execute("""
+        ALTER TABLE graphify_edges
+        ADD CONSTRAINT graphify_edges_target_fk
+        FOREIGN KEY (workspace_id, target_id)
+        REFERENCES graphify_nodes(workspace_id, node_id)
+        ON DELETE CASCADE
+    """)
 
 
 def init_schema() -> None:
-    """Create all tables and indexes. Safe to call multiple times (IF NOT EXISTS)."""
-    logger.info("Running schema initialisation…")
-    with db_cursor() as cur:
-        cur.execute("SELECT pg_advisory_lock(%s)", (0x5A0A17,))
-        try:
-            # Run migrations for graphify tables to support multi-repo isolation
+    """Create missing schema objects and apply pending migrations."""
+    logger.info("Checking database schema and pending migrations")
+    conn = get_connection()
+    lock_acquired = False
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT pg_advisory_lock(%s)", (0x5A0A17,))
+            lock_acquired = True
+            _execute_schema_sql(cur)
+            _run_pending_migrations(cur)
+            _reconcile_additive_schema(cur)
+            _migrate_graphify_primary_key(cur)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        logger.exception("Database schema initialization failed")
+        raise
+    finally:
+        if lock_acquired:
             try:
-                cur.execute("""
-                    SELECT EXISTS (
-                        SELECT FROM information_schema.tables 
-                        WHERE table_name = 'graphify_nodes'
-                    ) as tbl_exists;
-                """)
-                exists_row = cur.fetchone()
-                table_exists = exists_row["tbl_exists"] if isinstance(exists_row, dict) else exists_row[0]
-                if table_exists:
-                    cur.execute("""
-                        SELECT COUNT(*) as cnt
-                        FROM information_schema.table_constraints tc
-                        JOIN information_schema.key_column_usage kcu
-                          ON tc.constraint_name = kcu.constraint_name
-                         AND tc.table_schema = kcu.table_schema
-                        WHERE tc.table_name = 'graphify_nodes'
-                          AND tc.constraint_type = 'PRIMARY KEY';
-                    """)
-                    cnt_row = cur.fetchone()
-                    pk_col_count = cnt_row["cnt"] if isinstance(cnt_row, dict) else cnt_row[0]
-                    if pk_col_count == 1:
-                        logger.info("Migrating graphify tables for multi-repo isolation...")
-                        cur.execute("ALTER TABLE graphify_edges DROP CONSTRAINT IF EXISTS graphify_edges_source_id_fkey;")
-                        cur.execute("ALTER TABLE graphify_edges DROP CONSTRAINT IF EXISTS graphify_edges_target_id_fkey;")
-                        cur.execute("ALTER TABLE graphify_nodes DROP CONSTRAINT IF EXISTS graphify_nodes_pkey;")
-                        cur.execute("ALTER TABLE graphify_nodes ADD CONSTRAINT graphify_nodes_pkey PRIMARY KEY (workspace_id, node_id);")
-                        cur.execute("""
-                            ALTER TABLE graphify_edges 
-                            ADD CONSTRAINT graphify_edges_source_fk 
-                            FOREIGN KEY (workspace_id, source_id) REFERENCES graphify_nodes(workspace_id, node_id) 
-                            ON DELETE CASCADE;
-                        """)
-                        cur.execute("""
-                            ALTER TABLE graphify_edges 
-                            ADD CONSTRAINT graphify_edges_target_fk 
-                            FOREIGN KEY (workspace_id, target_id) REFERENCES graphify_nodes(workspace_id, node_id) 
-                            ON DELETE CASCADE;
-                        """)
-                        logger.info("Graphify table migration completed successfully.")
-            except Exception as migrate_err:
-                logger.warning(f"Graphify migration check skipped or failed: {migrate_err}")
-                cur.connection.rollback()
-
-            # Execute statement by statement to avoid psycopg2 multi-statement issues
-            statements = [s.strip() for s in _SCHEMA_SQL.split(";") if s.strip()]
-            for stmt in statements:
-                try:
-                    cur.execute(stmt)
-                except Exception as e:
-                    logger.error(f"Failed to execute SQL statement: {stmt}")
-                    logger.error(f"Error detail: {e}")
-                    raise
-            cur.connection.commit()
-        except Exception as e:
-            cur.connection.rollback()
-            raise
-        finally:
-            try:
-                cur.execute("SELECT pg_advisory_unlock(%s)", (0x5A0A17,))
-                cur.connection.commit()
-            except Exception as lock_err:
-                logger.error(f"Failed to release advisory lock: {lock_err}")
-                try:
-                    cur.connection.rollback()
-                except Exception:
-                    pass
-    logger.info("Schema initialisation complete.")
+                with conn.cursor() as cur:
+                    cur.execute("SELECT pg_advisory_unlock(%s)", (0x5A0A17,))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                logger.exception("Failed to release database schema advisory lock")
+        release_connection(conn)
+    logger.info("Database schema is current")

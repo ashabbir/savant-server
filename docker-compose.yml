@@ -19,13 +19,8 @@ services:
       start_period: 15s
 
   savant-server:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        SAVANT_UID: ${SAVANT_UID:-501}
-        SAVANT_GID: ${SAVANT_GID:-20}
-    image: savant-server:latest
+    image: ${SAVANT_SERVER_IMAGE:-ashabbir/savant-server:latest}
+    pull_policy: always
     container_name: savant-server
     restart: unless-stopped
     read_only: true

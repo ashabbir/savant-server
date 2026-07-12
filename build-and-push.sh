@@ -18,9 +18,6 @@ docker build \
   --build-arg SAVANT_GID="$(id -g)" \
   -t "$LOCAL_IMAGE_TAG" .
 
-echo "→ Restarting local compose stack"
-docker compose up -d --build --remove-orphans
-
 echo "→ Tagging Docker Hub images"
 docker tag "$LOCAL_IMAGE_TAG" "${DOCKERHUB_REPO}:latest"
 docker tag "$LOCAL_IMAGE_TAG" "${DOCKERHUB_REPO}:${RELEASE_TAG}"
@@ -28,6 +25,10 @@ docker tag "$LOCAL_IMAGE_TAG" "${DOCKERHUB_REPO}:${RELEASE_TAG}"
 echo "→ Pushing Docker Hub tags"
 docker push "${DOCKERHUB_REPO}:latest"
 docker push "${DOCKERHUB_REPO}:${RELEASE_TAG}"
+
+echo "→ Restarting local compose stack (pulling latest from Docker Hub)"
+docker compose pull savant-server
+docker compose up -d --remove-orphans
 
 echo ""
 echo "✔ Done."

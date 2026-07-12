@@ -53,7 +53,8 @@ with app.app_context():
     try:
         init_schema()
     except Exception as e:
-        logger.error(f"Database initialization failed: {e}")
+        logger.critical("Database initialization failed; refusing to start: %s", e)
+        raise
 
 # ── Global Error Handlers ─────────────────────────────────────────────────────
 @app.errorhandler(404)
