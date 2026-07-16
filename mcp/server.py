@@ -355,7 +355,7 @@ def list_tasks(
 
     return [
         {
-            "id": t["id"],
+            "id": t.get("id") or t.get("task_id", ""),
             "title": t.get("title", ""),
             "description": t.get("description", ""),
             "status": t.get("status", "todo"),
@@ -450,7 +450,7 @@ def get_next_task(workspace_id: str = "") -> dict:
     actionable.sort(key=lambda t: PRIORITY_ORDER.get(t.get("priority", "medium"), 2))
     task = actionable[0]
     return {
-        "id": task["id"],
+        "id": task.get("id") or task.get("task_id", ""),
         "title": task.get("title", ""),
         "description": task.get("description", ""),
         "status": task.get("status", "todo"),
