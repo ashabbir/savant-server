@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 import subprocess
+import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Iterator, Optional
 from urllib.parse import urlparse, urlunparse
 
 
@@ -153,19 +156,38 @@ def ingest_repo(url: str, branch: Optional[str] = None) -> IngestedProject:
     _assert_under_base(target_path, base_dir)
 
     safe_url = _normalize_remote_url(parsed)
-    auth_url = _build_auth_url(parsed, provider, token)
 
     if target_path.exists():
         if not (target_path / ".git").is_dir():
             raise IngestionError(
                 f"Target path already exists and is not a git repository: {target_path}"
             )
-        _update_checkout(target_path, auth_url, safe_url, branch)
+        _update_checkout(target_path, safe_url, provider, token, branch)
     else:
         target_path.parent.mkdir(parents=True, exist_ok=True)
-        _clone_checkout(target_path, auth_url, safe_url, branch)
+        _clone_checkout(target_path, safe_url, provider, token, branch)
 
     return IngestedProject(name=slug, path=str(target_path))
+
+
+def refresh_repo(repo_path: str, branch: Optional[str] = None) -> IngestedProject:
+    """Pull the configured provider's latest code into an existing checkout."""
+    target_path = Path(repo_path).expanduser().resolve()
+    if not target_path.is_dir() or not (target_path / ".git").is_dir():
+        raise IngestionError("Project is not an existing Git repository")
+
+    remote_url = _git_remote_url(target_path)
+    if not remote_url:
+        raise IngestionError("Project has no origin remote to refresh")
+
+    parsed = _parse_repo_url(remote_url)
+    provider = detect_repo_provider(remote_url)
+    token = _token_for_provider(provider)
+    if not token:
+        raise IngestionError(f"{provider.title()} source is not configured")
+
+    _update_checkout(target_path, _normalize_remote_url(parsed), provider, token, branch)
+    return IngestedProject(name=target_path.name, path=str(target_path))
 
 
 def ingest_directory(directory: str) -> IngestedProject:
@@ -194,9 +216,15 @@ def _parse_repo_url(url: str):
     if not url or not url.strip():
         raise IngestionError("url required")
     candidate = url.strip()
+    scp_match = re.match(r"^(?P<user>[^@/:]+)@(?P<host>[^/:]+):(?P<path>.+)$", candidate)
+    if scp_match:
+        return urlparse(
+            f"ssh://{scp_match.group('user')}@{scp_match.group('host')}/"
+            f"{scp_match.group('path').lstrip('/')}"
+        )
     parsed = urlparse(candidate)
-    if parsed.scheme not in {"http", "https"}:
-        raise IngestionError("Repository URL must start with http:// or https://")
+    if parsed.scheme not in {"http", "https", "ssh"}:
+        raise IngestionError("Repository URL must be HTTPS or SSH")
     if not parsed.hostname:
         raise IngestionError("Repository URL host is invalid")
     return parsed
@@ -207,7 +235,8 @@ def _normalize_remote_url(parsed) -> str:
     netloc = host
     if parsed.port:
         netloc = f"{netloc}:{parsed.port}"
-    return urlunparse(parsed._replace(netloc=netloc))
+    scheme = "https" if parsed.scheme == "ssh" else parsed.scheme
+    return urlunparse(parsed._replace(scheme=scheme, netloc=netloc))
 
 
 def _repo_slug_from_url(path: str) -> Optional[str]:
@@ -246,51 +275,64 @@ def _assert_under_base(target: Path, base: Path) -> None:
         raise IngestionError("Path must stay within BASE_CODE_DIR") from exc
 
 
-def _build_auth_url(parsed, provider: str, token: str) -> str:
-    # Keep credentials out of logs/errors; this URL is only passed directly to git.
-    if provider == "github":
-        netloc = f"x-access-token:{token}@{parsed.hostname}"
-    else:
-        netloc = f"oauth2:{token}@{parsed.hostname}"
-    if parsed.port:
-        netloc = f"{netloc}:{parsed.port}"
-    return urlunparse(parsed._replace(netloc=netloc))
+@contextmanager
+def _git_auth_environment(provider: str, token: str) -> Iterator[Dict[str, str]]:
+    """Provide Git credentials without putting the token in argv or git config."""
+    username = "x-access-token" if provider == "github" else "oauth2"
+    script_path = None
+    try:
+        with tempfile.NamedTemporaryFile("w", prefix="savant-askpass-", delete=False) as script:
+            script.write(
+                "#!/bin/sh\n"
+                "case \"$1\" in\n"
+                "  *[Uu]sername*) printf '%s\\n' \"$SAVANT_GIT_ASKPASS_USERNAME\" ;;\n"
+                "  *) printf '%s\\n' \"$SAVANT_GIT_ASKPASS_TOKEN\" ;;\n"
+                "esac\n"
+            )
+            script_path = Path(script.name)
+        script_path.chmod(script_path.stat().st_mode | stat.S_IXUSR)
+        yield {
+            **os.environ,
+            "GIT_ASKPASS": str(script_path),
+            "GIT_TERMINAL_PROMPT": "0",
+            "SAVANT_GIT_ASKPASS_USERNAME": username,
+            "SAVANT_GIT_ASKPASS_TOKEN": token,
+        }
+    finally:
+        if script_path:
+            script_path.unlink(missing_ok=True)
 
 
-def _clone_checkout(target_path: Path, auth_url: str, safe_url: str, branch: Optional[str]) -> None:
+def _clone_checkout(target_path: Path, safe_url: str, provider: str, token: str, branch: Optional[str]) -> None:
     cmd = ["git", "clone"]
     if branch:
         cmd.extend(["--branch", branch])
-    cmd.extend([auth_url, str(target_path)])
-    _run_git(cmd)
-
-    # Reset origin URL without credentials after clone.
-    _run_git(["git", "-C", str(target_path), "remote", "set-url", "origin", safe_url])
-
-    if branch:
-        _ensure_local_branch(target_path, branch)
+    cmd.extend([safe_url, str(target_path)])
+    with _git_auth_environment(provider, token) as env:
+        _run_git(cmd, env=env)
 
 
-def _update_checkout(target_path: Path, auth_url: str, safe_url: str, branch: Optional[str]) -> None:
-    _run_git(["git", "-C", str(target_path), "remote", "set-url", "origin", auth_url])
-    try:
-        _run_git(["git", "-C", str(target_path), "fetch", "origin", "--prune"])
-        if branch:
-            _ensure_branch_exists(target_path, branch)
-            _run_git(["git", "-C", str(target_path), "checkout", branch])
-            _run_git(["git", "-C", str(target_path), "pull", "origin", branch])
-        else:
-            default_branch = _default_remote_branch(target_path)
-            _run_git(["git", "-C", str(target_path), "checkout", default_branch])
-            _run_git(["git", "-C", str(target_path), "pull", "origin", default_branch])
-    finally:
-        _run_git(["git", "-C", str(target_path), "remote", "set-url", "origin", safe_url])
+def _update_checkout(target_path: Path, safe_url: str, provider: str, token: str, branch: Optional[str]) -> None:
+    with _git_auth_environment(provider, token) as env:
+        _run_git(["git", "-C", str(target_path), "remote", "set-url", "origin", safe_url], env=env)
+        try:
+            _run_git(["git", "-C", str(target_path), "fetch", "origin", "--prune"], env=env)
+            if branch:
+                _ensure_branch_exists(target_path, branch, env=env)
+                _run_git(["git", "-C", str(target_path), "checkout", branch], env=env)
+                _run_git(["git", "-C", str(target_path), "pull", "origin", branch], env=env)
+            else:
+                default_branch = _default_remote_branch(target_path, env=env)
+                _run_git(["git", "-C", str(target_path), "checkout", default_branch], env=env)
+                _run_git(["git", "-C", str(target_path), "pull", "origin", default_branch], env=env)
+        finally:
+            _run_git(["git", "-C", str(target_path), "remote", "set-url", "origin", safe_url], env=env)
 
 
-def _ensure_branch_exists(target_path: Path, branch: str) -> None:
+def _ensure_branch_exists(target_path: Path, branch: str, env=None) -> None:
     proc = _run_git(
         ["git", "-C", str(target_path), "show-ref", "--verify", f"refs/remotes/origin/{branch}"],
-        raise_on_error=False,
+        raise_on_error=False, env=env,
     )
     if proc.returncode != 0:
         raise IngestionError(f"Branch not found: {branch}")
@@ -305,29 +347,29 @@ def _ensure_local_branch(target_path: Path, branch: str) -> None:
         _run_git(["git", "-C", str(target_path), "checkout", "-b", branch])
 
 
-def _default_remote_branch(target_path: Path) -> str:
+def _default_remote_branch(target_path: Path, env=None) -> str:
     proc = _run_git(
         ["git", "-C", str(target_path), "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
-        raise_on_error=False,
+        raise_on_error=False, env=env,
     )
     if proc.returncode == 0 and proc.stdout.strip():
         value = proc.stdout.strip()
         if value.startswith("origin/"):
             return value[len("origin/"):]
-    cur = _run_git(["git", "-C", str(target_path), "rev-parse", "--abbrev-ref", "HEAD"])
+    cur = _run_git(["git", "-C", str(target_path), "rev-parse", "--abbrev-ref", "HEAD"], env=env)
     branch = cur.stdout.strip()
     if branch and branch != "HEAD":
         return branch
     raise IngestionError("Unable to determine repository default branch")
 
 
-def _run_git(cmd, raise_on_error: bool = True) -> subprocess.CompletedProcess:
+def _run_git(cmd, raise_on_error: bool = True, env=None) -> subprocess.CompletedProcess:
     proc = subprocess.run(
         cmd,
         check=False,
         capture_output=True,
         text=True,
-        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0", **(env or {})},
     )
     if proc.returncode != 0 and raise_on_error:
         message = _sanitize_git_error(proc.stderr or proc.stdout or "git command failed")

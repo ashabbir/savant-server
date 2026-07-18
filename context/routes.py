@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 
 from flask import Blueprint, jsonify, request
+from utils.auth import admin_required
 
 logger = logging.getLogger(__name__)
 
@@ -206,6 +207,13 @@ def analyze():
 
     from .analysis import AnalysisTarget, analyze_code
     from .db import ContextDB
+    from .walker import FileWalker
+
+    if repo and path:
+        repo_record = ContextDB.get_repo(repo)
+        repo_root = Path((repo_record or {}).get("path", "")).resolve() if repo_record else None
+        if not repo_root or not repo_root.exists() or not FileWalker(repo_root, tracked_only=True).is_allowed(path):
+            return jsonify({"error": "Analysis is limited to tracked, non-ignored repository source files"}), 404
 
     before_text = ""
     if code_text is None and repo and path:
@@ -299,7 +307,10 @@ def list_repos():
     if not _ensure_init():
         return jsonify({"error": "Context not initialized"}), 503
     from .db import ContextDB
+    from .ingestion import inspect_project_source
     repos = ContextDB.list_repos()
+    for repo in repos:
+        repo.update(inspect_project_source(repo.get("path", "")))
     return jsonify({"repos": repos, "count": len(repos)})
 
 
@@ -382,6 +393,7 @@ def repo_sources():
 
 
 @context_bp.route("/api/context/repos", methods=["POST"])
+@admin_required
 def add_repo():
     """Add a project from a configured source (does NOT index it)."""
     if not _ensure_init():
@@ -426,7 +438,34 @@ def add_repo():
     return jsonify(repo), 201
 
 
+@context_bp.route("/api/context/repos/<name>/refresh", methods=["POST"])
+@admin_required
+def refresh_repo(name):
+    """Update a registered Git checkout from its origin remote."""
+    if not _ensure_init():
+        return jsonify({"error": "Context not initialized"}), 503
+
+    from .db import ContextDB
+    repo = ContextDB.get_repo(name)
+    if not repo:
+        return jsonify({"error": f"Project not found: {name}"}), 404
+
+    repo_path, path_error = _validate_repo_path(repo)
+    if path_error:
+        return jsonify({"error": path_error}), 400
+
+    from .ingestion import IngestionError, refresh_repo as update_repo
+
+    try:
+        refreshed = update_repo(str(repo_path))
+    except IngestionError as e:
+        return jsonify({"error": str(e)}), 400
+
+    return jsonify(ContextDB.add_repo(refreshed.name, refreshed.path))
+
+
 @context_bp.route("/api/context/repos/<name>", methods=["DELETE"])
+@admin_required
 def delete_repo(name):
     if not _ensure_init():
         return jsonify({"error": "Context not initialized"}), 503
@@ -438,6 +477,7 @@ def delete_repo(name):
 
 
 @context_bp.route("/api/context/repos/stop", methods=["POST"])
+@admin_required
 def stop_indexing():
     """Request cancellation of an in-progress indexing job, or reset a stuck state."""
     data = request.get_json(force=True)
@@ -476,6 +516,7 @@ def stop_indexing():
 
 
 @context_bp.route("/api/context/repos/purge", methods=["POST"])
+@admin_required
 def purge_repo():
     """Clear all indexed data (index + AST) for a project."""
     if not _ensure_init():
@@ -497,6 +538,7 @@ def purge_repo():
 
 
 @context_bp.route("/api/context/repos/index/purge", methods=["POST"])
+@admin_required
 def purge_index():
     """Clear ONLY chunk/vector data for a project."""
     if not _ensure_init():
@@ -517,6 +559,7 @@ def purge_index():
 
 
 @context_bp.route("/api/context/repos/ast/generate", methods=["POST"])
+@admin_required
 def generate_ast():
     """Extract AST nodes for a single project via the job queue."""
     if not _ensure_init():
@@ -553,6 +596,7 @@ def generate_ast():
 
 
 @context_bp.route("/api/context/repos/ast/purge", methods=["POST"])
+@admin_required
 def purge_ast():
     """Clear ONLY AST data for a project."""
     if not _ensure_init():
@@ -577,6 +621,7 @@ def purge_ast():
 # ---------------------------------------------------------------------------
 
 @context_bp.route("/api/context/repos/index", methods=["POST"])
+@admin_required
 def index_repo():
     """Index (or re-index) a single project via the job queue."""
     if not _ensure_init():
@@ -612,6 +657,7 @@ def index_repo():
 
 
 @context_bp.route("/api/context/repos/reindex", methods=["POST"])
+@admin_required
 def reindex_repo():
     """Re-index a single project (clear old data + index) via job queue."""
     if not _ensure_init():
@@ -648,6 +694,7 @@ def reindex_repo():
 
 
 @context_bp.route("/api/context/repos/index-all", methods=["POST"])
+@admin_required
 def index_all():
     """Index all un-indexed projects via a single batch job."""
     if not _ensure_init():
@@ -671,6 +718,7 @@ def index_all():
 
 
 @context_bp.route("/api/context/repos/reindex-all", methods=["POST"])
+@admin_required
 def reindex_all():
     """Re-index all projects via a single batch job."""
     if not _ensure_init():

@@ -90,6 +90,44 @@ def test_detect_repo_provider_variants():
     assert detect_repo_provider("https://github.com/org/repo.git") == "github"
     assert detect_repo_provider("https://gitlab.com/org/repo") == "gitlab"
     assert detect_repo_provider("https://gitlab.internal.local/group/repo.git") == "gitlab"
+    assert detect_repo_provider("git@github.com:org/repo.git") == "github"
+    assert detect_repo_provider("ssh://git@gitlab.com/org/repo.git") == "gitlab"
+    assert detect_repo_provider("git@gitlab.internal.local:group/repo.git") == "gitlab"
+
+
+def test_ssh_repo_url_is_normalized_to_credential_free_https():
+    from context.ingestion import _normalize_remote_url, _parse_repo_url
+
+    parsed = _parse_repo_url("git@github.com:org/repo.git")
+
+    assert _normalize_remote_url(parsed) == "https://github.com/org/repo.git"
+
+
+def test_ssh_repo_clone_uses_askpass_environment_not_token_in_command(tmp_path, monkeypatch):
+    base = tmp_path / "repos"
+    base.mkdir()
+    monkeypatch.setenv("BASE_CODE_DIR", str(base))
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_test_token")
+
+    commands = []
+    environments = []
+
+    def fake_run_git(cmd, raise_on_error=True, env=None):
+        commands.append(cmd)
+        environments.append(env)
+        return _cp(cmd, returncode=0)
+
+    monkeypatch.setattr("context.ingestion._run_git", fake_run_git)
+
+    out = ingest_repo("git@github.com:acme/repo.git")
+
+    assert out.name == "repo"
+    assert any(cmd[:2] == ["git", "clone"] for cmd in commands)
+    assert all("ghp_test_token" not in " ".join(cmd) for cmd in commands)
+    auth_env = next(env for env in environments if env)
+    assert auth_env["GIT_ASKPASS"]
+    assert auth_env["SAVANT_GIT_ASKPASS_TOKEN"] == "ghp_test_token"
+    assert any(cmd[-3:] == ["remote", "set-url", "origin"] and "https://github.com/acme/repo.git" in cmd for cmd in commands)
 
 
 def test_ingest_repo_rejects_missing_token(tmp_path, monkeypatch):
@@ -113,7 +151,7 @@ def test_ingest_repo_branch_success_for_existing_checkout(tmp_path, monkeypatch)
 
     commands = []
 
-    def fake_run_git(cmd, raise_on_error=True):
+    def fake_run_git(cmd, raise_on_error=True, env=None):
         commands.append(cmd)
         if "show-ref" in cmd:
             return _cp(cmd, returncode=0)
@@ -137,7 +175,7 @@ def test_ingest_repo_branch_failure_for_existing_checkout(tmp_path, monkeypatch)
     monkeypatch.setenv("BASE_CODE_DIR", str(base))
     monkeypatch.setenv("GITHUB_TOKEN", "ghp_test_token")
 
-    def fake_run_git(cmd, raise_on_error=True):
+    def fake_run_git(cmd, raise_on_error=True, env=None):
         if "show-ref" in cmd:
             return _cp(cmd, returncode=1, stderr="fatal: bad ref")
         return _cp(cmd, returncode=0)
@@ -196,6 +234,36 @@ def test_add_repo_route_rejects_source_url_mismatch(client, monkeypatch):
     assert "does not match source" in resp.get_json()["error"]
 
 
+def test_refresh_repo_updates_existing_checkout(client, monkeypatch):
+    from context import routes
+    from context import db as context_db
+
+    monkeypatch.setattr(routes, "_ensure_init", lambda: True)
+    monkeypatch.setattr(
+        context_db.ContextDB,
+        "get_repo",
+        staticmethod(lambda _name: {"id": 4, "name": "repo", "path": "/tmp/repos/repo"}),
+    )
+    refreshed = []
+    monkeypatch.setattr(
+        "context.ingestion.refresh_repo",
+        lambda path, branch=None: refreshed.append((path, branch)) or IngestedProject(
+            name="repo", path="/tmp/repos/repo"
+        ),
+    )
+    monkeypatch.setattr(
+        context_db.ContextDB,
+        "add_repo",
+        staticmethod(lambda name, path: {"id": 4, "name": name, "path": path, "status": "added"}),
+    )
+
+    resp = client.post("/api/context/repos/repo/refresh")
+
+    assert resp.status_code == 200
+    assert refreshed == [("/tmp/repos/repo", None)]
+    assert resp.get_json()["name"] == "repo"
+
+
 def test_file_walker_respects_gitignore_and_node_modules(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -204,10 +272,14 @@ def test_file_walker_respects_gitignore_and_node_modules(tmp_path):
     (repo / ".gitignore").write_text("generated/\n")
     (repo / "src").mkdir()
     (repo / "src" / "main.ts").write_text("export const ok = true;\n")
+    (repo / "src" / ".gitignore").write_text("private/\n")
+    (repo / "src" / "private").mkdir()
+    (repo / "src" / "private" / "secret.ts").write_text("export const secret = true;\n")
     (repo / "generated").mkdir()
     (repo / "generated" / "auto.ts").write_text("export const auto = true;\n")
     (repo / "node_modules").mkdir()
     (repo / "node_modules" / "pkg.js").write_text("module.exports = {};\n")
+    subprocess.run(["git", "-C", str(repo), "add", "-f", "generated/auto.ts"], check=True)
 
     files = sorted(str(path).replace("\\", "/") for path in FileWalker(repo).walk())
 

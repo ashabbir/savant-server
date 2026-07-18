@@ -4,6 +4,7 @@ import time
 import threading
 import re
 from flask import Blueprint, jsonify, request
+from utils.auth import admin_required
 from db.experiences import ExperienceDB
 from db.knowledge_graph import KnowledgeGraphDB
 from db.tasks import TaskDB
@@ -76,6 +77,7 @@ def health():
 # ---------------------------------------------------------------------------
 
 @knowledge_bp.route("/api/knowledge/nodes", methods=["POST"])
+@admin_required
 def create_node():
     """Create a knowledge graph node.
 
@@ -120,6 +122,7 @@ def get_node(node_id):
 
 
 @knowledge_bp.route("/api/knowledge/nodes/<node_id>", methods=["PUT"])
+@admin_required
 def update_node(node_id):
     """Update a node. Accepts graph_type at top level — stored in metadata.graph_type."""
     if not _safe_id(node_id):
@@ -155,6 +158,7 @@ def update_node(node_id):
 
 
 @knowledge_bp.route("/api/knowledge/nodes/<node_id>", methods=["DELETE"])
+@admin_required
 def delete_node(node_id):
     """Delete a node and cascade-delete its edges."""
     if not _safe_id(node_id):
@@ -166,6 +170,7 @@ def delete_node(node_id):
 
 
 @knowledge_bp.route("/api/knowledge/prune", methods=["POST"])
+@admin_required
 def prune_graph():
     """Remove dangling edges (and optionally orphaned nodes) from the knowledge graph.
 
@@ -182,6 +187,7 @@ def prune_graph():
 
 
 @knowledge_bp.route("/api/knowledge/nodes/commit", methods=["POST"])
+@admin_required
 def commit_nodes():
     """Commit staged knowledge graph nodes to the main graph.
 
@@ -213,6 +219,7 @@ def commit_nodes():
 
 
 @knowledge_bp.route("/api/knowledge/nodes/uncommit", methods=["POST"])
+@admin_required
 def uncommit_nodes():
     """Move committed knowledge graph nodes back to staged so they leave the main graph.
 
@@ -243,6 +250,7 @@ def uncommit_nodes():
 
 
 @knowledge_bp.route("/api/knowledge/nodes/merge", methods=["POST"])
+@admin_required
 def merge_nodes():
     """Merge multiple nodes into one.
 
@@ -278,6 +286,7 @@ def merge_nodes():
 # ---------------------------------------------------------------------------
 
 @knowledge_bp.route("/api/knowledge/edges", methods=["POST"])
+@admin_required
 def create_edge():
     """Create an edge between two nodes."""
     data = request.get_json(force=True, silent=True) or {}
@@ -298,6 +307,7 @@ def create_edge():
 
 
 @knowledge_bp.route("/api/knowledge/edges/<edge_id>", methods=["DELETE"])
+@admin_required
 def delete_edge(edge_id):
     """Delete an edge."""
     if not _safe_id(edge_id):
@@ -309,6 +319,7 @@ def delete_edge(edge_id):
 
 
 @knowledge_bp.route("/api/knowledge/edges/disconnect", methods=["POST"])
+@admin_required
 def disconnect_edge():
     """Remove edge(s) between two nodes."""
     data = request.get_json(force=True)
@@ -326,6 +337,7 @@ def disconnect_edge():
 # ---------------------------------------------------------------------------
 
 @knowledge_bp.route("/api/knowledge/link-workspace", methods=["POST"])
+@admin_required
 def link_to_workspace():
     """Link a node to a workspace by adding workspace_id to metadata.workspaces array."""
     data = request.get_json(force=True)
@@ -346,6 +358,7 @@ def link_to_workspace():
 
 
 @knowledge_bp.route("/api/knowledge/unlink-workspace", methods=["POST"])
+@admin_required
 def unlink_workspace():
     """Remove a workspace from node metadata.workspaces array."""
     data = request.get_json(force=True)
@@ -365,6 +378,7 @@ def unlink_workspace():
 
 
 @knowledge_bp.route("/api/knowledge/resolve-workspaces", methods=["POST"])
+@admin_required
 def resolve_workspaces():
     """Resolve workspace IDs to {id, name} pairs for UI display."""
     data = request.get_json(force=True)
@@ -508,6 +522,7 @@ def generate_prompt():
 
 
 @knowledge_bp.route("/api/knowledge/store", methods=["POST"])
+@admin_required
 def store_experience():
     """Store a curated experience. Creates an insight node + auto-links to project.
 
@@ -671,6 +686,7 @@ def list_experiences():
 
 
 @knowledge_bp.route("/api/knowledge/<item_id>", methods=["DELETE"])
+@admin_required
 def delete_item(item_id):
     """Delete a knowledge node (or legacy experience) by ID."""
     # Try graph node first
@@ -694,6 +710,7 @@ def delete_item(item_id):
 # ---------------------------------------------------------------------------
 
 @knowledge_bp.route("/api/knowledge/nodes/bulk-delete", methods=["POST"])
+@admin_required
 def bulk_delete_nodes():
     """Delete multiple nodes at once."""
     data = request.get_json(force=True, silent=True) or {}
@@ -708,6 +725,7 @@ def bulk_delete_nodes():
 
 
 @knowledge_bp.route("/api/knowledge/nodes/bulk-link-workspace", methods=["POST"])
+@admin_required
 def bulk_link_workspace():
     """Link multiple nodes to a workspace via metadata.workspaces."""
     data = request.get_json(force=True, silent=True) or {}
@@ -732,6 +750,7 @@ def bulk_link_workspace():
 
 
 @knowledge_bp.route("/api/knowledge/edges/bulk", methods=["POST"])
+@admin_required
 def bulk_create_edges():
     """Create edges from one source to multiple targets."""
     data = request.get_json(force=True, silent=True) or {}
@@ -794,6 +813,7 @@ def export_workspace_kg():
 
 
 @knowledge_bp.route("/api/knowledge/import", methods=["POST"])
+@admin_required
 def import_workspace_kg():
     """Import nodes+edges into a workspace. Deduplicates by title+type."""
     data = request.get_json(force=True, silent=True) or {}
@@ -965,6 +985,7 @@ def purge_workspace_preview():
 
 
 @knowledge_bp.route("/api/knowledge/purge-workspace", methods=["POST"])
+@admin_required
 def purge_workspace():
     """Delete exclusive nodes and unlink shared nodes for a workspace."""
     data = request.get_json(force=True)
@@ -995,6 +1016,7 @@ def purge_workspace():
 # ---------------------------------------------------------------------------
 
 @knowledge_bp.route("/api/knowledge/import-graphify", methods=["POST"])
+@admin_required
 def import_graphify():
     """Import Graphify JSON data, converting it to Savant KG format."""
     import json as _json

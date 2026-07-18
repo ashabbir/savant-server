@@ -19,8 +19,10 @@ services:
       start_period: 15s
 
   savant-server:
-    image: ${SAVANT_SERVER_IMAGE:-ashabbir/savant-server:latest}
-    pull_policy: always
+    image: savant-server:local
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: savant-server
     restart: unless-stopped
     read_only: true
@@ -53,6 +55,8 @@ services:
       BASE_CODE_DIR: /base-code
       SAVANT_API_ONLY: "1"
       SAVANT_API_KEY: "sk-ahmed-savant-001"
+      # Loaded from the ignored local .env file; never commit the token.
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       SESSION_DIR: /nonexistent
       CLAUDE_DIR: /nonexistent
       GEMINI_DIR: /nonexistent
@@ -61,7 +65,7 @@ services:
       META_DIR: /nonexistent
     volumes:
       - ${SAVANT_DATA_DIR:-~/.savant/server-data}:/data/savant
-      - ${BASE_CODE_HOST_DIR:-/Users/home/code}:/base-code:ro
+      - ${BASE_CODE_HOST_DIR:-/Users/home/code}:/base-code:rw
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health/ready', timeout=3)"]
       interval: 15s
