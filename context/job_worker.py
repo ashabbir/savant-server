@@ -54,7 +54,7 @@ def _process_next_job():
     target = job["target"]
 
     logger.info(f"Processing job {job_id}: {job_type} → {target}")
-    JobDB.set_running(job_id)
+    # next_queued() already claimed this row atomically.
 
     try:
         result = _execute_job(job_id, job_type, target)
@@ -102,20 +102,53 @@ def _execute_job(job_id: str, job_type: str, target: str) -> dict:
         return _run_batch_index(progress_cb)
     elif job_type == "ast-all":
         return _run_batch_ast(progress_cb)
+    elif job_type in ("codegraph_index", "codegraph_sync"):
+        return _run_code_intelligence_sync(target, progress_cb)
     else:
         raise ValueError(f"Unknown job type: {job_type}")
+
+
+def _run_code_intelligence_sync(target: str, progress_cb) -> dict:
+    """Run structural create/sync without changing semantic repository status."""
+    from code_intelligence.runtime import build_service
+    from db.code_intelligence import CodeIntelligenceConfigDB
+
+    repo_path, repo_name = _resolve_repo(target)
+    progress_cb(5, "Preparing", "Resolving structural provider")
+    CodeIntelligenceConfigDB.upsert(repo_name, freshness="pending_sync", last_error_code=None)
+    try:
+        result = build_service().ensure_index(repo_name, repo_path, mode="create_or_sync")
+        progress_cb(95, "Finalizing", "Recording structural graph state")
+        health = build_service().health(repo_name, repo_path)
+        CodeIntelligenceConfigDB.upsert(
+            repo_name,
+            provider=health.provider,
+            graph_version=health.graph_version,
+            last_indexed_at=health.indexed_at,
+            last_synced_at=health.indexed_at,
+            freshness=health.freshness.value,
+            last_error_code=None,
+            last_error_at=None,
+        )
+        return result.model_dump(mode="json") if hasattr(result, "model_dump") else dict(result)
+    except Exception as exc:
+        CodeIntelligenceConfigDB.upsert(
+            repo_name, freshness="stale", last_error_code=getattr(getattr(exc, "category", None), "value", "internal"),
+            last_error_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        )
+        raise
 
 
 def _resolve_repo(name: str):
     """Look up repo in ContextDB and return (Path, repo_name)."""
     from context.db import ContextDB
-    repo = ContextDB.get_repo(name)
+    repo = ContextDB.get_repo_by_identifier(name)
     if not repo:
         raise FileNotFoundError(f"Project not found: {name}")
     repo_path = Path(repo.get("path", ""))
     if not repo_path.exists():
         raise FileNotFoundError(f"Path does not exist: {repo_path}")
-    return repo_path, name
+    return repo_path, repo["name"]
 
 
 def _run_index(target: str, progress_cb, clear: bool = True) -> dict:

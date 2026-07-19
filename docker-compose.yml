@@ -19,12 +19,15 @@ services:
       start_period: 15s
 
   savant-server:
-    image: savant-server:local
+    image: ${SAVANT_SERVER_IMAGE:-ashabbir/savant-server:latest}
     build:
       context: .
       dockerfile: Dockerfile
     container_name: savant-server
     restart: unless-stopped
+    depends_on:
+      savant-db:
+        condition: service_healthy
     read_only: true
     cap_drop:
       - ALL
@@ -33,7 +36,7 @@ services:
     pids_limit: 512
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=256m
-      - /run:rw,noexec,nosuid,size=64m
+      - /run/savant:rw,noexec,nosuid,size=16m,uid=504,gid=999,mode=0700
     ports:
       - "8090:8090"
       - "8091:8091"
@@ -53,6 +56,7 @@ services:
       SAVANT_SERVER_DATA_DIR: /data/savant
       EMBEDDING_MODEL_DIR: /data/savant/models-v1
       BASE_CODE_DIR: /base-code
+      SAVANT_CODEGRAPH_SOCKET: /run/savant/codegraph.sock
       SAVANT_API_ONLY: "1"
       SAVANT_API_KEY: "sk-ahmed-savant-001"
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
@@ -60,7 +64,7 @@ services:
       - ${SAVANT_DATA_DIR:-~/.savant/server-data}:/data/savant
       - ${BASE_CODE_HOST_DIR:-/Users/home/code}:/base-code:rw
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health/ready', timeout=3)"]
+      test: ["CMD-SHELL", "node /app/codegraph_bridge/src/healthcheck.js && python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health/ready', timeout=3)\""]
       interval: 15s
       timeout: 5s
       retries: 20

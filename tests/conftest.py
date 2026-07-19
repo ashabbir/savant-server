@@ -10,8 +10,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
 @pytest.fixture(autouse=True)
-def _isolated_db(tmp_path, monkeypatch):
+def _isolated_db(tmp_path, monkeypatch, request):
     """Every test gets its own fresh SQLite database."""
+    if request.node.get_closest_marker("no_db"):
+        yield None
+        return
     db_path = str(tmp_path / "test_savant.db")
     monkeypatch.setenv("SAVANT_DB", db_path)
 

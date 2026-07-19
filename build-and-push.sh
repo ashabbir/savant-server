@@ -4,9 +4,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-LOCAL_IMAGE_TAG="${SERVER_IMAGE_TAG:-savant-server:latest}"
 DOCKERHUB_REPO="${DOCKERHUB_REPO:-ashabbir/savant-server}"
-RELEASE_TAG="${RELEASE_TAG:-$(date +%F)}"
+RELEASE_TAG="${RELEASE_TAG:-$(python3 -c 'import json; print(json.load(open("build-info.json"))["version"])')}"
+LOCAL_IMAGE_TAG="${SERVER_IMAGE_TAG:-${DOCKERHUB_REPO}:${RELEASE_TAG}}"
 
 echo "═══════════════════════════════════════════"
 echo "  Savant Server — Build, Restart, Push"
@@ -26,9 +26,9 @@ echo "→ Pushing Docker Hub tags"
 docker push "${DOCKERHUB_REPO}:latest"
 docker push "${DOCKERHUB_REPO}:${RELEASE_TAG}"
 
-echo "→ Restarting local compose stack (pulling latest from Docker Hub)"
-docker compose pull savant-server
-docker compose up -d --remove-orphans
+echo "→ Restarting local compose stack from the pushed release image"
+SAVANT_SERVER_IMAGE="${DOCKERHUB_REPO}:${RELEASE_TAG}" docker compose pull savant-server
+SAVANT_SERVER_IMAGE="${DOCKERHUB_REPO}:${RELEASE_TAG}" docker compose up -d --no-build --remove-orphans
 
 echo ""
 echo "✔ Done."

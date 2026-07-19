@@ -31,6 +31,7 @@ from knowledge.routes import knowledge_bp
 from tools.routes import tools_bp
 from reminders.routes import reminders_bp
 from graphify.routes import graphify_bp
+from code_intelligence.routes import code_intelligence_bp
 from server_paths import (
     get_server_data_dir, 
     get_server_db_path, 
@@ -122,6 +123,7 @@ app.register_blueprint(reminders_bp)
 
 # Register graphify API blueprint
 app.register_blueprint(graphify_bp)
+app.register_blueprint(code_intelligence_bp)
 
 # Register skills API blueprint
 from abilities.skills_routes import skills_bp

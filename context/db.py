@@ -108,6 +108,25 @@ class ContextDB:
                 release_connection(conn)
 
     @staticmethod
+    def get_repo_by_identifier(repo_id: str, conn=None) -> Optional[Dict[str, Any]]:
+        """Resolve the explicit repository ID, retaining name compatibility."""
+        local_conn = False
+        if conn is None:
+            conn = get_connection()
+            local_conn = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT * FROM ctx_repos WHERE id::text = %s OR name = %s",
+                    (str(repo_id), str(repo_id)),
+                )
+                row = cur.fetchone()
+            return dict(row) if row else None
+        finally:
+            if local_conn:
+                release_connection(conn)
+
+    @staticmethod
     def list_repos() -> List[Dict[str, Any]]:
         conn = get_connection()
         try:

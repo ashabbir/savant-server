@@ -70,25 +70,44 @@ class JobDB:
 
     @staticmethod
     def next_queued() -> dict | None:
-        """Pop the oldest queued job (FIFO)."""
+        """Atomically claim and return the oldest queued job (FIFO).
+
+        SKIP LOCKED permits multiple Gunicorn worker threads to poll safely without
+        executing the same row. The status transition commits in this transaction.
+        """
         conn = get_connection()
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT * FROM jobs WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1"
+                    """WITH candidate AS (
+                           SELECT id FROM jobs
+                           WHERE status = 'queued'
+                           ORDER BY created_at ASC
+                           FOR UPDATE SKIP LOCKED
+                           LIMIT 1
+                       )
+                       UPDATE jobs AS j
+                       SET status = 'running', started_at = %s, phase = 'Starting'
+                       FROM candidate
+                       WHERE j.id = candidate.id
+                       RETURNING j.*""",
+                    (_now(),),
                 )
                 row = cur.fetchone()
+            conn.commit()
             return _row_to_dict(row, _JSON_FIELDS)
         finally:
             release_connection(conn)
 
     @staticmethod
     def set_running(job_id: str):
+        """Compatibility no-op transition for callers holding an atomic claim."""
         conn = get_connection()
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "UPDATE jobs SET status = 'running', started_at = %s WHERE id = %s",
+                    """UPDATE jobs SET status = 'running', started_at = COALESCE(started_at, %s)
+                       WHERE id = %s AND status IN ('queued', 'running')""",
                     (_now(), job_id),
                 )
             conn.commit()

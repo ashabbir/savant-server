@@ -88,7 +88,7 @@ def health():
 
     vv = vec_version()
     model_dir = resolve_model_dir()
-    return jsonify({
+    payload = {
         "available": _initialized and vv is not None,
         "sqlite_vec": {"loaded": vv is not None, "version": vv},
         "model": {
@@ -99,7 +99,21 @@ def health():
             "path": str(model_dir),
         },
         "counts": stats,
-    })
+    }
+    repo_id = request.args.get("repo_id") or request.args.get("repo")
+    if repo_id:
+        try:
+            record = ContextDB.get_repo_by_identifier(repo_id)
+            if record:
+                from code_intelligence.runtime import build_service
+                structural = build_service().health(str(repo_id), _resolve_repo_path(record["path"]))
+                payload["code_intelligence"] = structural.model_dump(mode="json")
+        except Exception as exc:
+            payload["code_intelligence"] = {
+                "provider": "unknown", "indexed": False, "freshness": "unavailable",
+                "warnings": [str(exc)],
+            }
+    return jsonify(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -174,12 +188,30 @@ def ast_search():
         return jsonify({"error": "query required", "results": []}), 400
 
     repo = request.args.get("repo")
-    repo_filter = repo.split(",") if repo and "," in repo else repo
-
     try:
         from .db import ContextDB
+        if repo and "," not in repo:
+            record = ContextDB.get_repo(repo)
+            if not record:
+                return jsonify({"error": "repository not found", "results": []}), 404
+            from code_intelligence.runtime import build_service
+            result = build_service().search_symbols(
+                repo, _resolve_repo_path(record["path"]), query, limit=request.args.get("limit", type=int) or 20
+            )
+            results = [{
+                "id": symbol.id, "node_type": symbol.kind, "name": symbol.name,
+                "start_line": symbol.location.start_line, "end_line": symbol.location.end_line,
+                "rel_path": symbol.location.file_path, "repo": repo,
+                "qualified_name": symbol.qualified_name, "signature": symbol.signature,
+                "provider": result.provider,
+            } for symbol in result.items]
+            return jsonify({"query": query, "result_count": len(results), "results": results,
+                            "provider": result.provider, "incomplete": result.incomplete,
+                            "warnings": result.warnings, "deprecated": True})
+        repo_filter = repo.split(",") if repo and "," in repo else repo
         results = ContextDB.search_ast_nodes(query, repo_filter=repo_filter)
-        return jsonify({"query": query, "result_count": len(results), "results": results})
+        return jsonify({"query": query, "result_count": len(results), "results": results,
+                        "provider": "legacy", "freshness": "fresh", "deprecated": True})
     except Exception as e:
         logger.error(f"AST search failed: {e}")
         return jsonify({"error": str(e), "results": []}), 500
@@ -601,6 +633,16 @@ def generate_ast():
         }), 400
 
     from db.jobs import JobDB
+    from db.code_intelligence import CodeIntelligenceConfigDB
+    config = CodeIntelligenceConfigDB.get(name)
+    if config and config.get("provider") == "codegraph":
+        existing = JobDB.find_active("codegraph_sync", name) or JobDB.find_active("codegraph_index", name)
+        if existing:
+            return jsonify({"started": True, "name": name, "type": "codegraph",
+                            "provider": "codegraph", "job_id": existing["id"], "reused": True})
+        job = JobDB.create_job("codegraph_sync", name)
+        return jsonify({"started": True, "name": name, "type": "codegraph",
+                        "provider": "codegraph", "job_id": job["id"]})
     existing = JobDB.find_active("ast", name)
     if existing:
         return jsonify({"started": True, "name": name, "type": "ast",
@@ -961,6 +1003,19 @@ def context_research():
         return {"query": q, "result_count": len(res[:limit]), "results": res[:limit]}
 
     def _exec_structure_search():
+        if repo and isinstance(repo, str) and "," not in repo:
+            record = ContextDB.get_repo(repo)
+            if record:
+                from code_intelligence.runtime import build_service
+                search_result = build_service().search_symbols(repo, _resolve_repo_path(record["path"]), q, limit=limit)
+                res = [{"id": s.id, "node_type": s.kind, "name": s.name,
+                        "start_line": s.location.start_line, "end_line": s.location.end_line,
+                        "rel_path": s.location.file_path, "repo": repo,
+                        "qualified_name": s.qualified_name, "signature": s.signature}
+                       for s in search_result.items]
+                return {"query": q, "result_count": len(res), "results": res,
+                        "provider": search_result.provider, "incomplete": search_result.incomplete,
+                        "warnings": search_result.warnings}
         repo_filter = repo.split(",") if repo and isinstance(repo, str) and "," in repo else repo
         res = ContextDB.search_ast_nodes(q, repo_filter=repo_filter)
         if should_exclude_tests:
@@ -977,9 +1032,20 @@ def context_research():
         return {"query": q, "result_count": len(res), "results": res}
 
     def _exec_graph_search(g_query):
-        from graphify.db import GraphifyDB
-        workspace_id = repo if isinstance(repo, str) else (repo[0] if repo else None)
-        return GraphifyDB.search_nodes(query=g_query, workspace_id=workspace_id, limit=limit)
+        if not isinstance(repo, str) or "," in repo:
+            return {"error": "explicit single repo is required for structural exploration"}
+        record = ContextDB.get_repo(repo)
+        if not record:
+            return {"error": "repository not found"}
+        from code_intelligence.runtime import build_service
+        explored = build_service().explore(repo, _resolve_repo_path(record["path"]), g_query, max_files=min(limit, 20))
+        return {
+            "provider": explored.provider,
+            "incomplete": explored.incomplete,
+            "warnings": explored.warnings,
+            "symbols": [s.model_dump(mode="json") for s in explored.symbols],
+            "edges": [e.model_dump(mode="json") for e in explored.edges],
+        }
 
     with ThreadPoolExecutor(max_workers=8) as executor:
         futures = {}
@@ -1064,4 +1130,3 @@ def context_research():
             final_payload[key] = results[key]
 
     return jsonify(final_payload)
-

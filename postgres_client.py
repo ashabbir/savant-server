@@ -470,6 +470,34 @@ CREATE INDEX IF NOT EXISTS idx_jobs_status  ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_created ON jobs(created_at);
 CREATE INDEX IF NOT EXISTS idx_jobs_target  ON jobs(target, job_type);
 
+-- Provider-neutral structural code intelligence operational metadata.
+-- Graph nodes/edges remain owned by the selected provider and are never mirrored here.
+CREATE TABLE IF NOT EXISTS code_intelligence_config (
+    repo_id          INTEGER PRIMARY KEY REFERENCES ctx_repos(id) ON DELETE CASCADE,
+    provider         TEXT NOT NULL DEFAULT 'legacy'
+                     CHECK (provider IN ('legacy', 'codegraph')),
+    index_root       TEXT,
+    engine_version   TEXT,
+    graph_version    TEXT,
+    last_indexed_at  TIMESTAMPTZ,
+    last_synced_at   TIMESTAMPTZ,
+    freshness        TEXT NOT NULL DEFAULT 'unavailable'
+                     CHECK (freshness IN ('fresh', 'pending_sync', 'stale', 'degraded', 'unavailable')),
+    last_error_code  TEXT,
+    last_error_at    TIMESTAMPTZ,
+    watch_enabled    BOOLEAN NOT NULL DEFAULT FALSE,
+    rollout_state    TEXT NOT NULL DEFAULT 'legacy'
+                     CHECK (rollout_state IN ('legacy', 'shadow', 'codegraph_primary', 'rolled_back')),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_ci_config_provider ON code_intelligence_config(provider);
+
+-- At most one queued/running structural writer job may exist per repository.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_one_active_structural_repo
+ON jobs(target)
+WHERE status IN ('queued', 'running')
+  AND job_type IN ('codegraph_index', 'codegraph_sync', 'codegraph_delete');
+
 -- Reminders
 CREATE TABLE IF NOT EXISTS reminders (
     reminder_id         TEXT PRIMARY KEY,

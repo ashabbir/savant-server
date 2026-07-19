@@ -1,0 +1,10 @@
+import net from 'node:net';
+import crypto from 'node:crypto';
+const socketPath = process.env.SAVANT_CODEGRAPH_SOCKET || '/run/savant/codegraph.sock';
+const id = crypto.randomUUID();
+const socket = net.createConnection(socketPath, () => socket.write(`${JSON.stringify({ id, op: 'ping', params: {} })}\n`));
+socket.setTimeout(2000);
+let buffer = '';
+socket.on('data', chunk => { buffer += chunk; if (buffer.includes('\n')) { const reply = JSON.parse(buffer.split('\n')[0]); socket.destroy(); process.exit(reply.ok && reply.id === id ? 0 : 1); } });
+socket.on('timeout', () => { socket.destroy(); process.exit(1); });
+socket.on('error', () => process.exit(1));
