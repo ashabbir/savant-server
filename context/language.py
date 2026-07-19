@@ -5,9 +5,9 @@ from typing import Tuple
 
 
 class MemoryBankDetector:
-    """Detects if a file is part of a memory bank collection."""
+    """Detects if a file is part of a memory bank collection or repository documentation."""
 
-    MEMORY_DIR_NAMES = {"memory", "memorybank", "bank"}
+    MEMORY_DIR_NAMES = {"memory", "memorybank", "bank", "docs", "documentation", "spec", "specs", "doc"}
     MARKDOWN_EXTS = {".md", ".mdx", ".markdown"}
 
     @staticmethod
@@ -26,7 +26,12 @@ class MemoryBankDetector:
 
     @classmethod
     def is_memory_bank_file(cls, rel_path: str) -> bool:
-        return cls.is_in_memory_dir(rel_path) and cls.is_markdown(rel_path)
+        if not cls.is_markdown(rel_path):
+            return False
+        p = Path(rel_path)
+        # Root-level markdown files (e.g., README.md, AGENTS.md, GEMINI.md) or memory/docs dir files
+        is_root_md = len(p.parts) == 1
+        return is_root_md or cls.is_in_memory_dir(rel_path)
 
     @classmethod
     def should_skip_in_memory_dir(cls, rel_path: str) -> bool:

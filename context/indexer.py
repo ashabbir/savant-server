@@ -97,8 +97,20 @@ class Indexer:
         ".py": "python",
         ".js": "javascript",
         ".jsx": "javascript",
+        ".mjs": "javascript",
+        ".cjs": "javascript",
         ".ts": "typescript",
         ".tsx": "tsx",
+        ".mts": "typescript",
+        ".cts": "typescript",
+        ".vue": "html",
+        ".svelte": "html",
+        ".astro": "html",
+        ".html": "html",
+        ".htm": "html",
+        ".css": "css",
+        ".scss": "css",
+        ".less": "css",
         ".rb": "ruby",
         ".java": "java",
         ".cpp": "cpp",
@@ -115,6 +127,33 @@ class Indexer:
         ".scala": "scala",
         ".kt": "kotlin",
         ".kts": "kotlin",
+        ".sh": "bash",
+        ".bash": "bash",
+        ".zsh": "bash",
+        ".fish": "bash",
+        ".dart": "dart",
+        ".ex": "elixir",
+        ".exs": "elixir",
+        ".erl": "erlang",
+        ".hrl": "erlang",
+        ".lua": "lua",
+        ".r": "r",
+        ".sql": "sql",
+        ".m": "objc",
+        ".mm": "objc",
+        ".sol": "solidity",
+        ".graphql": "graphql",
+        ".gql": "graphql",
+        ".hcl": "hcl",
+        ".tf": "hcl",
+        ".tfvars": "hcl",
+        ".json": "json",
+        ".jsonc": "json",
+        ".toml": "toml",
+        ".yml": "yaml",
+        ".yaml": "yaml",
+        ".md": "markdown",
+        ".mdx": "markdown",
     }
 
     AST_QUERIES = {
@@ -239,6 +278,21 @@ class Indexer:
         ],
     }
 
+    GENERIC_DECLARATION_TYPES = {
+        "class_definition", "class_declaration", "class_specifier",
+        "interface_declaration", "interface_definition", "struct_item",
+        "struct_specifier", "enum_item", "enum_declaration", "trait_item",
+        "trait_definition", "module", "module_definition", "namespace_definition",
+        "namespace_declaration", "object_definition", "type_declaration",
+        "function_definition", "function_definition_statement", "function_declaration",
+        "function_item", "method_definition", "method_declaration", "method", "constructor",
+    }
+
+    GENERIC_NAME_TYPES = {
+        "identifier", "type_identifier", "property_identifier", "field_identifier",
+        "constant", "name", "name_identifier", "shorthand_property_identifier",
+    }
+
     def _extract_regex_ast(self, file_id: int, file_rel_path: str, content: str, lang_name: str, conn=None):
         """Regex-based AST extraction fallback when tree_sitter_languages is unavailable."""
         import re
@@ -254,6 +308,44 @@ class Indexer:
                     if name and len(name) > 1:
                         self._safe_insert_ast_node(file_id, node_type, name, line_no, line_no, file_rel_path, conn=conn)
                     break
+
+    def _extract_generic_tree_ast(self, file_id: int, file_rel_path: str, tree, content_bytes: bytes, conn=None):
+        """Extract common declarations when a grammar has no custom query."""
+        def walk(node):
+            yield node
+            for child in node.named_children:
+                yield from walk(child)
+
+        for node in walk(tree.root_node):
+            if node.type not in self.GENERIC_DECLARATION_TYPES:
+                continue
+
+            name_node = None
+            try:
+                name_node = node.child_by_field_name("name")
+            except Exception:
+                pass
+            if name_node is None:
+                for child in node.named_children:
+                    if child.type in self.GENERIC_NAME_TYPES:
+                        name_node = child
+                        break
+            if name_node is None:
+                continue
+
+            name = content_bytes[name_node.start_byte:name_node.end_byte].decode(
+                "utf-8", errors="ignore"
+            ).strip()
+            if not name:
+                continue
+            node_type = "class" if any(token in node.type for token in (
+                "class", "interface", "struct", "enum", "trait", "module",
+                "namespace", "object", "type",
+            )) else "function"
+            self._safe_insert_ast_node(
+                file_id, node_type, name, node.start_point[0] + 1,
+                node.end_point[0] + 1, file_rel_path, conn=conn
+            )
 
     def _extract_and_store_ast(self, file_id: int, file_rel_path: str, content: str, conn=None):
         suffix = Path(file_rel_path).suffix.lower()
@@ -282,6 +374,9 @@ class Indexer:
 
             query_scm = self.AST_QUERIES.get(lang_name)
             if not query_scm:
+                self._extract_generic_tree_ast(
+                    file_id, file_rel_path, tree, content_bytes, conn=conn
+                )
                 return
 
             query = language.query(query_scm)
@@ -379,7 +474,7 @@ class Indexer:
             if _is_cancelled(repo_name):
                 raise _CancelledError(repo_name)
             _set_status(repo_name, phase="Scanning directory")
-            walker = FileWalker(repo_path)
+            walker = FileWalker(repo_path, tracked_only=True)
             files_to_index = list(walker.walk())
             total_files = len(files_to_index)
 
@@ -508,7 +603,7 @@ class Indexer:
             if _is_cancelled(repo_name):
                 raise _CancelledError(repo_name)
             _set_status(repo_name, phase="Scanning directory")
-            walker = FileWalker(repo_path)
+            walker = FileWalker(repo_path, tracked_only=True)
             files_to_index = list(walker.walk())
             total_files = len(files_to_index)
 

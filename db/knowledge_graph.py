@@ -689,3 +689,55 @@ class KnowledgeGraphDB:
             }
         finally:
             release_connection(conn)
+
+    @staticmethod
+    def find_root_domains(node_id: str, max_depth: int = 5) -> set[str]:
+        """Traverse graph neighborhood up to max_depth to find all connected root domain nodes."""
+        conn = get_connection()
+        try:
+            domain_ids = set()
+            with conn.cursor() as cur:
+                cur.execute("SELECT node_id, node_type FROM kg_nodes WHERE node_id = %s", (node_id,))
+                row = cur.fetchone()
+                if row and row.get("node_type") == "domain":
+                    return {node_id}
+
+            visited = {node_id}
+            frontier = [node_id]
+
+            for _ in range(max_depth):
+                if not frontier:
+                    break
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT source_id, target_id FROM kg_edges WHERE source_id = ANY(%s) OR target_id = ANY(%s)",
+                        (frontier, frontier)
+                    )
+                    edges = cur.fetchall()
+
+                next_frontier = set()
+                for edge in edges:
+                    src = edge.get("source_id")
+                    tgt = edge.get("target_id")
+                    for n_id in (src, tgt):
+                        if n_id and n_id not in visited:
+                            visited.add(n_id)
+                            next_frontier.add(n_id)
+
+                if not next_frontier:
+                    break
+
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT node_id FROM kg_nodes WHERE node_id = ANY(%s) AND node_type = 'domain'",
+                        (list(next_frontier),)
+                    )
+                    found_domains = cur.fetchall()
+                    for d in found_domains:
+                        domain_ids.add(d["node_id"])
+
+                frontier = list(next_frontier)
+
+            return domain_ids
+        finally:
+            release_connection(conn)

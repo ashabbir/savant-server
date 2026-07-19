@@ -163,7 +163,7 @@ class UserDB:
                     "name": "Lex",
                     "email": "lex@savant.dev",
                     "api_key": "sk-lex-savant-001",
-                    "role": "admin",
+                    "role": "operator",
                     "is_active": 1,
                 },
             ]
@@ -200,5 +200,66 @@ class UserDB:
             for u in defaults:
                 seeded.append(UserDB._get_by_id_with_conn(u["user_id"], conn))
             return seeded
+        finally:
+            release_connection(conn)
+
+    @staticmethod
+    def get_assigned_domains(user_id: str) -> list[dict]:
+        """Return all assigned domain nodes for a user with write permission flags."""
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT ud.user_id, ud.domain_node_id, ud.can_write, ud.assigned_at,
+                              kn.title AS domain_title, kn.node_type
+                       FROM user_domains ud
+                       LEFT JOIN kg_nodes kn ON kn.node_id = ud.domain_node_id
+                       WHERE ud.user_id = %s
+                       ORDER BY ud.assigned_at ASC""",
+                    (user_id,),
+                )
+                rows = cur.fetchall()
+            return [_row_to_dict(r) for r in rows]
+        finally:
+            release_connection(conn)
+
+    @staticmethod
+    def get_assigned_domain_write_map(user_id: str) -> dict[str, bool]:
+        """Return dict mapping domain_node_id -> bool (can_write)."""
+        assigned = UserDB.get_assigned_domains(user_id)
+        return {item["domain_node_id"]: bool(item.get("can_write", 1)) for item in assigned}
+
+    @staticmethod
+    def assign_domain(user_id: str, domain_node_id: str, can_write: bool = True) -> dict:
+        """Assign or update a domain node assignment for a user."""
+        conn = get_connection()
+        try:
+            now = _now()
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO user_domains (user_id, domain_node_id, can_write, assigned_at)
+                       VALUES (%s, %s, %s, %s)
+                       ON CONFLICT (user_id, domain_node_id) DO UPDATE SET
+                         can_write = EXCLUDED.can_write""",
+                    (user_id, domain_node_id, 1 if can_write else 0, now),
+                )
+            conn.commit()
+            return {"user_id": user_id, "domain_node_id": domain_node_id, "can_write": bool(can_write)}
+        finally:
+            release_connection(conn)
+
+    @staticmethod
+    def remove_domain(user_id: str, domain_node_id: str) -> bool:
+        """Unassign a domain node from a user."""
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM user_domains WHERE user_id = %s AND domain_node_id = %s",
+                    (user_id, domain_node_id),
+                )
+                count = cur.rowcount
+            conn.commit()
+            return count > 0
         finally:
             release_connection(conn)

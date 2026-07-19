@@ -12,6 +12,7 @@ from pathlib import Path
 from flask import Blueprint, g, jsonify, request, send_file
 
 from db.knowledge_graph import KnowledgeGraphDB
+from db.tools import ToolPackageDB
 from server_paths import get_server_data_dir
 from utils.auth import admin_required
 
@@ -258,14 +259,48 @@ def _tool_summary(tool_name: str) -> dict:
 
 
 def _list_tools_payload() -> list[dict]:
-    tools = []
+    tools_by_name = {}
+    for tool in ToolPackageDB.list_all():
+        tools_by_name[tool["name"]] = _database_tool_summary(tool)
     for tool_name in _list_tool_names():
+        if tool_name in tools_by_name:
+            continue
         meta = _read_meta(tool_name)
         if not meta:
             continue
-        tools.append(_tool_summary(tool_name))
-    tools.sort(key=lambda item: item.get("name", "").lower())
-    return tools
+        tools_by_name[tool_name] = _tool_summary(tool_name)
+    return sorted(tools_by_name.values(), key=lambda item: item.get("name", "").lower())
+
+
+def _database_tool_summary(tool: dict) -> dict:
+    return {
+        "name": tool["name"],
+        "description": tool.get("description", ""),
+        "author": tool.get("author", ""),
+        "uploaded_by": tool.get("uploaded_by", ""),
+        "created_at": tool.get("created_at", ""),
+        "updated_at": tool.get("updated_at", ""),
+        "archive_name": f"{tool['name']}.zip",
+        "service_node_id": tool.get("service_node_id", ""),
+        "kg_node_ids": tool.get("kg_node_ids", []) or [],
+        "kg_node_count": len(tool.get("kg_node_ids", []) or []),
+        "node_titles": [],
+        "input_schema": tool.get("input_schema", {}) or {},
+        "source": "postgresql",
+    }
+
+
+def _inline_tool_archive(tool_name: str, description: str, input_schema: dict) -> bytes:
+    """Build a downloadable tool package for a tool created from Olympus."""
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zip_ref:
+        zip_ref.writestr("README.md", f"# {tool_name}\n\n{description}\n")
+        zip_ref.writestr("tool.json", json.dumps({
+            "name": tool_name,
+            "description": description,
+            "input_schema": input_schema,
+        }, indent=2))
+    return archive.getvalue()
 
 
 def _validate_manifest_nodes(tool_name: str, manifest: dict | list) -> list[dict]:
@@ -360,6 +395,9 @@ def get_tool(tool_name: str):
     tool_name = str(tool_name or "").strip()
     if not tool_name:
         return jsonify({"error": "Tool not found"}), 404
+    database_tool = ToolPackageDB.get(tool_name)
+    if database_tool:
+        return jsonify({"tool": _database_tool_summary(database_tool)})
     tool_path = _tool_dir(tool_name)
     if not tool_path.exists() or not str(tool_path).startswith(str(TOOLS_DIR.resolve())):
         return jsonify({"error": "Tool not found"}), 404
@@ -369,6 +407,14 @@ def get_tool(tool_name: str):
 @tools_bp.route("/<tool_name>/archive", methods=["GET"])
 def download_tool_archive(tool_name: str):
     tool_name = str(tool_name or "").strip()
+    database_tool = ToolPackageDB.get(tool_name, include_archive=True)
+    if database_tool:
+        return send_file(
+            io.BytesIO(bytes(database_tool["archive_data"])),
+            mimetype="application/zip",
+            as_attachment=True,
+            download_name=f"{tool_name}.zip",
+        )
     archive_path = _tool_archive_path(tool_name)
     if not archive_path.exists():
         return jsonify({"error": "Tool not found"}), 404
@@ -383,6 +429,31 @@ def download_tool_archive(tool_name: str):
 @tools_bp.route("", methods=["POST"])
 @admin_required
 def upload_tool():
+    if request.is_json:
+        payload = request.get_json(silent=True) or {}
+        tool_name = str(payload.get("name", "")).strip()
+        description = str(payload.get("description", "")).strip()
+        input_schema = payload.get("input_schema", {"type": "object", "properties": {}})
+        if not _valid_tool_name(tool_name):
+            return jsonify({"error": "Tool name contains unsupported characters"}), 400
+        if not isinstance(input_schema, dict):
+            return jsonify({"error": "input_schema must be an object"}), 400
+        if ToolPackageDB.get(tool_name) or _tool_dir(tool_name).exists():
+            return jsonify({"error": f"Tool '{tool_name}' already exists"}), 409
+        try:
+            created = ToolPackageDB.create({
+                "name": tool_name,
+                "description": description,
+                "input_schema": input_schema,
+                "archive_data": _inline_tool_archive(tool_name, description, input_schema),
+                "author": g.user_id,
+                "uploaded_by": g.user_id,
+            })
+        except Exception:
+            logger.exception("Failed to persist tool %s in PostgreSQL", tool_name)
+            return jsonify({"error": "Failed to persist tool in PostgreSQL"}), 500
+        return jsonify({"tool": _database_tool_summary(created)}), 201
+
     if "file" not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
     file = request.files["file"]
@@ -473,7 +544,20 @@ def upload_tool():
         "status": "active",
     }
     _write_meta(tool_name, meta)
-    return jsonify({"tool": _tool_summary(tool_name)}), 201
+    try:
+        persisted = ToolPackageDB.upsert({
+            "name": tool_name,
+            "description": description,
+            "archive_data": archive_bytes,
+            "author": author,
+            "uploaded_by": g.user_id,
+            "service_node_id": graph_info["service_node_id"],
+            "kg_node_ids": graph_info["kg_node_ids"],
+        })
+    except Exception:
+        logger.exception("Failed to persist uploaded tool %s in PostgreSQL", tool_name)
+        return jsonify({"error": "Failed to persist tool in PostgreSQL"}), 500
+    return jsonify({"tool": _database_tool_summary(persisted)}), 201
 
 
 @tools_bp.route("/<tool_name>", methods=["DELETE"])
@@ -481,11 +565,12 @@ def upload_tool():
 def delete_tool(tool_name: str):
     tool_name = str(tool_name or "").strip()
     tool_path = _tool_dir(tool_name)
-    if not tool_path.exists() or not str(tool_path).startswith(str(TOOLS_DIR.resolve())):
+    database_tool = ToolPackageDB.get(tool_name)
+    if not database_tool and (not tool_path.exists() or not str(tool_path).startswith(str(TOOLS_DIR.resolve()))):
         return jsonify({"error": "Tool not found"}), 404
 
-    meta = _read_meta(tool_name)
-    node_ids = _kg_node_ids_for_tool(tool_name)
+    meta = _read_meta(tool_name) if tool_path.exists() else database_tool
+    node_ids = _kg_node_ids_for_tool(tool_name) if tool_path.exists() else (database_tool.get("kg_node_ids", []) or [])
     deleted_nodes = []
     for node_id in node_ids:
         try:
@@ -494,11 +579,17 @@ def delete_tool(tool_name: str):
         except Exception:
             pass
 
+    if tool_path.exists():
+        try:
+            shutil.rmtree(tool_path)
+        except Exception as e:
+            logger.exception("Failed deleting tool directory: %s", tool_path)
+            return jsonify({"error": f"Failed to delete tool: {e}"}), 500
     try:
-        shutil.rmtree(tool_path)
-    except Exception as e:
-        logger.exception("Failed deleting tool directory: %s", tool_path)
-        return jsonify({"error": f"Failed to delete tool: {e}"}), 500
+        ToolPackageDB.delete(tool_name)
+    except Exception:
+        logger.exception("Failed deleting tool %s from PostgreSQL", tool_name)
+        return jsonify({"error": "Failed to delete tool from PostgreSQL"}), 500
 
     return jsonify({
         "deleted": True,

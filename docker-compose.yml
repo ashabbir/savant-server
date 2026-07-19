@@ -55,14 +55,7 @@ services:
       BASE_CODE_DIR: /base-code
       SAVANT_API_ONLY: "1"
       SAVANT_API_KEY: "sk-ahmed-savant-001"
-      # Loaded from the ignored local .env file; never commit the token.
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
-      SESSION_DIR: /nonexistent
-      CLAUDE_DIR: /nonexistent
-      GEMINI_DIR: /nonexistent
-      CODEX_DIR: /nonexistent
-      SAVANT_DIR: /nonexistent
-      META_DIR: /nonexistent
     volumes:
       - ${SAVANT_DATA_DIR:-~/.savant/server-data}:/data/savant
       - ${BASE_CODE_HOST_DIR:-/Users/home/code}:/base-code:rw

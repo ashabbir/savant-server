@@ -2,28 +2,33 @@
   "mcpServers": {
     "workspace": {
       "type": "sse",
-      "url": "http://127.0.0.1:8091/sse?api_key=sk-ahmed-savant-001",
+      "url": "http://127.0.0.1:8091/sse?api_key=sk-ahmed-savant-001&app_name=savant-mcp",
       "tools": [
         "*"
       ]
     },
     "abilities": {
       "type": "sse",
-      "url": "http://127.0.0.1:8092/sse?api_key=sk-ahmed-savant-001",
+      "url": "http://127.0.0.1:8092/sse?api_key=sk-ahmed-savant-001&app_name=savant-mcp",
       "tools": [
         "*"
       ]
     },
     "context": {
       "type": "sse",
-      "url": "http://127.0.0.1:8093/sse?api_key=sk-ahmed-savant-001",
+      "url": "http://127.0.0.1:8093/sse?api_key=sk-ahmed-savant-001&app_name=savant-mcp",
       "tools": [
-        "*"
+        "code_search",
+        "structure_search",
+        "analyze_code",
+        "memory_bank_search",
+        "code_graph_search",
+        "research"
       ]
     },
     "knowledge": {
       "type": "sse",
-      "url": "http://127.0.0.1:8094/sse?api_key=sk-ahmed-savant-001",
+      "url": "http://127.0.0.1:8094/sse?api_key=sk-ahmed-savant-001&app_name=savant-mcp",
       "tools": [
         "*"
       ]

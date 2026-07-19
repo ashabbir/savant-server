@@ -45,8 +45,11 @@ def client(_isolated_db):
         original_open = c.open
         def _authed_open(*args, **kwargs):
             headers = kwargs.get("headers") or {}
-            if isinstance(headers, dict) and "X-API-Key" not in headers:
-                headers["X-API-Key"] = "sk-ahmed-savant-001"
+            if isinstance(headers, dict):
+                if "X-API-Key" not in headers:
+                    headers["X-API-Key"] = "sk-ahmed-savant-001"
+                if "X-App-Name" not in headers:
+                    headers["X-App-Name"] = "savant-olympus"
                 kwargs["headers"] = headers
             return original_open(*args, **kwargs)
         c.open = _authed_open

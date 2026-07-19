@@ -8,12 +8,28 @@ import logging
 import os
 from pathlib import Path
 
+from concurrent.futures import ThreadPoolExecutor
 from flask import Blueprint, jsonify, request
-from utils.auth import admin_required
+from utils.auth import admin_required, ALLOWED_SAVANT_APPS
 
 logger = logging.getLogger(__name__)
 
 context_bp = Blueprint("context", __name__)
+
+# ---------------------------------------------------------------------------
+# Global Header Guard
+# ---------------------------------------------------------------------------
+
+@context_bp.before_request
+def check_savant_app_header():
+    # Allow health check endpoint without header
+    if request.path == "/api/context/health":
+        return None
+    app_name = (request.headers.get("X-App-Name") or request.headers.get("X-Savant-App") or "").strip().lower()
+    if not app_name or app_name not in ALLOWED_SAVANT_APPS:
+        return jsonify({
+            "error": "Access denied."
+        }), 403
 
 # ---------------------------------------------------------------------------
 # Lazy init — context schema is initialized on first request
@@ -846,3 +862,206 @@ def stats():
             "path": str(resolve_model_dir()),
         },
     })
+
+
+# ---------------------------------------------------------------------------
+# Research & Impact Surface API
+# ---------------------------------------------------------------------------
+
+def _build_impact_surface_internal(results: dict, top_symbols: list, top_files: set) -> dict:
+    upstream = []
+    downstream = []
+    seen_up = set()
+    seen_down = set()
+
+    graph_res = results.get("code_graph_search", {})
+    if isinstance(graph_res, dict):
+        for query_key, node_list in graph_res.items():
+            if not isinstance(node_list, list):
+                continue
+            for node in node_list:
+                if not isinstance(node, dict):
+                    continue
+                node_id = node.get("node_id", "")
+                title = node.get("title") or node.get("norm_label") or node_id
+                edges = node.get("edges", [])
+
+                for edge in edges:
+                    if not isinstance(edge, dict):
+                        continue
+                    src = edge.get("source_id", "")
+                    tgt = edge.get("target_id", "")
+                    rel = edge.get("label") or edge.get("edge_type") or "relates_to"
+
+                    if (node_id and (tgt == node_id or node_id in tgt)) or any(sym.lower() in tgt.lower() for sym in top_symbols if sym):
+                        up_key = f"{src}->{tgt}:{rel}"
+                        if up_key not in seen_up:
+                            seen_up.add(up_key)
+                            upstream.append({
+                                "upstream_caller": src,
+                                "relationship": rel,
+                                "target_symbol": title,
+                            })
+
+                    if (node_id and (src == node_id or node_id in src)) or any(sym.lower() in src.lower() for sym in top_symbols if sym):
+                        down_key = f"{src}->{tgt}:{rel}"
+                        if down_key not in seen_down:
+                            seen_down.add(down_key)
+                            downstream.append({
+                                "source_symbol": title,
+                                "relationship": rel,
+                                "downstream_dependency": tgt,
+                            })
+
+    return {
+        "summary": (
+            f"Impact Surface Analysis: Identified {len(upstream)} upstream callers/importers (1 level up) "
+            f"and {len(downstream)} downstream dependencies/callees (1 level down). "
+            "AI AGENTS MUST evaluate these impact surfaces to prevent breaking changes when modifying code."
+        ),
+        "upstream_dependencies_1_level_up": upstream[:10],
+        "downstream_impacts_1_level_down": downstream[:10],
+        "affected_files": sorted(list(top_files))[:8],
+    }
+
+
+@context_bp.route("/api/context/research", methods=["POST"])
+def context_research():
+    if not _ensure_init():
+        return jsonify({"error": "Context not initialized"}), 503
+
+    data = request.get_json(force=True, silent=True) or {}
+    q = (data.get("q") or data.get("query") or "").strip()
+    if not q:
+        return jsonify({"error": "q required", "overview": {}, "impact_surface": {}}), 400
+
+    repo = data.get("repo")
+    search_type = (data.get("type") or "all").lower().strip()
+    limit = int(data.get("limit", 20))
+    exclude_tests = bool(data.get("exclude_tests", True))
+    should_exclude_tests = exclude_tests and "test" not in q.lower()
+
+    results = {}
+    top_symbols = []
+    top_files = set()
+
+    from .db import ContextDB
+    from .embeddings import EmbeddingModel
+
+    def _exec_code_search():
+        embedder = EmbeddingModel.get()
+        qvec = embedder.embed_one(q)
+        repo_filter = repo.split(",") if repo and isinstance(repo, str) and "," in repo else repo
+        res = ContextDB.vector_search(
+            qvec, limit=limit * 2 if should_exclude_tests else limit, repo_filter=repo_filter,
+            exclude_memory_bank=True,
+        )
+        if should_exclude_tests:
+            res = [r for r in res if not (r.get("rel_path", "").lower().startswith("test") or "/test" in r.get("rel_path", "").lower())]
+        return {"query": q, "result_count": len(res[:limit]), "results": res[:limit]}
+
+    def _exec_structure_search():
+        repo_filter = repo.split(",") if repo and isinstance(repo, str) and "," in repo else repo
+        res = ContextDB.search_ast_nodes(q, repo_filter=repo_filter)
+        if should_exclude_tests:
+            res = [r for r in res if not (r.get("rel_path", "").lower().startswith("test") or "/test" in r.get("rel_path", "").lower())]
+        return {"query": q, "result_count": len(res[:limit]), "results": res[:limit]}
+
+    def _exec_memory_search():
+        embedder = EmbeddingModel.get()
+        qvec = embedder.embed_one(q)
+        repo_filter = repo.split(",") if repo and isinstance(repo, str) and "," in repo else repo
+        res = ContextDB.vector_search(
+            qvec, limit=limit, repo_filter=repo_filter, memory_bank_only=True,
+        )
+        return {"query": q, "result_count": len(res), "results": res}
+
+    def _exec_graph_search(g_query):
+        from graphify.db import GraphifyDB
+        workspace_id = repo if isinstance(repo, str) else (repo[0] if repo else None)
+        return GraphifyDB.search_nodes(query=g_query, workspace_id=workspace_id, limit=limit)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {}
+        if search_type in ("all", "code"):
+            futures["code_search"] = executor.submit(_exec_code_search)
+            futures["structure_search"] = executor.submit(_exec_structure_search)
+
+        if search_type in ("all", "memory"):
+            futures["memory_bank_search"] = executor.submit(_exec_memory_search)
+
+        for sec_key, future in futures.items():
+            try:
+                results[sec_key] = future.result(timeout=30)
+            except Exception as e:
+                results[sec_key] = {"error": str(e)}
+
+        if "code_search" in results and isinstance(results["code_search"].get("results"), list):
+            for item in results["code_search"]["results"]:
+                if item.get("rel_path"):
+                    top_files.add(item["rel_path"])
+
+        if "memory_bank_search" in results and isinstance(results["memory_bank_search"].get("results"), list):
+            for item in results["memory_bank_search"]["results"]:
+                if item.get("rel_path"):
+                    top_files.add(item["rel_path"])
+
+        if search_type in ("all", "code"):
+            graph_queries = set()
+            struct_res = results.get("structure_search", {})
+            if isinstance(struct_res.get("results"), list):
+                for item in struct_res["results"]:
+                    if isinstance(item, dict) and item.get("name"):
+                        name = item["name"]
+                        graph_queries.add(name)
+                        if len(top_symbols) < 5:
+                            top_symbols.append(name)
+                        if item.get("rel_path"):
+                            top_files.add(item["rel_path"])
+
+            if not graph_queries:
+                graph_queries.add(q)
+
+            graph_futures = {
+                g_query: executor.submit(_exec_graph_search, g_query)
+                for g_query in sorted(graph_queries)[:5]
+            }
+
+            graph_results = {}
+            for g_query, g_future in graph_futures.items():
+                try:
+                    graph_results[g_query] = g_future.result(timeout=30)
+                except Exception as e:
+                    graph_results[g_query] = {"error": str(e)}
+
+            results["code_graph_search"] = graph_results
+
+    code_cnt = len(results.get("code_search", {}).get("results", [])) if "code_search" in results else 0
+    struct_cnt = len(results.get("structure_search", {}).get("results", [])) if "structure_search" in results else 0
+    graph_cnt = len(results.get("code_graph_search", {})) if "code_graph_search" in results else 0
+    mb_cnt = len(results.get("memory_bank_search", {}).get("results", [])) if "memory_bank_search" in results else 0
+
+    overview_block = {
+        "query": q,
+        "search_type": search_type,
+        "execution": "multithreaded_parallel",
+        "summary": (
+            f"Parallel research for '{q}' completed. Found {code_cnt} code snippets, {struct_cnt} AST symbol declarations, "
+            f"{graph_cnt} dependency graph nodes, and {mb_cnt} memory bank/documentation excerpts."
+        ),
+        "top_symbols": top_symbols,
+        "top_files": sorted(list(top_files))[:8],
+    }
+
+    impact_surface_block = _build_impact_surface_internal(results, top_symbols, top_files)
+
+    final_payload = {
+        "overview": overview_block,
+        "impact_surface": impact_surface_block,
+    }
+    for key in ("code_search", "structure_search", "code_graph_search", "memory_bank_search"):
+        if key in results:
+            final_payload[key] = results[key]
+
+    return jsonify(final_payload)
+

@@ -14,6 +14,7 @@ mkdir -p "$DATA_DIR/hf" "$DATA_DIR/abilities/personas" "$DATA_DIR/abilities/rule
          "$DATA_DIR/abilities/policies" "$DATA_DIR/abilities/repos" 2>/dev/null || true
 
 export SAVANT_API_BASE="${SAVANT_API_BASE:-http://127.0.0.1:${FLASK_PORT:-8090}}"
+export SAVANT_APP_NAME="${SAVANT_APP_NAME:-savant-mcp}"
 
 # Start MCP servers on server-side ports
 # Use SSE transport for compatibility with Copilot CLI; override with MCP_TRANSPORT env var

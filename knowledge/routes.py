@@ -3,8 +3,8 @@
 import time
 import threading
 import re
-from flask import Blueprint, jsonify, request
-from utils.auth import admin_required
+from flask import Blueprint, jsonify, request, g
+from utils.auth import admin_required, require_savant_app, ALLOWED_SAVANT_APPS, check_domain_write_access
 from db.experiences import ExperienceDB
 from db.knowledge_graph import KnowledgeGraphDB
 from db.tasks import TaskDB
@@ -63,6 +63,22 @@ def _validate_edge_type(edge_type: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Global Header Guard
+# ---------------------------------------------------------------------------
+
+@knowledge_bp.before_request
+def check_savant_app_header():
+    # Allow health check endpoint without header
+    if request.path == "/api/knowledge/health":
+        return None
+    app_name = (request.headers.get("X-App-Name") or request.headers.get("X-Savant-App") or "").strip().lower()
+    if not app_name or app_name not in ALLOWED_SAVANT_APPS:
+        return jsonify({
+            "error": "Access denied."
+        }), 403
+
+
+# ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
 
@@ -77,19 +93,27 @@ def health():
 # ---------------------------------------------------------------------------
 
 @knowledge_bp.route("/api/knowledge/nodes", methods=["POST"])
-@admin_required
+@require_savant_app
 def create_node():
     """Create a knowledge graph node.
 
     Optional graph_type in body is stored in metadata.graph_type.
     """
     data = request.get_json(force=True, silent=True) or {}
-    title = (data.get("title") or "").strip()[:MAX_TITLE_LEN]
-    if not title:
-        return jsonify({"error": "title is required"}), 400
     node_type = data.get("node_type", "insight")
     if node_type not in VALID_NODE_TYPES:
         return jsonify({"error": f"invalid node_type '{node_type}'"}), 400
+
+    # Domain Access Check
+    user_id = getattr(g, "user_id", "")
+    is_domain = (node_type == "domain")
+    ok, err = check_domain_write_access(user_id, is_domain_creation=is_domain)
+    if not ok:
+        return jsonify({"error": err}), 403
+
+    title = (data.get("title") or "").strip()[:MAX_TITLE_LEN]
+    if not title:
+        return jsonify({"error": "title is required"}), 400
     if "content" in data and len(data["content"]) > MAX_CONTENT_LEN:
         data["content"] = data["content"][:MAX_CONTENT_LEN]
     # Inject graph_type into metadata if provided at top level
@@ -122,11 +146,18 @@ def get_node(node_id):
 
 
 @knowledge_bp.route("/api/knowledge/nodes/<node_id>", methods=["PUT"])
-@admin_required
+@require_savant_app
 def update_node(node_id):
     """Update a node. Accepts graph_type at top level — stored in metadata.graph_type."""
     if not _safe_id(node_id):
         return jsonify({"error": "not found"}), 404
+
+    # Domain Access Check
+    user_id = getattr(g, "user_id", "")
+    ok, err = check_domain_write_access(user_id, node_id=node_id)
+    if not ok:
+        return jsonify({"error": err}), 403
+
     data = request.get_json(force=True, silent=True) or {}
     # Validate title if provided
     if "title" in data:
@@ -158,11 +189,18 @@ def update_node(node_id):
 
 
 @knowledge_bp.route("/api/knowledge/nodes/<node_id>", methods=["DELETE"])
-@admin_required
+@require_savant_app
 def delete_node(node_id):
     """Delete a node and cascade-delete its edges."""
     if not _safe_id(node_id):
         return jsonify({"error": "not found"}), 404
+
+    # Domain Access Check
+    user_id = getattr(g, "user_id", "")
+    ok, err = check_domain_write_access(user_id, node_id=node_id)
+    if not ok:
+        return jsonify({"error": err}), 403
+
     deleted = KnowledgeGraphDB.delete_node(node_id)
     if deleted:
         return jsonify({"deleted": True, "node_id": node_id})
@@ -171,6 +209,7 @@ def delete_node(node_id):
 
 @knowledge_bp.route("/api/knowledge/prune", methods=["POST"])
 @admin_required
+@require_savant_app
 def prune_graph():
     """Remove dangling edges (and optionally orphaned nodes) from the knowledge graph.
 
@@ -188,6 +227,7 @@ def prune_graph():
 
 @knowledge_bp.route("/api/knowledge/nodes/commit", methods=["POST"])
 @admin_required
+@require_savant_app
 def commit_nodes():
     """Commit staged knowledge graph nodes to the main graph.
 
@@ -220,6 +260,7 @@ def commit_nodes():
 
 @knowledge_bp.route("/api/knowledge/nodes/uncommit", methods=["POST"])
 @admin_required
+@require_savant_app
 def uncommit_nodes():
     """Move committed knowledge graph nodes back to staged so they leave the main graph.
 
@@ -251,6 +292,7 @@ def uncommit_nodes():
 
 @knowledge_bp.route("/api/knowledge/nodes/merge", methods=["POST"])
 @admin_required
+@require_savant_app
 def merge_nodes():
     """Merge multiple nodes into one.
 
@@ -287,6 +329,7 @@ def merge_nodes():
 
 @knowledge_bp.route("/api/knowledge/edges", methods=["POST"])
 @admin_required
+@require_savant_app
 def create_edge():
     """Create an edge between two nodes."""
     data = request.get_json(force=True, silent=True) or {}
@@ -308,6 +351,7 @@ def create_edge():
 
 @knowledge_bp.route("/api/knowledge/edges/<edge_id>", methods=["DELETE"])
 @admin_required
+@require_savant_app
 def delete_edge(edge_id):
     """Delete an edge."""
     if not _safe_id(edge_id):
@@ -320,6 +364,7 @@ def delete_edge(edge_id):
 
 @knowledge_bp.route("/api/knowledge/edges/disconnect", methods=["POST"])
 @admin_required
+@require_savant_app
 def disconnect_edge():
     """Remove edge(s) between two nodes."""
     data = request.get_json(force=True)
@@ -338,6 +383,7 @@ def disconnect_edge():
 
 @knowledge_bp.route("/api/knowledge/link-workspace", methods=["POST"])
 @admin_required
+@require_savant_app
 def link_to_workspace():
     """Link a node to a workspace by adding workspace_id to metadata.workspaces array."""
     data = request.get_json(force=True)
@@ -359,6 +405,7 @@ def link_to_workspace():
 
 @knowledge_bp.route("/api/knowledge/unlink-workspace", methods=["POST"])
 @admin_required
+@require_savant_app
 def unlink_workspace():
     """Remove a workspace from node metadata.workspaces array."""
     data = request.get_json(force=True)
@@ -523,6 +570,7 @@ def generate_prompt():
 
 @knowledge_bp.route("/api/knowledge/store", methods=["POST"])
 @admin_required
+@require_savant_app
 def store_experience():
     """Store a curated experience. Creates an insight node + auto-links to project.
 
@@ -687,6 +735,7 @@ def list_experiences():
 
 @knowledge_bp.route("/api/knowledge/<item_id>", methods=["DELETE"])
 @admin_required
+@require_savant_app
 def delete_item(item_id):
     """Delete a knowledge node (or legacy experience) by ID."""
     # Try graph node first
@@ -711,6 +760,7 @@ def delete_item(item_id):
 
 @knowledge_bp.route("/api/knowledge/nodes/bulk-delete", methods=["POST"])
 @admin_required
+@require_savant_app
 def bulk_delete_nodes():
     """Delete multiple nodes at once."""
     data = request.get_json(force=True, silent=True) or {}
@@ -726,6 +776,7 @@ def bulk_delete_nodes():
 
 @knowledge_bp.route("/api/knowledge/nodes/bulk-link-workspace", methods=["POST"])
 @admin_required
+@require_savant_app
 def bulk_link_workspace():
     """Link multiple nodes to a workspace via metadata.workspaces."""
     data = request.get_json(force=True, silent=True) or {}
@@ -986,6 +1037,7 @@ def purge_workspace_preview():
 
 @knowledge_bp.route("/api/knowledge/purge-workspace", methods=["POST"])
 @admin_required
+@require_savant_app
 def purge_workspace():
     """Delete exclusive nodes and unlink shared nodes for a workspace."""
     data = request.get_json(force=True)

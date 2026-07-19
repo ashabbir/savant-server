@@ -140,14 +140,31 @@ class TestUserDB:
 class TestAuthMiddleware:
     """Tests for Flask auth middleware (header/query API key)."""
 
-    def test_health_endpoints_no_auth(self, client):
-        """Health endpoints should work without auth."""
-        resp = client.get("/api/db/health")
+    def test_health_endpoints_require_allowed_app_but_not_api_key(self, client):
+        """Health endpoints remain API-key-free but must identify a Savant app."""
+        resp = client.get("/api/db/health", headers={"X-API-Key": ""})
         assert resp.status_code == 200
 
-    def test_system_info_no_auth(self, client):
-        """System info should work without auth."""
-        resp = client.get("/api/system/info")
+    def test_system_info_requires_allowed_app_but_not_api_key(self, client):
+        """System info remains API-key-free but must identify a Savant app."""
+        resp = client.get("/api/system/info", headers={"X-API-Key": ""})
+        assert resp.status_code == 200
+
+    def test_all_api_routes_reject_missing_app_name(self, client):
+        resp = client.get("/api/users", headers={"X-App-Name": ""})
+        assert resp.status_code == 403
+        assert resp.get_json() == {"error": "Access denied."}
+
+    def test_all_api_routes_reject_unlisted_app_name(self, client):
+        resp = client.get("/api/users", headers={"X-App-Name": "untrusted-client"})
+        assert resp.status_code == 403
+        assert resp.get_json() == {"error": "Access denied."}
+
+    def test_api_routes_accept_legacy_savant_app_header(self, client):
+        resp = client.get(
+            "/api/users",
+            headers={"X-App-Name": "", "X-Savant-App": "savant-olympus"},
+        )
         assert resp.status_code == 200
 
     def test_api_requires_auth(self, client):

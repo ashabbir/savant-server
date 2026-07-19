@@ -1,4 +1,5 @@
 import os
+import subprocess
 import sys
 import sqlite3
 from pathlib import Path
@@ -20,6 +21,8 @@ def helper(x):
     return x + 1
 """.strip()
     )
+    subprocess.run(["git", "-C", str(repo_dir), "init"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_dir), "add", "sample.py"], check=True, capture_output=True)
     return repo_dir
 
 
@@ -39,6 +42,8 @@ function connect() {
 }
 """.strip()
     )
+    subprocess.run(["git", "-C", str(repo_dir), "init"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_dir), "add", "sample.js"], check=True, capture_output=True)
     return repo_dir
 
 
@@ -72,6 +77,31 @@ def test_js_ast_generation(client, tmp_path, monkeypatch):
     assert ("function", "connect") in names
 
 
+def test_ast_support_matrix_covers_framework_aliases_and_generic_grammars(monkeypatch):
+    from context.indexer import Indexer
+
+    assert Indexer.EXTENSION_TO_LANG[".mjs"] == "javascript"
+    assert Indexer.EXTENSION_TO_LANG[".vue"] == "html"
+    assert Indexer.EXTENSION_TO_LANG[".svelte"] == "html"
+    assert Indexer.EXTENSION_TO_LANG[".tf"] == "hcl"
+    assert Indexer.EXTENSION_TO_LANG[".graphql"] == "graphql"
+
+    captured = []
+    indexer = Indexer()
+    monkeypatch.setattr(
+        indexer,
+        "_safe_insert_ast_node",
+        lambda *args, **kwargs: captured.append(args[1:3]),
+    )
+    indexer._extract_and_store_ast(
+        1,
+        "module.lua",
+        "function greet()\nend\n",
+    )
+
+    assert ("function", "greet") in captured
+
+
 def test_index_generates_ast_and_repo_overview_count(client, tmp_path, monkeypatch):
     from context.db import ContextDB, init_context_schema
     from context.indexer import Indexer
@@ -94,6 +124,34 @@ def test_index_generates_ast_and_repo_overview_count(client, tmp_path, monkeypat
 
     assert repo["status"] == "indexed"
     assert repo["ast_node_count"] >= 3
+
+
+def test_ast_generation_excludes_dependency_directories(client, tmp_path, monkeypatch):
+    from context.db import ContextDB, init_context_schema
+    from context.indexer import Indexer
+
+    assert init_context_schema()
+
+    class _FakeEmbedder:
+        def embed_one(self, _text):
+            return [0.0] * 768
+
+    monkeypatch.setattr(Indexer, "_get_embedder", lambda self: _FakeEmbedder())
+
+    repo_dir = _seed_python_repo(tmp_path, "repo-dependencies")
+    (repo_dir / "node_modules" / "third-party").mkdir(parents=True)
+    (repo_dir / "node_modules" / "third-party" / "package.js").write_text(
+        "class DownloadedPackage {}\nfunction dependency() {}\n"
+    )
+    (repo_dir / "vendor").mkdir()
+    (repo_dir / "vendor" / "package.py").write_text("class VendoredPackage:\n    pass\n")
+    ContextDB.add_repo("repo-dependencies", str(repo_dir))
+
+    Indexer().generate_ast_for_repository(repo_dir, repo_name="repo-dependencies")
+
+    nodes = ContextDB.list_ast_nodes("repo-dependencies")
+    assert nodes
+    assert {node["path"] for node in nodes} == {"sample.py"}
 
 
 def test_ast_list_returns_generated_nodes(client, tmp_path, monkeypatch):

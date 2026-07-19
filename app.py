@@ -23,6 +23,7 @@ from db.jira_tickets import JiraTicketDB
 from db.notifications import NotificationDB
 from db.users import UserDB
 from hardening import rate_limit, validate_request, safe_limit, check_rate_limit, sanitize_text
+from utils.auth import ALLOWED_SAVANT_APPS
 from abilities.routes import abilities_bp
 from abilities.bootstrap import abilities_bootstrap_status
 from context.routes import context_bp
@@ -39,8 +40,12 @@ from server_paths import (
 )
 
 app = Flask(__name__)
-# Enable CORS for all routes, allowing the X-API-Key header for preflight requests
-CORS(app, resources={r"/*": {"origins": "*"}}, allow_headers=["Content-Type", "X-API-Key", "Authorization"])
+# Enable CORS for all routes, allowing Savant authentication headers for preflight requests.
+CORS(
+    app,
+    resources={r"/*": {"origins": "*"}},
+    allow_headers=["Content-Type", "X-API-Key", "X-App-Name", "X-Savant-App", "Authorization"],
+)
 app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100 MB request body limit
 _API_ONLY_MODE = os.environ.get("SAVANT_API_ONLY", "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -168,6 +173,22 @@ def _authenticate():
     return None
 
 
+@app.before_request
+def _require_allowed_savant_app():
+    """Require every API caller to identify an allowed Savant application."""
+    if request.method == "OPTIONS" or not (request.path or "/").startswith("/api/"):
+        return None
+
+    app_name = (
+        request.headers.get("X-App-Name")
+        or request.headers.get("X-Savant-App")
+        or ""
+    ).strip().lower()
+    if not app_name or app_name not in ALLOWED_SAVANT_APPS:
+        return jsonify({"error": "Access denied."}), 403
+    return None
+
+
 # ── Auth validation endpoint ──────────────────────────────────────────────────
 @app.route("/api/auth/validate", methods=["GET"])
 def auth_validate():
@@ -228,6 +249,53 @@ def api_users():
     return jsonify(created), 201
 
 
+# ── User Domain Assignments ───────────────────────────────────────────────
+@app.route("/api/users/<user_id>/domains", methods=["GET", "POST"])
+def api_user_domains(user_id):
+    existing = UserDB.get_by_id(user_id)
+    if not existing:
+        return jsonify({"error": "User not found"}), 404
+
+    if request.method == "GET":
+        # Allow admins or the user themselves to view assigned domains
+        current_user = UserDB.get_by_id(g.user_id)
+        if current_user and (current_user.get("role") == "admin" or current_user.get("user_id") == user_id):
+            assigned = UserDB.get_assigned_domains(user_id)
+            return jsonify({"user_id": user_id, "domains": assigned})
+        return jsonify({"error": "Access denied"}), 403
+
+    # POST requires admin role
+    admin_err = _require_admin()
+    if admin_err:
+        return admin_err
+
+    data, err = _safe_json()
+    if err:
+        return err
+
+    domain_node_id = (data.get("domain_node_id") or "").strip()
+    can_write = bool(data.get("can_write", True))
+    if not domain_node_id:
+        return jsonify({"error": "domain_node_id required"}), 400
+
+    assigned = UserDB.assign_domain(user_id, domain_node_id, can_write=can_write)
+    return jsonify(assigned), 200
+
+
+@app.route("/api/users/<user_id>/domains/<domain_node_id>", methods=["DELETE"])
+def api_user_domain_delete(user_id, domain_node_id):
+    admin_err = _require_admin()
+    if admin_err:
+        return admin_err
+
+    existing = UserDB.get_by_id(user_id)
+    if not existing:
+        return jsonify({"error": "User not found"}), 404
+
+    removed = UserDB.remove_domain(user_id, domain_node_id)
+    return jsonify({"user_id": user_id, "domain_node_id": domain_node_id, "removed": removed})
+
+
 @app.route("/api/users/<user_id>", methods=["GET", "PUT", "DELETE"])
 def api_user_by_id(user_id):
     admin_err = _require_admin()
@@ -258,7 +326,7 @@ def api_user_by_id(user_id):
         return jsonify(updated)
 
     deactivated = UserDB.deactivate(user_id)
-    return jsonify(deactivated)
+    return jsonify({"deactivated": True, "user": deactivated})
 
 
 @app.route("/api/users/<user_id>/workspaces", methods=["GET"])
@@ -1475,6 +1543,9 @@ def api_workspaces_list():
 
 @app.route("/api/workspaces", methods=["POST"])
 def api_workspaces_create():
+    admin_err = _require_admin()
+    if admin_err:
+        return admin_err
     data, err = _safe_json()
     if err:
         return err
@@ -1506,6 +1577,9 @@ def api_workspaces_create():
 
 @app.route("/api/workspaces/reorder", methods=["POST"])
 def api_workspaces_reorder():
+    admin_err = _require_admin()
+    if admin_err:
+        return admin_err
     data = request.get_json(force=True)
     order = data.get("order", [])
     if not order:
@@ -1523,6 +1597,9 @@ def api_workspaces_reorder():
 
 @app.route("/api/workspaces/<ws_id>", methods=["PUT"])
 def api_workspaces_update(ws_id):
+    admin_err = _require_admin()
+    if admin_err:
+        return admin_err
     data = request.get_json(force=True)
     workspaces = _read_workspaces(user_id=g.user_id)
     for ws in workspaces:
@@ -1553,6 +1630,9 @@ def api_workspaces_update(ws_id):
 
 @app.route("/api/workspaces/<ws_id>", methods=["DELETE"])
 def api_workspaces_delete(ws_id):
+    admin_err = _require_admin()
+    if admin_err:
+        return admin_err
     existing_links = WorkspaceSessionLinkDB.list_by_workspace(ws_id)
 
     # Remove session links first so FK on workspace_session_links never blocks delete.

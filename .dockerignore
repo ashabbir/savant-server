@@ -12,3 +12,4 @@ tests_refactored
 *.db-shm
 *.db-wal
 data
+.env

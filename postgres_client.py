@@ -131,6 +131,34 @@ CREATE TABLE IF NOT EXISTS users (
 );
 CREATE INDEX IF NOT EXISTS idx_users_api_key_hash ON users(api_key_hash);
 
+-- Server-owned tool registry.  Archives and metadata live in PostgreSQL so a
+-- tool remains available after container replacement or a renderer refresh.
+CREATE TABLE IF NOT EXISTS tool_packages (
+    name            TEXT PRIMARY KEY,
+    description     TEXT NOT NULL DEFAULT '',
+    input_schema    JSONB NOT NULL DEFAULT '{"type":"object","properties":{}}'::jsonb,
+    archive_data    BYTEA NOT NULL,
+    author          TEXT NOT NULL DEFAULT '',
+    uploaded_by     TEXT NOT NULL REFERENCES users(user_id),
+    service_node_id TEXT NOT NULL DEFAULT '',
+    kg_node_ids     JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at      TIMESTAMPTZ NOT NULL,
+    updated_at      TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tool_packages_created ON tool_packages(created_at DESC);
+
+-- User <-> Domain Node Assignments
+CREATE TABLE IF NOT EXISTS user_domains (
+    user_id         TEXT NOT NULL,
+    domain_node_id  TEXT NOT NULL,
+    can_write       INTEGER DEFAULT 1,
+    assigned_at     TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (user_id, domain_node_id),
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_ud_user ON user_domains(user_id);
+CREATE INDEX IF NOT EXISTS idx_ud_domain ON user_domains(domain_node_id);
+
 -- Workspaces
 CREATE TABLE IF NOT EXISTS workspaces (
     workspace_id        TEXT PRIMARY KEY,

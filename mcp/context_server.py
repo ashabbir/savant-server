@@ -1,6 +1,6 @@
 """Context MCP server — FastMCP SSE bridge on port 8093.
 
-Proxies 11 tools to the Flask /api/context/* and /api/graphify/* REST APIs.
+Proxies 6 agent-facing tools to the Flask /api/context/* and /api/graphify/* REST APIs.
 Follows the same pattern as workspace (8091) and abilities (8092) servers.
 
 Tools:
@@ -8,15 +8,11 @@ Tools:
   structure_search      — AST structure search for classes, functions
   analyze_code          — Analyze a class/file before and after changes
   memory_bank_search    — Semantic search within memory bank markdown files
-  memory_resources_list — List all memory bank resources (optional repo filter)
-  memory_resources_read — Read a specific memory bank resource by URI
-  repos_list            — List indexed repos with README excerpts
-  repo_status           — Per-repo index status counts
   code_graph_search     — Search Graphify relationships and dependencies
-  get_code_graph_stats  — Graphify node/edge counts by type
   research              — Preferred AI-facing tool for broad code exploration
 """
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import argparse
 import logging
 import os
@@ -48,20 +44,20 @@ mcp = FastMCP(
     instructions=(
         "PHYSICAL CODEBASE CONTEXT SEARCH: Use this server to query actual source code, syntax, class structures, "
         "and code-level dependency graphs. DO NOT use this server for high-level business capability domains, "
-        "partner clients, deployable service applications, or developer architecture decisions (use 'savant-knowledge' for those).\n"
+        "partner clients, deployable service applications, or developer architecture decisions (use 'savant-knowledge' for those).\n\n"
+        "AI AGENT GUIDANCE FOR RESEARCH TOOL:\n"
+        "  - 'research' is your PRIMARY AND PREFERRED TOOL for exploring code, architecture, and memory banks. "
+        "Always use 'research' first when answering codebase questions, looking for implementations, or researching features.\n"
+        "  - Set 'q' to your search query (e.g. 'SessionManager', 'authentication JWT', 'database migration').\n"
+        "  - Set 'type' based on intent:\n"
+        "      • 'all' (default): Best for general exploration. Searches physical source code, AST structure, dependency graph, AND memory bank documentation.\n"
+        "      • 'code': Use when specifically looking for source code implementations, classes, functions, and import graphs (excludes memory bank).\n"
+        "      • 'memory': Use when looking specifically for architectural decisions, project design docs, or memory bank history (excludes code).\n"
+        "  - Scope lookup with 'repo' (e.g., repo='savant-server' or repo=['savant-client', 'savant-server']).\n\n"
         "Tools:\n"
-        "  - code_search(query, repo): Semantic search across source code.\n"
-        "  - structure_search(query): AST structural match (find classes, functions).\n"
-        "  - analyze_code(repo, path, uri, name, class_name, symbol, node_type, diff, code): Analyze a class/file before and after changes.\n"
-        "  - code_graph_search(query, repo): Look up codebase graph imports, callers, and class dependencies.\n"
-        "  - get_code_graph_stats(repo): Get Graphify node and edge counts by type.\n"
-        "  - research(query, repo): Preferred AI-facing tool that runs code, structure, memory, and code graph searches together.\n"
-        "  - memory_bank_search(query, repo): Semantic search within local repository memory bank markdown files.\n"
-        "  - memory_resources_list(repo): List memory bank resources.\n"
-        "  - memory_resources_read(uri): Read a specific memory bank resource by URI.\n"
-        "  - repos_list(filter): List indexed repos with README excerpts.\n"
-        "  - repo_status(): List per-repo index status counts.\n"
-        "All tools accept a 'repo' filter to scope lookup to a specific repository."
+        "  - research(q, repo, type, limit): Primary codebase & memory research tool for AI agents.\n"
+        "  - structure_search(q, repo): AST structural match to pinpoint class/function definitions.\n"
+        "  - analyze_code(repo, path, uri, name, class_name, symbol, node_type, diff, code): Detailed code analysis tool."
     ),
     host=_args.host,
     port=_args.port,
@@ -89,24 +85,83 @@ def _post(path: str, json: dict = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# MCP Tools (same signatures as standalone savant-context)
+# Internal Helper Functions & MCP Tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
+def _truncate_snippet(content: str, query: str, max_lines: int = 15) -> str:
+    """Trim a code snippet around the query match to keep tokens concise for AI agents."""
+    if not content:
+        return ""
+    lines = content.splitlines()
+    if len(lines) <= max_lines:
+        return content
+
+    # Find line index matching query
+    query_lower = (query or "").lower()
+    match_idx = 0
+    for idx, line in enumerate(lines):
+        if query_lower and query_lower in line.lower():
+            match_idx = idx
+            break
+
+    start = max(0, match_idx - (max_lines // 2))
+    end = min(len(lines), start + max_lines)
+    snippet = lines[start:end]
+    
+    prefix = [f"... (lines 1-{start})"] if start > 0 else []
+    suffix = [f"... ({len(lines) - end} remaining lines)"] if end < len(lines) else []
+    return "\n".join(prefix + snippet + suffix)
+
+
+def _is_test_file(path: str) -> bool:
+    """Check if file path belongs to test directories or files."""
+    if not path:
+        return False
+    path_lower = path.lower()
+    return (
+        "test_" in path_lower
+        or "_test" in path_lower
+        or "/tests/" in path_lower
+        or "/tests_refactored/" in path_lower
+        or "/tests_js/" in path_lower
+        or "/tests_ui/" in path_lower
+    )
+
+
 def code_search(
     q: str = None,
     query: str = None,
     repo: str | list[str] = None,
-    limit: int = 10,
+    limit: int = 20,
     exclude_memory_bank: bool = False,
+    exclude_tests: bool = True,
 ) -> dict:
-    """Semantic code search across indexed repos (optional repo filter)."""
-    params = {"q": q or query or "", "limit": limit}
+    """Find relevant source-code excerpts by meaning across indexed repositories."""
+    effective_q = q or query or ""
+    params = {"q": effective_q, "limit": limit * 2 if exclude_tests else limit}
     if repo:
         params["repo"] = ",".join(repo) if isinstance(repo, list) else repo
     if exclude_memory_bank:
         params["exclude_memory_bank"] = "true"
-    return _get("/api/context/search", params)
+
+    raw = _get("/api/context/search", params)
+    if "results" in raw and isinstance(raw["results"], list):
+        items = raw["results"]
+
+        # Prioritize production files over test files unless query specifically targets tests
+        if exclude_tests and "test" not in effective_q.lower():
+            prod_items = [item for item in items if not _is_test_file(item.get("rel_path", ""))]
+            test_items = [item for item in items if _is_test_file(item.get("rel_path", ""))]
+            items = prod_items + test_items
+
+        items = items[:limit]
+        for item in items:
+            if "content" in item:
+                item["content"] = _truncate_snippet(item["content"], effective_q)
+        raw["results"] = items
+        raw["result_count"] = len(items)
+
+    return raw
 
 
 @mcp.tool()
@@ -114,13 +169,31 @@ def structure_search(
     q: str = None,
     query: str = None,
     repo: str | list[str] = None,
+    exclude_tests: bool = True,
 ) -> dict:
-    """AST structure search for code (e.g. classes, functions)."""
+    """Find code structures such as classes, functions, and methods using AST data.
+
+    Use this when the symbol shape matters more than semantic similarity.
+    """
     effective_query = q or query or ""
     params = {"query": effective_query}
     if repo:
         params["repo"] = ",".join(repo) if isinstance(repo, list) else repo
-    return _get("/api/context/ast/search", params)
+
+    raw = _get("/api/context/ast/search", params)
+    if "results" in raw and isinstance(raw["results"], list):
+        items = raw["results"]
+
+        # Prioritize production AST symbols over test AST symbols
+        if exclude_tests and "test" not in effective_query.lower():
+            prod_items = [item for item in items if not _is_test_file(item.get("rel_path", ""))]
+            test_items = [item for item in items if _is_test_file(item.get("rel_path", ""))]
+            items = prod_items + test_items
+
+        raw["results"] = items
+        raw["result_count"] = len(items)
+
+    return raw
 
 
 @mcp.tool()
@@ -135,7 +208,11 @@ def analyze_code(
     diff: str = None,
     code: str = None,
 ) -> dict:
-    """Analyze a class/file before and after a diff or new code body."""
+    """Analyze a file, class, symbol, code body, or diff for implementation impact.
+
+    Identify the target with repo plus path, URI, name, class_name, or symbol.
+    Supply diff for before/after analysis or code for analysis of a new body.
+    """
     payload = {}
     if repo:
         payload["repo"] = ",".join(repo) if isinstance(repo, list) else repo
@@ -154,137 +231,172 @@ def analyze_code(
     return _post("/api/context/analysis", payload)
 
 
-@mcp.tool()
 def memory_bank_search(
     q: str = None,
     query: str = None,
     repo: str | list[str] = None,
     limit: int = 20,
 ) -> dict:
-    """Semantic search within memory bank markdown (optional repo filter)."""
-    params = {"q": q or query or "", "limit": limit}
+    """Search repository memory-bank Markdown & documentation files by meaning."""
+    effective_q = q or query or ""
+    params = {"q": effective_q, "limit": limit}
     if repo:
         params["repo"] = ",".join(repo) if isinstance(repo, list) else repo
-    return _get("/api/context/memory/search", params)
+
+    raw = _get("/api/context/memory/search", params)
+    
+    # Fallback to general vector search filtering markdown files if memory_bank_search is empty
+    if not raw.get("results"):
+        all_res = code_search(q=effective_q, repo=repo, limit=limit, exclude_memory_bank=False, exclude_tests=False)
+        if isinstance(all_res.get("results"), list):
+            md_items = [
+                item for item in all_res["results"]
+                if (item.get("rel_path") or "").endswith((".md", ".mdx", ".markdown"))
+                   or item.get("is_memory_bank") == 1
+            ]
+            raw["results"] = md_items
+            raw["result_count"] = len(md_items)
+
+    if "results" in raw and isinstance(raw["results"], list):
+        for item in raw["results"]:
+            if "content" in item:
+                item["content"] = _truncate_snippet(item["content"], effective_q, max_lines=15)
+
+    return raw
 
 
-@mcp.tool()
-def memory_resources_list(repo: str | list[str] = None) -> dict:
-    """List memory bank resources from DB (optional repo filter)."""
-    params = {}
-    if repo:
-        params["repo"] = ",".join(repo) if isinstance(repo, list) else repo
-    return _get("/api/context/memory/list", params)
-
-
-@mcp.tool()
-def memory_resources_read(uri: str) -> dict:
-    """Read a memory bank resource by URI."""
-    return _get("/api/context/memory/read", {"uri": uri})
-
-
-@mcp.tool()
-def repos_list(filter: str = None, max_length: int = 4096) -> dict:
-    """List indexed repos with README excerpts."""
-    params = {}
-    if filter:
-        params["filter"] = filter
-    return _get("/api/context/repos", params)
-
-
-@mcp.tool()
-def repo_status() -> dict:
-    """List per-repo index status counts."""
-    return _get("/api/context/repos/status")
-
-
-@mcp.tool()
 def code_graph_search(
-    query: str,
-    repo: str = None,
+    query: str = None,
+    q: str = None,
+    repo: str | list[str] = None,
     limit: int = 20,
 ) -> dict:
-    """Search codebase relationships, class hierarchies, and dependencies in the Graphify graph.
-
-    query: The text term to search for in titles or descriptions
-    repo: Optional repository/workspace name to search within (recommended).
-    limit: Maximum number of results to return (default: 20)
-    """
-    payload = {"query": query, "limit": limit}
+    """Search Graphify relationships, class hierarchies, and code dependencies."""
+    effective_query = query or q or ""
+    payload = {"query": effective_query, "limit": limit}
     if repo:
-        payload["workspace_id"] = repo
-    return _post("/api/graphify/search", payload)
+        payload["workspace_id"] = ",".join(repo) if isinstance(repo, list) else repo
+
+    raw = _post("/api/graphify/search", payload)
+    if isinstance(raw, list):
+        for node in raw:
+            # Format graph edges into human/agent readable relationship strings
+            if isinstance(node, dict) and "edges" in node and isinstance(node["edges"], list):
+                readable_edges = []
+                for edge in node["edges"]:
+                    src = edge.get("source_id", "")
+                    tgt = edge.get("target_id", "")
+                    rel = edge.get("label") or edge.get("edge_type") or "relates_to"
+                    readable_edges.append(f"{src} ──[{rel}]──> {tgt}")
+                node["readable_relationships"] = readable_edges[:10]
+    return raw
 
 
-@mcp.tool()
-def get_code_graph_stats(
-    repo: str,
-) -> dict:
-    """Get counts of Graphify nodes and edges grouped by type for a repository.
+def _build_impact_surface(results: dict, top_symbols: list[str], top_files: set[str]) -> dict:
+    """Extract 1 level up (upstream callers/importers) and 1 level down (downstream dependencies/callees)."""
+    upstream = []
+    downstream = []
+    seen_up = set()
+    seen_down = set()
 
-    repo: The name of the repository to get stats for
-    """
-    return _get("/api/graphify/stats", {"workspace_id": repo})
+    graph_res = results.get("code_graph_search", {})
+    if isinstance(graph_res, dict):
+        for query_key, node_list in graph_res.items():
+            if not isinstance(node_list, list):
+                continue
+            for node in node_list:
+                if not isinstance(node, dict):
+                    continue
+                node_id = node.get("node_id", "")
+                title = node.get("title") or node.get("norm_label") or node_id
+                edges = node.get("edges", [])
+
+                for edge in edges:
+                    if not isinstance(edge, dict):
+                        continue
+                    src = edge.get("source_id", "")
+                    tgt = edge.get("target_id", "")
+                    rel = edge.get("label") or edge.get("edge_type") or "relates_to"
+
+                    # 1 level up: Upstream callers / importers targeting this symbol
+                    if (node_id and (tgt == node_id or node_id in tgt)) or any(sym.lower() in tgt.lower() for sym in top_symbols if sym):
+                        up_key = f"{src}->{tgt}:{rel}"
+                        if up_key not in seen_up:
+                            seen_up.add(up_key)
+                            upstream.append({
+                                "upstream_caller": src,
+                                "relationship": rel,
+                                "target_symbol": title,
+                            })
+
+                    # 1 level down: Downstream targets / callees called by this symbol
+                    if (node_id and (src == node_id or node_id in src)) or any(sym.lower() in src.lower() for sym in top_symbols if sym):
+                        down_key = f"{src}->{tgt}:{rel}"
+                        if down_key not in seen_down:
+                            seen_down.add(down_key)
+                            downstream.append({
+                                "source_symbol": title,
+                                "relationship": rel,
+                                "downstream_dependency": tgt,
+                            })
+
+    upstream_trimmed = upstream[:10]
+    downstream_trimmed = downstream[:10]
+
+    return {
+        "summary": (
+            f"Impact Surface Analysis: Identified {len(upstream)} upstream callers/importers (1 level up) "
+            f"and {len(downstream)} downstream dependencies/callees (1 level down). "
+            "AI AGENTS MUST evaluate these impact surfaces to prevent breaking changes when modifying code."
+        ),
+        "upstream_dependencies_1_level_up": upstream_trimmed,
+        "downstream_impacts_1_level_down": downstream_trimmed,
+        "affected_files": sorted(list(top_files))[:8],
+    }
 
 
 @mcp.tool()
 def research(
-    query: str,
-    repo: str = None,
-    limit: int = 10,
+    q: str,
+    repo: str | list[str] = None,
+    type: str = "all",
+    limit: int = 20,
+    exclude_tests: bool = True,
 ) -> dict:
-    """Perform a comprehensive code research task by searching source code, structure, memory banks, and codebase graphs.
+    """PRIMARY CODE & CONTEXT SEARCH TOOL FOR AI AGENTS.
 
-    HINT: If you don't know where to start or are unfamiliar with the codebase, start here first.
-    This tool fans out across all search types and gives you the broadest orientation in one call.
+    AI AGENT INSTRUCTIONS:
+      Use this tool as your single entry-point for searching the codebase, code dependencies, and project memory banks.
+      Do not attempt to call individual search tools, as research unifies semantic code search, AST structure match,
+      Graphify code graph dependencies, and memory bank markdown search in one call.
 
-    query: The search term or concept to research.
-    repo: Optional repository name to limit research within.
-    limit: Maximum results per search type (default: 10).
+    PARAM GUIDANCE FOR AGENTS:
+      • q (str, required): The search query concept, symbol name, or topic (e.g. "auth middleware", "SessionDB", "user routes").
+      • repo (str | list[str], optional): Limit search scope to specific repository/repositories.
+      • type (str, optional): Controls search scope. Must be one of:
+          - "all" (default): Comprehensive search across code, AST structure, code graph, and memory bank documentation.
+          - "code": Search source code files, AST definitions, and dependency graph (omits memory bank docs).
+          - "memory": Search architectural docs and memory bank markdown files only (omits source code).
+      • limit (int, optional, default=20): Max result count per section.
+      • exclude_tests (bool, optional, default=True): Prioritizes core production source code over test files.
+
+    RETURN STRUCTURE FOR AGENTS:
+      Returns a JSON dictionary containing:
+        - 'overview': Executive summary of top symbols, files, and match counts.
+        - 'impact_surface': Upstream (1 level up) callers/importers and downstream (1 level down) dependencies.
+        - 'code_search': High-signal production code snippets.
+        - 'structure_search': AST class and function definition lines.
+        - 'code_graph_search': Readable Graphify dependency and call chains.
+        - 'memory_bank_search': Architectural documentation and markdown bank excerpts.
     """
-    results = {}
-
-    # 1. Semantic source code search
-    try:
-        results["code_search"] = code_search(query=query, repo=repo, limit=limit)
-    except Exception as e:
-        results["code_search"] = {"error": str(e)}
-
-    # 2. Memory bank markdown search
-    try:
-        results["memory_bank_search"] = memory_bank_search(query=query, repo=repo, limit=limit)
-    except Exception as e:
-        results["memory_bank_search"] = {"error": str(e)}
-
-    # 3. Structure / AST search
-    struct_results = {}
-    try:
-        struct_results = structure_search(query=query, repo=repo)
-        results["structure_search"] = struct_results
-    except Exception as e:
-        results["structure_search"] = {"error": str(e)}
-
-    # 4. Code graph / Graphify search (using matched symbol names or original query as fallback)
-    graph_queries = set()
-    if struct_results and "results" in struct_results and isinstance(struct_results["results"], list):
-        for item in struct_results["results"]:
-            if isinstance(item, dict) and item.get("name"):
-                graph_queries.add(item["name"])
-
-    # Fallback to the original query if no structure names matched
-    if not graph_queries:
-        graph_queries.add(query)
-
-    graph_results = {}
-    for g_query in sorted(graph_queries):
-        try:
-            graph_results[g_query] = code_graph_search(query=g_query, repo=repo, limit=limit)
-        except Exception as e:
-            graph_results[g_query] = {"error": str(e)}
-
-    results["code_graph_search"] = graph_results
-
-    return results
+    payload = {
+        "q": q,
+        "repo": repo,
+        "type": type,
+        "limit": limit,
+        "exclude_tests": exclude_tests,
+    }
+    return _post("/api/context/research", json=payload)
 
 
 # Backward-compatible Python alias. Do not expose as an MCP tool.

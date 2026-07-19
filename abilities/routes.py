@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 from flask import Blueprint, jsonify, request, send_file
+from utils.auth import admin_required
 
 from .store import AbilityStore
 from .resolver import Resolver
@@ -81,6 +82,7 @@ def get_asset(asset_id: str):
 # ── POST /api/abilities/assets — create new asset ────────────────────────────
 
 @abilities_bp.route("/api/abilities/assets", methods=["POST"])
+@admin_required
 def create_asset():
     try:
         data = request.get_json(force=True)
@@ -114,6 +116,7 @@ def create_asset():
 # ── PUT /api/abilities/assets/<id> — update existing asset ───────────────────
 
 @abilities_bp.route("/api/abilities/assets/<path:asset_id>", methods=["PUT"])
+@admin_required
 def update_asset(asset_id: str):
     try:
         data = request.get_json(force=True)
@@ -141,6 +144,7 @@ def update_asset(asset_id: str):
 # ── DELETE /api/abilities/assets/<id> — delete asset ─────────────────────────
 
 @abilities_bp.route("/api/abilities/assets/<path:asset_id>", methods=["DELETE"])
+@admin_required
 def delete_asset(asset_id: str):
     try:
         store = _get_store()

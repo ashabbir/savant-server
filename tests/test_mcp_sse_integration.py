@@ -34,7 +34,7 @@ def mcp_server_factory():
 @pytest.mark.parametrize("server_name,script_name,port,tool_name", [
     ("workspace", "server.py", 8091, "list_workspaces"),
     ("abilities", "abilities_server.py", 8092, "list_personas"),
-    ("context", "context_server.py", 8093, "code_search"),
+    ("context", "context_server.py", 8093, "research"),
     ("knowledge", "knowledge_server.py", 8094, "search"),
     ("reminders", "reminders_server.py", 8095, "list_reminders"),
 ])

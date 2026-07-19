@@ -71,11 +71,26 @@ utils/                  auth.py (admin_required decorator)
 |--------------------|------|---------------------------|------------|----------------------------------------------|
 | savant-workspace   | 8091 | mcp/server.py             | 32         | workspaces, tasks, notes, MRs, Jira tickets  |
 | savant-abilities   | 8092 | mcp/abilities_server.py   | 12         | prompt assets (personas, rules, policies)    |
-| savant-context     | 8093 | mcp/context_server.py     | 11         | code search, AST, memory bank, repo index    |
+| savant-context     | 8093 | mcp/context_server.py     | 6          | code search, AST, memory bank, code graph    |
 | savant-knowledge   | 8094 | mcp/knowledge_server.py   | 16         | KG nodes, edges, staging, search             |
 | savant-reminders   | 8095 | mcp/reminders_server.py   | 9          | personal reminders                           |
 
 Config: `mcp_servers.toml` / `mcp-config.json`
+
+### savant-context agent tools
+
+The context MCP allowlist intentionally exposes only agent-facing code intelligence tools:
+
+| Tool | Purpose |
+|------|---------|
+| `research` | Broad first-pass exploration across source code, AST, memory bank, and Graphify relationships. |
+| `code_search` | Semantic search across indexed repository source code. |
+| `structure_search` | AST search for classes, functions, methods, and other code structures. |
+| `analyze_code` | Analyze a file, class, symbol, code body, or diff before/after a change. |
+| `memory_bank_search` | Semantic search over curated repository memory-bank Markdown. |
+| `code_graph_search` | Search imports, callers, dependencies, inheritance, and other Graphify relationships. |
+
+Administrative/index diagnostics and low-level memory-resource operations remain available through REST where needed, but are not exposed as agent MCP tools.
 
 ## Key rules
 

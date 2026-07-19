@@ -85,7 +85,7 @@
     "semantic_hash": ""
   },
   "app.py": {
-    "mtime": 1783864625.7009099,
+    "mtime": 1784174435.569018,
     "ast_hash": "902dbc1ae3b55489e2e28118077a5761",
     "semantic_hash": ""
   },
@@ -130,13 +130,13 @@
     "semantic_hash": ""
   },
   "context/indexer.py": {
-    "mtime": 1780806409.276326,
-    "ast_hash": "ace9d6e69b150a28e46aa500984ca21d",
+    "mtime": 1784383521.2209296,
+    "ast_hash": "cb178ffaf913bfb2c23fb60974a08fc1",
     "semantic_hash": ""
   },
   "context/ingestion.py": {
-    "mtime": 1783172893.084341,
-    "ast_hash": "9a1516b609be2b6b84880c6e989011b3",
+    "mtime": 1784350494.7122023,
+    "ast_hash": "01c4ffccfc1b727f9398d2cbe048fdaf",
     "semantic_hash": ""
   },
   "context/job_worker.py": {
@@ -150,13 +150,13 @@
     "semantic_hash": ""
   },
   "context/routes.py": {
-    "mtime": 1783172893.0844417,
-    "ast_hash": "512894f7735b09d915d6eef2d9dfeadf",
+    "mtime": 1784383537.620703,
+    "ast_hash": "06bf75842bc3c07a50b18df608f61b91",
     "semantic_hash": ""
   },
   "context/walker.py": {
-    "mtime": 1781660570.1731787,
-    "ast_hash": "db4b816b2ce611889ffd7444bd5c8f09",
+    "mtime": 1784383513.379631,
+    "ast_hash": "36844cde0bbd89c81771fc695f4269fe",
     "semantic_hash": ""
   },
   "db/__init__.py": {
@@ -305,8 +305,8 @@
     "semantic_hash": ""
   },
   "mcp/server.py": {
-    "mtime": 1783177376.4005427,
-    "ast_hash": "c7e3c84221f650f06f214adb679a8ef6",
+    "mtime": 1784107238.1301448,
+    "ast_hash": "c2593dc051fd1d76b8b30fc78ea9cee3",
     "semantic_hash": ""
   },
   "mcp/stdio.py": {
@@ -320,7 +320,7 @@
     "semantic_hash": ""
   },
   "postgres_client.py": {
-    "mtime": 1783864625.7012,
+    "mtime": 1784174435.586236,
     "ast_hash": "f0d57bd8ed680708a3c34150b80f6bb3",
     "semantic_hash": ""
   },
@@ -400,13 +400,13 @@
     "semantic_hash": ""
   },
   "tests/test_context_ast.py": {
-    "mtime": 1780180836.6287134,
-    "ast_hash": "25fa1ca79d86716803a512c5c8901bdd",
+    "mtime": 1784383596.7773552,
+    "ast_hash": "f7aea578b8e68d440efe8a67bbbc8851",
     "semantic_hash": ""
   },
   "tests/test_context_repo_ingestion.py": {
-    "mtime": 1783172893.085508,
-    "ast_hash": "0997aa9f711f83eda91fb72fc2446f1c",
+    "mtime": 1784380859.0520103,
+    "ast_hash": "0b46fb9c6f3b531e4e99f523c406680e",
     "semantic_hash": ""
   },
   "tests/test_cr7.py": {
@@ -750,8 +750,8 @@
     "semantic_hash": ""
   },
   "docker-compose.yml": {
-    "mtime": 1783864625.701116,
-    "ast_hash": "2d174e362b0f3a6141037647277d4255",
+    "mtime": 1784379647.1998982,
+    "ast_hash": "c461b129ab0deeb839c7eb85199145a8",
     "semantic_hash": ""
   },
   "mcp/requirements.txt": {
