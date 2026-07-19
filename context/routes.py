@@ -527,6 +527,36 @@ def add_repo():
     return jsonify(repo), 201
 
 
+@context_bp.route("/api/context/repos/periodic-sync/status")
+def periodic_sync_status():
+    """Get status of the 6-hour periodic repository sync runner."""
+    from .periodic_runner import get_runner_status
+    return jsonify(get_runner_status())
+
+
+@context_bp.route("/api/context/repos/periodic-sync/logs")
+def periodic_sync_logs():
+    """Retrieve execution log history of periodic 6-hour sync runs."""
+    if not _ensure_init():
+        return jsonify({"error": "Context not initialized"}), 503
+    from .db import ContextDB
+    repo_name = request.args.get("repo_name") or request.args.get("repo")
+    limit = min(500, max(1, request.args.get("limit", type=int) or 50))
+    logs = ContextDB.list_periodic_sync_logs(repo_name=repo_name, limit=limit)
+    return jsonify({"count": len(logs), "logs": logs})
+
+
+@context_bp.route("/api/context/repos/periodic-sync/run", methods=["POST"])
+@admin_required
+def trigger_periodic_sync_all():
+    """Manually trigger an immediate periodic sync pass for all registered projects."""
+    if not _ensure_init():
+        return jsonify({"error": "Context not initialized"}), 503
+    from .periodic_runner import run_periodic_sync_now
+    res = run_periodic_sync_now()
+    return jsonify(res)
+
+
 @context_bp.route("/api/context/repos/<name>/refresh", methods=["POST"])
 @admin_required
 def refresh_repo(name):
@@ -855,38 +885,6 @@ def reindex_repo():
     job = JobDB.create_job("reindex", name)
     return jsonify({"started": True, "name": name, "reindex": True,
                     "job_id": job["id"]})
-
-
-@context_bp.route("/api/context/repos/periodic-sync/status")
-def periodic_sync_status():
-    """Get status of the 6-hour periodic repository sync runner."""
-    from .periodic_runner import get_runner_status
-    return jsonify(get_runner_status())
-
-
-@context_bp.route("/api/context/repos/periodic-sync/logs")
-def periodic_sync_logs():
-    """Retrieve execution log history of periodic 6-hour sync runs."""
-    if not _ensure_init():
-        return jsonify({"error": "Context not initialized"}), 503
-    from .db import ContextDB
-    repo_name = request.args.get("repo_name") or request.args.get("repo")
-    limit = min(500, max(1, request.args.get("limit", type=int) or 50))
-    logs = ContextDB.list_periodic_sync_logs(repo_name=repo_name, limit=limit)
-    return jsonify({"count": len(logs), "logs": logs})
-
-
-@context_bp.route("/api/context/repos/periodic-sync/run", methods=["POST"])
-@admin_required
-def trigger_periodic_sync_all():
-    """Manually trigger an immediate periodic sync pass for all registered projects."""
-    if not _ensure_init():
-        return jsonify({"error": "Context not initialized"}), 503
-    from .periodic_runner import run_periodic_sync_now
-    res = run_periodic_sync_now()
-    return jsonify(res)
-
-
 @context_bp.route("/api/context/repos/index-all", methods=["POST"])
 @admin_required
 def index_all():
