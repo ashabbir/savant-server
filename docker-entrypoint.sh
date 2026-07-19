@@ -57,6 +57,10 @@ python -m context.job_worker &
 JOB_WORKER_PID="$!"
 CHILD_PIDS="$CHILD_PIDS $JOB_WORKER_PID"
 
+python -m context.periodic_runner &
+PERIODIC_RUNNER_PID="$!"
+CHILD_PIDS="$CHILD_PIDS $PERIODIC_RUNNER_PID"
+
 gunicorn \
   --bind "${FLASK_HOST:-0.0.0.0}:${FLASK_PORT:-8090}" \
   --workers "${GUNICORN_WORKERS:-2}" \

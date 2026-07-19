@@ -334,6 +334,54 @@ class ContextDB:
             if local_conn:
                 release_connection(conn)
 
+    @staticmethod
+    def record_periodic_sync_log(repo_name: str, status: str, fetched: bool = False,
+                                 code_changed: bool = False, indexed: bool = False,
+                                 graphed: bool = False, details: str = "", conn=None) -> Dict[str, Any]:
+        """Persist a periodic 6-hour sync execution log entry into PostgreSQL."""
+        local_conn = False
+        if conn is None:
+            conn = get_connection()
+            local_conn = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO ctx_periodic_sync_logs
+                       (repo_name, status, fetched, code_changed, indexed, graphed, details)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s)
+                       RETURNING id, repo_name, status, fetched, code_changed, indexed, graphed, details, created_at""",
+                    (repo_name, status, fetched, code_changed, indexed, graphed, details),
+                )
+                row = cur.fetchone()
+            conn.commit()
+            return dict(row) if row else {}
+        finally:
+            if local_conn:
+                release_connection(conn)
+
+    @staticmethod
+    def list_periodic_sync_logs(repo_name: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
+        """Retrieve recent periodic sync log entries."""
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                if repo_name:
+                    cur.execute(
+                        """SELECT * FROM ctx_periodic_sync_logs
+                           WHERE repo_name = %s ORDER BY created_at DESC LIMIT %s""",
+                        (repo_name, limit),
+                    )
+                else:
+                    cur.execute(
+                        """SELECT * FROM ctx_periodic_sync_logs
+                           ORDER BY created_at DESC LIMIT %s""",
+                        (limit,),
+                    )
+                rows = cur.fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            release_connection(conn)
+
     # ------------------------------------------------------------------
     # File & chunk operations
     # ------------------------------------------------------------------

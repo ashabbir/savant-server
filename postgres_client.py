@@ -533,6 +533,20 @@ CREATE TABLE IF NOT EXISTS ctx_vec_chunks (
 CREATE INDEX IF NOT EXISTS idx_ctx_vec_hnsw
     ON ctx_vec_chunks USING hnsw (embedding vector_cosine_ops);
 
+CREATE TABLE IF NOT EXISTS ctx_periodic_sync_logs (
+    id           SERIAL PRIMARY KEY,
+    repo_name    TEXT NOT NULL,
+    status       TEXT NOT NULL,
+    fetched      BOOLEAN DEFAULT FALSE,
+    code_changed BOOLEAN DEFAULT FALSE,
+    indexed      BOOLEAN DEFAULT FALSE,
+    graphed      BOOLEAN DEFAULT FALSE,
+    details      TEXT DEFAULT '',
+    created_at   TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_ctx_sync_logs_repo ON ctx_periodic_sync_logs(repo_name);
+CREATE INDEX IF NOT EXISTS idx_ctx_sync_logs_created ON ctx_periodic_sync_logs(created_at DESC);
+
 """
 
 _SCHEMA_MIGRATIONS = (

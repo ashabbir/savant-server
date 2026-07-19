@@ -74,6 +74,8 @@ logger = logging.getLogger(__name__)
 with app.app_context():
     try:
         init_schema()
+        from context.periodic_runner import start_periodic_runner
+        start_periodic_runner()
     except Exception as e:
         logger.critical("Database initialization failed; refusing to start: %s", e)
         raise
