@@ -426,33 +426,67 @@ def download_tool_archive(tool_name: str):
     )
 
 
+def _parse_uploaded_archive(tool_name: str, archive_bytes: bytes):
+    try:
+        with zipfile.ZipFile(io.BytesIO(archive_bytes), "r") as zip_ref:
+            members = [member for member in zip_ref.infolist() if member.filename]
+            if sum(member.file_size for member in members) > MAX_TOOL_BYTES:
+                raise ValueError("Tool archive expanded content must not exceed 1MB")
+            names = [member.filename for member in members]
+            file_names = {Path(name).name for name in names if not name.endswith("/")}
+            if "README.md" not in file_names:
+                raise ValueError("Tool archive must contain README.md")
+            if not any(Path(name).suffix.lower() in {".py", ".js", ".rb"} for name in names if not name.endswith("/")):
+                raise ValueError("Tool archive must contain at least one script file")
+            manifest_name = f"{tool_name}-kg.json"
+            manifest_member = next((name for name in names if Path(name).name == manifest_name), "")
+            if manifest_member:
+                try:
+                    return json.loads(zip_ref.read(manifest_member).decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    raise ValueError(f"{manifest_name} must be valid JSON") from exc
+            readme_member = next(name for name in names if Path(name).name == "README.md")
+            readme_content = zip_ref.read(readme_member).decode("utf-8")
+            return [{
+                "node_id": f"kgn_{tool_name.replace('-', '_')}_readme_001",
+                "node_type": "insight",
+                "title": f"{tool_name} Documentation",
+                "content": readme_content,
+            }]
+    except zipfile.BadZipFile as exc:
+        raise ValueError("Unsupported or corrupt zip archive") from exc
+
+
+def _upload_inline_tool(payload: dict):
+    tool_name = str(payload.get("name", "")).strip()
+    description = str(payload.get("description", "")).strip()
+    input_schema = payload.get("input_schema", {"type": "object", "properties": {}})
+    if not _valid_tool_name(tool_name):
+        return jsonify({"error": "Tool name contains unsupported characters"}), 400
+    if not isinstance(input_schema, dict):
+        return jsonify({"error": "input_schema must be an object"}), 400
+    if ToolPackageDB.get(tool_name) or _tool_dir(tool_name).exists():
+        return jsonify({"error": f"Tool '{tool_name}' already exists"}), 409
+    try:
+        created = ToolPackageDB.create({
+            "name": tool_name,
+            "description": description,
+            "input_schema": input_schema,
+            "archive_data": _inline_tool_archive(tool_name, description, input_schema),
+            "author": g.user_id,
+            "uploaded_by": g.user_id,
+        })
+    except Exception:
+        logger.exception("Failed to persist tool %s in PostgreSQL", tool_name)
+        return jsonify({"error": "Failed to persist tool in PostgreSQL"}), 500
+    return jsonify({"tool": _database_tool_summary(created)}), 201
+
+
 @tools_bp.route("", methods=["POST"])
 @admin_required
 def upload_tool():
     if request.is_json:
-        payload = request.get_json(silent=True) or {}
-        tool_name = str(payload.get("name", "")).strip()
-        description = str(payload.get("description", "")).strip()
-        input_schema = payload.get("input_schema", {"type": "object", "properties": {}})
-        if not _valid_tool_name(tool_name):
-            return jsonify({"error": "Tool name contains unsupported characters"}), 400
-        if not isinstance(input_schema, dict):
-            return jsonify({"error": "input_schema must be an object"}), 400
-        if ToolPackageDB.get(tool_name) or _tool_dir(tool_name).exists():
-            return jsonify({"error": f"Tool '{tool_name}' already exists"}), 409
-        try:
-            created = ToolPackageDB.create({
-                "name": tool_name,
-                "description": description,
-                "input_schema": input_schema,
-                "archive_data": _inline_tool_archive(tool_name, description, input_schema),
-                "author": g.user_id,
-                "uploaded_by": g.user_id,
-            })
-        except Exception:
-            logger.exception("Failed to persist tool %s in PostgreSQL", tool_name)
-            return jsonify({"error": "Failed to persist tool in PostgreSQL"}), 500
-        return jsonify({"tool": _database_tool_summary(created)}), 201
+        return _upload_inline_tool(request.get_json(silent=True) or {})
 
     if "file" not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
@@ -472,41 +506,9 @@ def upload_tool():
         return jsonify({"error": "Tool archive must not exceed 1MB"}), 400
 
     try:
-        with zipfile.ZipFile(io.BytesIO(archive_bytes), "r") as zip_ref:
-            names = [member.filename for member in zip_ref.infolist() if member.filename]
-            root_names = {Path(name).name for name in names if name and not name.endswith("/")}
-            if "README.md" not in root_names:
-                return jsonify({"error": "Tool archive must contain README.md"}), 400
-            if not any(Path(name).suffix.lower() in {".py", ".js", ".rb"} for name in names if name and not name.endswith("/")):
-                return jsonify({"error": "Tool archive must contain at least one script file"}), 400
-            manifest_name = f"{tool_name}-kg.json"
-            manifest_member = next((name for name in names if Path(name).name == manifest_name), "")
-            
-            if manifest_member:
-                manifest_bytes = zip_ref.read(manifest_member)
-                try:
-                    manifest = json.loads(manifest_bytes.decode("utf-8"))
-                except Exception:
-                    return jsonify({"error": f"{manifest_name} must be valid JSON"}), 400
-            else:
-                # Fallback: create a KG node from README.md
-                readme_member = next((name for name in names if Path(name).name == "README.md"), "")
-                # This should already be validated by the "README.md" check above,
-                # but adding a check for safety.
-                if not readme_member:
-                    return jsonify({"error": f"Tool archive must contain {manifest_name} or README.md"}), 400
-                
-                readme_content = zip_ref.read(readme_member).decode("utf-8")
-                # Generate a unique ID based on the tool name
-                node_id = f"kgn_{tool_name.replace('-', '_')}_readme_001"
-                manifest = [{
-                    "node_id": node_id,
-                    "node_type": "insight",
-                    "title": f"{tool_name} Documentation",
-                    "content": readme_content
-                }]
-    except zipfile.BadZipFile:
-        return jsonify({"error": "Unsupported or corrupt zip archive"}), 400
+        manifest = _parse_uploaded_archive(tool_name, archive_bytes)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
 
     try:
         validated_manifest_nodes = _validate_manifest_nodes(tool_name, manifest)

@@ -99,6 +99,26 @@ def test_upload_tool_requires_readme_script_and_kg_manifest(client):
     assert "alpha" in resp.get_json()["tool"]["name"]
 
 
+def test_upload_tool_rejects_archive_with_oversized_expanded_content(client):
+    shutil.rmtree(TOOLS_DIR, ignore_errors=True)
+    TOOLS_DIR.mkdir(parents=True, exist_ok=True)
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("README.md", "# oversized\n")
+        zf.writestr("oversized.py", "print('ok')\n")
+        zf.writestr("payload.bin", b"0" * (1_048_576 + 1))
+    archive.seek(0)
+
+    response = client.post(
+        "/api/tools",
+        data={"file": (archive, "oversized.zip")},
+    )
+
+    assert response.status_code == 400
+    assert "expanded" in response.get_json()["error"].lower()
+    assert not (TOOLS_DIR / "oversized").exists()
+
+
 def test_upload_tool_rejects_duplicate_tool_name(client):
     shutil.rmtree(TOOLS_DIR, ignore_errors=True)
     TOOLS_DIR.mkdir(parents=True, exist_ok=True)

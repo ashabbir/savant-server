@@ -7,6 +7,12 @@ import glob
 import os
 import re
 import subprocess
+import pytest
+
+pytestmark = pytest.mark.skipif(
+    not os.path.exists(os.path.join(os.path.dirname(__file__), '..', 'templates', 'index.html')),
+    reason="Client UI files located in savant-client repository"
+)
 
 STATIC_JS_DIR = os.path.join(os.path.dirname(__file__), '..', 'static', 'js')
 TEMPLATE = os.path.join(os.path.dirname(__file__), '..', 'templates', 'index.html')

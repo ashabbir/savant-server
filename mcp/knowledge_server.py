@@ -379,23 +379,6 @@ def prune(remove_orphan_nodes: bool = False) -> dict[str, Any]:
     return _api("POST", "/api/knowledge/prune", json={"remove_orphan_nodes": remove_orphan_nodes})
 
 
-@mcp.tool()
-def search_graphify(query: str, workspace_id: str, limit: int = 20) -> dict[str, Any]:
-    """
-    Search Graphify nodes by text query within a specific workspace/repository context.
-    
-    workspace_id: The repository/workspace identifier (e.g. project name) to scope the search.
-    query: Text search query.
-    limit: Max results (default 20, max 100).
-    """
-    return _api("POST", "/api/knowledge/graphify/search", json={
-        "query": query,
-        "workspace_id": workspace_id,
-        "limit": min(max(1, limit), 100),
-    })
-
-
-
 # ---------------------------------------------------------------------------
 # SSE ClosedResourceError patch — prevents dropped clients from crashing
 # ---------------------------------------------------------------------------

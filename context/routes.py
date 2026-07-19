@@ -6,6 +6,7 @@ project management, and indexing.
 
 import logging
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 from concurrent.futures import ThreadPoolExecutor
@@ -191,7 +192,7 @@ def ast_search():
     try:
         from .db import ContextDB
         if repo and "," not in repo:
-            record = ContextDB.get_repo(repo)
+            record = ContextDB.get_repo_by_identifier(repo)
             if not record:
                 return jsonify({"error": "repository not found", "results": []}), 404
             from code_intelligence.runtime import build_service
@@ -211,7 +212,7 @@ def ast_search():
         repo_filter = repo.split(",") if repo and "," in repo else repo
         results = ContextDB.search_ast_nodes(query, repo_filter=repo_filter)
         return jsonify({"query": query, "result_count": len(results), "results": results,
-                        "provider": "legacy", "freshness": "fresh", "deprecated": True})
+                        "provider": "context_ast", "freshness": "fresh", "deprecated": True})
     except Exception as e:
         logger.error(f"AST search failed: {e}")
         return jsonify({"error": str(e), "results": []}), 500
@@ -222,7 +223,29 @@ def ast_list():
     if not _ensure_init():
         return jsonify({"error": "Context not initialized"}), 503
     from .db import ContextDB
-    repo = request.args.get("repo")
+    repo = request.args.get("repo_id") or request.args.get("repo")
+    if repo and "," not in repo:
+        record = ContextDB.get_repo_by_identifier(repo)
+        if not record:
+            return jsonify({"error": "repository not found", "nodes": []}), 404
+        from db.code_intelligence import CodeIntelligenceConfigDB
+        config = CodeIntelligenceConfigDB.get(str(record["id"]))
+        if config and config.get("provider") == "codegraph":
+            from code_intelligence.runtime import build_service
+            service = build_service()
+            limit = max(1, min(request.args.get("limit", type=int) or 500, 1000))
+            listed = service.list_symbols(str(record["id"]), _resolve_repo_path(record["path"]),
+                                          limit=limit, cursor=request.args.get("cursor"))
+            health = service.health(str(record["id"]), _resolve_repo_path(record["path"]))
+            nodes = [{
+                "repo": record["name"], "path": item.location.file_path,
+                "node_type": item.kind, "name": item.name,
+                "start_line": item.location.start_line, "end_line": item.location.end_line,
+            } for item in listed["items"]]
+            return jsonify({"ast_count": len(nodes), "nodes": nodes, "provider": listed["provider"],
+                            "freshness": health.freshness.value, "graph_version": health.graph_version,
+                            "incomplete": listed["incomplete"], "cursor": listed["next_cursor"],
+                            "warnings": listed["warnings"], "deprecated": True})
     repo_filter = repo.split(",") if repo and "," in repo else repo
     nodes = ContextDB.list_ast_nodes(repo_filter)
     return jsonify({"ast_count": len(nodes), "nodes": nodes})
@@ -232,56 +255,71 @@ def ast_list():
 def analyze():
     if not _ensure_init():
         return jsonify({"error": "Context not initialized"}), 503
-
-    data = request.get_json(force=True) or {}
-    repo = (data.get("repo") or "").strip()
-    path = (data.get("path") or "").strip()
-    uri = (data.get("uri") or "").strip()
-    name = (data.get("name") or data.get("class_name") or data.get("symbol") or "").strip() or None
-    node_type = (data.get("node_type") or "").strip() or None
-    diff_text = data.get("diff") or None
-    code_text = data.get("code") or None
-
-    if not path and uri:
-        if ":" in uri:
-            repo_part, path_part = uri.split(":", 1)
-            repo = repo or repo_part
-            path = path or path_part
-        else:
-            path = uri
-
-    if not path and not code_text and not diff_text:
+    data = request.get_json(force=True, silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "request body must be a JSON object"}), 400
+    params = _analysis_request_params(data)
+    if not params["path"] and not params["code"] and not params["diff"]:
         return jsonify({"error": "path, uri, code, or diff required"}), 400
+    if params["repo"] and params["path"] and not _analysis_file_allowed(params["repo"], params["path"]):
+        return jsonify({"error": "Analysis is limited to tracked, non-ignored repository source files"}), 404
+    return jsonify(_execute_analysis(params))
 
-    from .analysis import AnalysisTarget, analyze_code
+
+def _request_text(value) -> str:
+    return "" if value is None else str(value).strip()
+
+
+def _analysis_request_params(data: dict) -> dict:
+    repo = _request_text(data.get("repo"))
+    path = _request_text(data.get("path"))
+    uri = _request_text(data.get("uri"))
+    if not path and uri:
+        repo_part, separator, path_part = uri.partition(":")
+        repo = repo or (repo_part if separator else "")
+        path = path_part if separator else uri
+    name = _request_text(data.get("name") or data.get("class_name") or data.get("symbol")) or None
+    node_type = _request_text(data.get("node_type")) or None
+    return {
+        "repo": repo, "path": path, "uri": uri, "name": name, "node_type": node_type,
+        "diff": str(data["diff"]) if data.get("diff") is not None else None,
+        "code": str(data["code"]) if data.get("code") is not None else None,
+    }
+
+
+def _analysis_file_allowed(repo: str, path: str) -> bool:
     from .db import ContextDB
     from .walker import FileWalker
 
-    if repo and path:
-        repo_record = ContextDB.get_repo(repo)
-        repo_root = Path((repo_record or {}).get("path", "")).resolve() if repo_record else None
-        if not repo_root or not repo_root.exists() or not FileWalker(repo_root, tracked_only=True).is_allowed(path):
-            return jsonify({"error": "Analysis is limited to tracked, non-ignored repository source files"}), 404
+    repo_record = ContextDB.get_repo_by_identifier(repo)
+    if not repo_record:
+        return False
+    repo_root = Path(repo_record.get("path", "")).resolve()
+    return repo_root.exists() and FileWalker(repo_root, tracked_only=True).is_allowed(path)
+
+
+def _execute_analysis(params: dict) -> dict:
+    from .analysis import AnalysisTarget, analyze_code
+    from .db import ContextDB
 
     before_text = ""
-    if code_text is None and repo and path:
-        current = ContextDB.read_code_file(f"{repo}:{path}")
+    if params["code"] is None and params["repo"] and params["path"]:
+        current = ContextDB.read_code_file(f"{params['repo']}:{params['path']}")
         before_text = (current or {}).get("content", "")
-    elif code_text is not None:
-        before_text = ""
-
-    target = AnalysisTarget(path=path or uri or "", name=name, node_type=node_type)
-    result = analyze_code(
-        content_before=before_text,
-        content_after=code_text,
-        target=target,
-        diff=diff_text,
-        target_missing_is_new=bool(code_text is not None and not before_text),
+    target = AnalysisTarget(
+        path=params["path"] or params["uri"], name=params["name"], node_type=params["node_type"]
     )
-    result["repo"] = repo
-    result["path"] = path
-    result["uri"] = uri or (f"{repo}:{path}" if repo and path else path)
-    return jsonify(result)
+    result = analyze_code(
+        content_before=before_text, content_after=params["code"], target=target,
+        diff=params["diff"], target_missing_is_new=bool(params["code"] is not None and not before_text),
+    )
+    result.update({
+        "repo": params["repo"], "path": params["path"],
+        "uri": params["uri"] or (
+            f"{params['repo']}:{params['path']}" if params["repo"] and params["path"] else params["path"]
+        ),
+    })
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -483,6 +521,9 @@ def add_repo():
         }), 409
 
     repo = ContextDB.add_repo(ingested.name, ingested.path)
+    if source in {"github", "gitlab"}:
+        ContextDB.mark_repo_fetched(ingested.name)
+        repo = ContextDB.get_repo(ingested.name)
     return jsonify(repo), 201
 
 
@@ -509,7 +550,9 @@ def refresh_repo(name):
     except IngestionError as e:
         return jsonify({"error": str(e)}), 400
 
-    return jsonify(ContextDB.add_repo(refreshed.name, refreshed.path))
+    ContextDB.add_repo(refreshed.name, refreshed.path)
+    ContextDB.mark_repo_fetched(refreshed.name)
+    return jsonify(ContextDB.get_repo(refreshed.name))
 
 
 @context_bp.route("/api/context/repos/<name>", methods=["DELETE"])
@@ -802,86 +845,120 @@ def reindex_all():
 def indexing_status():
     from .indexer import get_indexing_status
     from .db import ContextDB
-    from datetime import datetime, timezone
-
     live = get_indexing_status()
+    live = live if isinstance(live, dict) else {}
+    _merge_active_index_jobs(live)
+    _merge_persisted_repo_status(live, ContextDB)
+    _mark_stalled_indexing(live)
+    return jsonify(live)
 
-    # Merge job queue status into the live dict
+
+def _index_status_base(**overrides) -> dict:
+    status = {
+        "status": "added", "phase": "", "progress": 0, "total": 0,
+        "files_done": 0, "chunks_done": 0, "current_file": "", "errors": 0,
+    }
+    status.update(overrides)
+    return status
+
+
+def _merge_active_index_jobs(live: dict) -> None:
     try:
         from db.jobs import JobDB
-        running_jobs = JobDB.list_jobs(status="running", limit=20)
-        queued_jobs = JobDB.list_jobs(status="queued", limit=20)
-        for job in running_jobs + queued_jobs:
-            target = job["target"]
-            if target == "__all__":
+        jobs = JobDB.list_jobs(limit=50)
+    except Exception:
+        return
+    for job in jobs:
+        target = job.get("target")
+        if not target or target == "__all__":
+            continue
+        job_type = str(job.get("job_type") or "")
+        if job_type in {"codegraph_sync", "codegraph_index"}:
+            try:
+                from context.db import ContextDB
+                repo = ContextDB.get_repo_by_identifier(str(target))
+                repo_name = repo.get("name") if repo else str(target)
+            except Exception:
+                repo_name = str(target)
+            current = live.setdefault(repo_name, _persisted_repo_status(repo) if repo else _index_status_base())
+            if "structural_job" in current:
                 continue
-            if target not in live or live[target].get("status") != "indexing":
-                live[target] = {
-                    "status": "indexing" if job["status"] == "running" else "queued",
-                    "phase": job.get("phase", ""),
-                    "progress": job.get("progress", 0),
-                    "total": 0,
-                    "files_done": 0,
-                    "chunks_done": 0,
-                    "current_file": job.get("message", ""),
-                    "errors": 0,
-                    "job_id": job["id"],
-                    "job_type": job.get("job_type", ""),
-                }
-    except Exception:
-        pass
+            job_status = str(job.get("status") or "")
+            finished_at = _status_timestamp(job.get("finished_at"))
+            is_recent_terminal = (
+                job_status in {"done", "failed", "cancelled"}
+                and finished_at is not None
+                and (datetime.now(timezone.utc) - finished_at).total_seconds() <= 600
+            )
+            if job_status in {"queued", "running"} or is_recent_terminal:
+                current["structural_job"] = job
+            continue
+        if job.get("status") not in {"queued", "running"}:
+            continue
+        if live.get(target, {}).get("status") == "indexing":
+            continue
+        live[target] = _index_status_base(
+            status="indexing" if job.get("status") == "running" else "queued",
+            phase=job.get("phase", ""), progress=job.get("progress", 0),
+            current_file=job.get("message", ""), job_id=job.get("id"),
+            job_type=job.get("job_type", ""),
+        )
 
-    # Also include DB status for any repos currently marked "indexing"
+
+def _persisted_repo_status(repo: dict) -> dict:
+    repo_status = repo.get("status", "added")
+    if repo_status == "indexing":
+        return _index_status_base(
+            status="stalled", phase="No active worker",
+            error=(
+                "This repo is marked as indexing in the database, but no live index worker is running. "
+                "The previous job likely exited early or the app was restarted. Use Stop Indexing to reset it, then retry."
+            ),
+        )
+    complete = repo_status == "indexed"
+    return _index_status_base(
+        status=repo_status, phase="Complete" if complete else "",
+        progress=100 if complete else 0, total=repo.get("file_count", 0),
+        files_done=repo.get("file_count", 0), chunks_done=repo.get("chunk_count", 0),
+    )
+
+
+def _merge_persisted_repo_status(live: dict, context_db) -> None:
     try:
-        repos = ContextDB.list_repos()
-        for r in repos:
-            name = r["name"]
-            if name not in live and r.get("status") == "indexing":
-                live[name] = {
-                    "status": "stalled",
-                    "phase": "No active worker",
-                    "progress": 0,
-                    "total": 0,
-                    "files_done": 0,
-                    "chunks_done": 0,
-                    "current_file": "",
-                    "errors": 0,
-                    "error": (
-                        "This repo is marked as indexing in the database, but no live index worker is running. "
-                        "The previous job likely exited early or the app was restarted. Use Stop Indexing to reset it, then retry."
-                    ),
-                }
-            elif name not in live:
-                live[name] = {
-                    "status": r.get("status", "added"),
-                    "phase": "Complete" if r.get("status") == "indexed" else "",
-                    "progress": 100 if r.get("status") == "indexed" else 0,
-                    "total": r.get("file_count", 0),
-                    "files_done": r.get("file_count", 0),
-                    "chunks_done": r.get("chunk_count", 0),
-                    "current_file": "",
-                    "errors": 0,
-                }
+        repos = context_db.list_repos()
     except Exception:
-        pass
+        return
+    for repo in repos:
+        name = repo.get("name")
+        if name and name not in live:
+            live[name] = _persisted_repo_status(repo)
 
+
+def _status_timestamp(value) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _mark_stalled_indexing(live: dict) -> None:
+    now = datetime.now(timezone.utc)
     for item in live.values():
-        updated_at = item.get("updated_at")
-        if item.get("status") != "indexing" or not updated_at:
+        updated_at = _status_timestamp(item.get("updated_at"))
+        if item.get("status") != "indexing" or updated_at is None:
             continue
-        try:
-            age = (datetime.now(timezone.utc) - datetime.fromisoformat(updated_at)).total_seconds()
-        except Exception:
+        age = (now - updated_at).total_seconds()
+        if age < 180:
             continue
-        if age >= 180:
-            item["status"] = "stalled"
-            item["phase"] = "No recent progress"
-            item["error"] = (
+        item.update({
+            "status": "stalled",
+            "phase": "No recent progress",
+            "error": (
                 f"No index progress has been reported for {int(age)} seconds. "
                 "The worker may be hung on model load, file IO, or embedding generation."
-            )
-
-    return jsonify(live)
+            ),
+        })
 
 
 # ---------------------------------------------------------------------------
@@ -911,60 +988,8 @@ def stats():
 # ---------------------------------------------------------------------------
 
 def _build_impact_surface_internal(results: dict, top_symbols: list, top_files: set) -> dict:
-    upstream = []
-    downstream = []
-    seen_up = set()
-    seen_down = set()
-
-    graph_res = results.get("code_graph_search", {})
-    if isinstance(graph_res, dict):
-        for query_key, node_list in graph_res.items():
-            if not isinstance(node_list, list):
-                continue
-            for node in node_list:
-                if not isinstance(node, dict):
-                    continue
-                node_id = node.get("node_id", "")
-                title = node.get("title") or node.get("norm_label") or node_id
-                edges = node.get("edges", [])
-
-                for edge in edges:
-                    if not isinstance(edge, dict):
-                        continue
-                    src = edge.get("source_id", "")
-                    tgt = edge.get("target_id", "")
-                    rel = edge.get("label") or edge.get("edge_type") or "relates_to"
-
-                    if (node_id and (tgt == node_id or node_id in tgt)) or any(sym.lower() in tgt.lower() for sym in top_symbols if sym):
-                        up_key = f"{src}->{tgt}:{rel}"
-                        if up_key not in seen_up:
-                            seen_up.add(up_key)
-                            upstream.append({
-                                "upstream_caller": src,
-                                "relationship": rel,
-                                "target_symbol": title,
-                            })
-
-                    if (node_id and (src == node_id or node_id in src)) or any(sym.lower() in src.lower() for sym in top_symbols if sym):
-                        down_key = f"{src}->{tgt}:{rel}"
-                        if down_key not in seen_down:
-                            seen_down.add(down_key)
-                            downstream.append({
-                                "source_symbol": title,
-                                "relationship": rel,
-                                "downstream_dependency": tgt,
-                            })
-
-    return {
-        "summary": (
-            f"Impact Surface Analysis: Identified {len(upstream)} upstream callers/importers (1 level up) "
-            f"and {len(downstream)} downstream dependencies/callees (1 level down). "
-            "AI AGENTS MUST evaluate these impact surfaces to prevent breaking changes when modifying code."
-        ),
-        "upstream_dependencies_1_level_up": upstream[:10],
-        "downstream_impacts_1_level_down": downstream[:10],
-        "affected_files": sorted(list(top_files))[:8],
-    }
+    from .impact import build_impact_surface
+    return build_impact_surface(results, top_symbols, top_files)
 
 
 @context_bp.route("/api/context/research", methods=["POST"])
@@ -979,6 +1004,12 @@ def context_research():
 
     repo = data.get("repo")
     search_type = (data.get("type") or "all").lower().strip()
+    allowed_types = ("all", "code", "memory")
+    if search_type not in allowed_types:
+        return jsonify({
+            "error": "type must be one of: all, code, memory",
+            "allowed_types": list(allowed_types),
+        }), 400
     limit = int(data.get("limit", 20))
     exclude_tests = bool(data.get("exclude_tests", True))
     should_exclude_tests = exclude_tests and "test" not in q.lower()

@@ -51,9 +51,18 @@ def main():
     # Note: we skip the first 2 args (stdio.py and <server_name>)
     args = [script_path, "--transport", "stdio"] + sys.argv[2:]
     env = os.environ.copy()
+    server_root = os.path.dirname(mcp_dir)
+    existing_pythonpath = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = os.pathsep.join(
+        part for part in (server_root, existing_pythonpath) if part
+    )
     api_base = _discover_savant_api_base()
     if api_base:
         env["SAVANT_API_BASE"] = api_base
+    # Flask requires an allow-listed caller identity on every API request.
+    # STDIO clients commonly configure only the API key, so give all Savant
+    # MCP bridges the canonical application identity unless explicitly set.
+    env.setdefault("SAVANT_APP_NAME", "savant-mcp")
 
     # Use execv to replace the current process (on Unix)
     if os.name == "posix":

@@ -54,6 +54,12 @@ class TestTaskApiCreate:
         assert data["status"] == "todo"
         assert data["priority"] == "medium"
 
+    def test_create_normalizes_invalid_priority(self, client, ws):
+        resp = _create_task(client, ws, title="Priority check", priority="urgent")
+
+        assert resp.status_code == 200
+        assert resp.get_json()["priority"] == "medium"
+
     def test_create_requires_title(self, client, ws):
         resp = client.post("/api/tasks", json={"workspace_id": ws})
         assert resp.status_code == 400

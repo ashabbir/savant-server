@@ -17,6 +17,7 @@ def _isolated_db(tmp_path, monkeypatch, request):
         return
     db_path = str(tmp_path / "test_savant.db")
     monkeypatch.setenv("SAVANT_DB", db_path)
+    monkeypatch.setattr("routes.preferences._PREFERENCES_FILE", str(tmp_path / "preferences.json"))
 
     # Reset the singleton so it reconnects to the test DB
     from sqlite_client import SQLiteClient
@@ -25,6 +26,18 @@ def _isolated_db(tmp_path, monkeypatch, request):
 
     from sqlite_client import init_sqlite
     init_sqlite()
+
+    from postgres_client import init_schema
+    try:
+        init_schema()
+    except Exception:
+        pass
+
+    from db.tasks import TaskDB
+    try:
+        TaskDB.clear_all()
+    except Exception:
+        pass
 
     # Seed default users so auth works in tests
     from db.users import UserDB
@@ -47,13 +60,14 @@ def client(_isolated_db):
         # Wrap the test client to inject X-API-Key by default
         original_open = c.open
         def _authed_open(*args, **kwargs):
-            headers = kwargs.get("headers") or {}
-            if isinstance(headers, dict):
-                if "X-API-Key" not in headers:
-                    headers["X-API-Key"] = "sk-ahmed-savant-001"
-                if "X-App-Name" not in headers:
-                    headers["X-App-Name"] = "savant-olympus"
-                kwargs["headers"] = headers
+            headers = kwargs.get("headers")
+            if headers is None:
+                headers = {}
+            elif not isinstance(headers, dict):
+                headers = dict(headers)
+            headers.setdefault("X-API-Key", "sk-ahmed-savant-001")
+            headers.setdefault("X-App-Name", "savant-olympus")
+            kwargs["headers"] = headers
             return original_open(*args, **kwargs)
         c.open = _authed_open
         yield c

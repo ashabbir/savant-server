@@ -72,13 +72,16 @@ def symbols(repo_id):
     if error:
         return error
     query = (request.args.get("q") or "").strip()
-    if not query:
-        return jsonify({"error": "q required"}), 400
     try:
-        result = build_service().search_symbols(repo_id, Path(record["path"]), query,
-            filters={key: request.args.get(key) for key in ("kind", "language", "path") if request.args.get(key)},
-            limit=request.args.get("limit", type=int) or 20)
-        return jsonify(result.model_dump(mode="json"))
+        service = build_service()
+        filters = {key: request.args.get(key) for key in ("kind", "language", "path") if request.args.get(key)}
+        limit = request.args.get("limit", type=int) or 100
+        if query:
+            result = service.search_symbols(repo_id, Path(record["path"]), query, filters=filters, limit=limit)
+            return jsonify(result.model_dump(mode="json"))
+        result = service.list_symbols(repo_id, Path(record["path"]), filters=filters, limit=limit,
+                                      cursor=request.args.get("cursor"))
+        return jsonify({**result, "items": [item.model_dump(mode="json") for item in result["items"]]})
     except Exception as exc:
         return _error(exc)
 
@@ -137,7 +140,7 @@ def source(repo_id):
 
 @code_intelligence_bp.post(f"{BASE}/analysis")
 def analysis(repo_id):
-    """Legacy findings plus explicitly separate, versioned metric families."""
+    """Deterministic findings plus explicitly separate, versioned metric families."""
     record, error = _repo(repo_id)
     if error:
         return error
@@ -170,7 +173,7 @@ def analysis(repo_id):
         name=(str(data.get("name") or data.get("symbol") or "").strip() or None),
         node_type=(str(data.get("node_type") or "").strip() or None),
     )
-    legacy = analyze_code(
+    deterministic = analyze_code(
         content_before=before,
         content_after=code,
         target=target,
@@ -201,14 +204,14 @@ def analysis(repo_id):
         graph_metrics["warnings"].append(str(exc))
 
     return jsonify({
-        **legacy,
+        **deterministic,
         "repo_id": repo_id,
         "complexity_metrics": {
-            "algorithm": "legacy_line_factor",
+            "algorithm": "deterministic_ast",
             "version": "1",
-            "before": legacy["before"]["complexity"],
-            "after": legacy["after"]["complexity"],
-            "delta": legacy["delta"]["complexity"],
+            "before": deterministic["before"]["complexity"],
+            "after": deterministic["after"]["complexity"],
+            "delta": deterministic["delta"]["complexity"],
         },
         "graph_metrics": graph_metrics,
     })

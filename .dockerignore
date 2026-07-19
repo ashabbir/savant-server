@@ -16,4 +16,3 @@ data
 node_modules
 models
 .codegraph
-graphify-out/cache

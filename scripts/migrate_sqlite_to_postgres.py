@@ -13,7 +13,7 @@ GOLD tables (kg_nodes, kg_edges, workspaces, workspace_session_links):
     Script aborts if source count - skipped != inserted count.
 
 Skipped tables:
-    ctx_* (rebuild from source), graphify_* (new), lost_and_found (internal)
+    ctx_* (rebuild from source), lost_and_found (internal)
 """
 
 from __future__ import annotations
@@ -69,7 +69,6 @@ SKIP = {
     "ctx_repos", "ctx_files", "ctx_chunks", "ctx_ast_nodes",
     "ctx_vec_chunks", "ctx_vec_chunks_chunks", "ctx_vec_chunks_info",
     "ctx_vec_chunks_rowids", "ctx_vec_chunks_vector_chunks00",
-    "graphify_nodes", "graphify_edges",
     "counters", "sqlite_sequence",
     "lost_and_found", "lost_and_found_0",
     "_jira_tickets_new",

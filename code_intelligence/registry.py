@@ -12,15 +12,14 @@ class CodeIntelligenceProviderRegistry:
     ):
         self.providers = dict(providers)
         self.selection_loader = selection_loader or (lambda _repo_id: None)
-        if "legacy" not in self.providers:
-            raise ValueError("legacy provider is required")
+        if "codegraph" not in self.providers:
+            raise ValueError("codegraph provider is required")
 
     def get_provider(self, repo_id: str):
-        selection = self.selection_loader(repo_id) or "legacy"
-        try:
-            return self.providers[selection]
-        except KeyError as exc:
-            raise LookupError(f"configured code intelligence provider is unavailable: {selection}") from exc
+        selection = self.selection_loader(repo_id) or "codegraph"
+        if selection != "codegraph":
+            selection = "codegraph"
+        return self.providers[selection]
 
     def get_named_provider(self, name: str):
         return self.providers[name]

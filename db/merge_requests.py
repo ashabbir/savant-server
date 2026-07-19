@@ -77,14 +77,26 @@ class MergeRequestDB:
                     """INSERT INTO merge_requests
                        (mr_id, workspace_id, url, project_id, mr_iid, title, status,
                         priority, author, jira, created_at, updated_at, user_id)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                       ON CONFLICT (mr_id) DO UPDATE SET
+                         workspace_id=EXCLUDED.workspace_id,
+                         url=EXCLUDED.url,
+                         project_id=EXCLUDED.project_id,
+                         mr_iid=EXCLUDED.mr_iid,
+                         title=EXCLUDED.title,
+                         status=EXCLUDED.status,
+                         priority=EXCLUDED.priority,
+                         author=EXCLUDED.author,
+                         jira=EXCLUDED.jira,
+                         updated_at=EXCLUDED.updated_at,
+                         user_id=EXCLUDED.user_id""",
                     (
-                        mr["mr_id"], mr["workspace_id"], mr["url"],
+                        mr["mr_id"], mr["workspace_id"], mr.get("url", ""),
                         mr.get("project_id", ""), mr.get("mr_iid", 0),
                         mr.get("title", ""), mr.get("status", "open"),
                         mr.get("priority", "medium"), mr.get("author", ""),
-                        mr.get("jira", ""), mr.get("created_at", now), mr.get("updated_at", now),
-                        mr.get("user_id", ""),
+                        mr.get("jira", ""), mr.get("created_at", now),
+                        mr.get("updated_at", now), mr.get("user_id", ""),
                     ),
                 )
                 # Insert embedded notes
@@ -132,7 +144,7 @@ class MergeRequestDB:
                 clauses.append("status = %s")
                 params.append(status)
             if user_id:
-                clauses.append("user_id = %s")
+                clauses.append("(user_id = %s OR user_id = '')")
                 params.append(user_id)
             where = "WHERE " + " AND ".join(clauses)
             params.append(limit)
@@ -167,7 +179,9 @@ class MergeRequestDB:
             release_connection(conn)
 
     @staticmethod
-    def list_all(limit: int = 1000, user_id: str = "") -> list[dict]:
+    def list_all(limit: int = 1000, user_id: str = "", workspace_id: str | None = None) -> list[dict]:
+        if workspace_id:
+            return MergeRequestDB.list_by_workspace(workspace_id=workspace_id, limit=limit, user_id=user_id)
         conn = get_connection()
         try:
             with conn.cursor() as cur:

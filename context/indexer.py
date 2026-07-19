@@ -61,6 +61,14 @@ def _clear_status(project: str):
         _indexing_status.pop(project, None)
 
 
+def _schedule_status_cleanup(project: str):
+    def cleanup():
+        import time
+        time.sleep(30)
+        _clear_status(project)
+    threading.Thread(target=cleanup, daemon=True).start()
+
+
 class Indexer:
     """Repository indexer with background threading and progress tracking."""
 
@@ -443,8 +451,54 @@ class Indexer:
         except Exception as e:
             logger.warning(f"AST insert failed for {file_rel_path}:{start_line} ({name}): {e}")
 
+    def _index_file(self, repo_id, repo_path, file_rel_path, embedder, conn, replace_generated=False):
+        if MemoryBankDetector.should_skip_in_memory_dir(str(file_rel_path)):
+            return None
+        file_abs_path = repo_path / file_rel_path
+        stat = file_abs_path.stat()
+        if stat.st_size > 50_000_000:
+            return None
+        with open(file_abs_path, "r", encoding="utf-8", errors="ignore") as handle:
+            content = handle.read()
+        if "\x00" in content:
+            return None
+        language, is_memory_bank = self._detect_language(str(file_rel_path))
+        file_id = ContextDB.insert_file(
+            repo_id, str(file_rel_path), language, is_memory_bank,
+            int(stat.st_mtime_ns), datetime.now(timezone.utc).isoformat(), conn=conn,
+        )
+        if replace_generated:
+            ContextDB.clear_file_generated_data(file_id, conn=conn)
+        self._extract_and_store_ast(file_id, str(file_rel_path), content, conn=conn)
+        chunk_count = 0
+        for chunk_index, chunk_text in self.chunker.chunk_with_metadata(content):
+            ContextDB.insert_chunk(file_id, chunk_index, chunk_text, embedder.embed_one(chunk_text), conn=conn)
+            chunk_count += 1
+        return {"chunks": chunk_count, "language": language, "is_memory_bank": is_memory_bank}
+
+    def _generate_file_ast(self, repo_id, repo_path, file_rel_path, conn, replace_generated=False):
+        if MemoryBankDetector.should_skip_in_memory_dir(str(file_rel_path)):
+            return False
+        file_abs_path = repo_path / file_rel_path
+        stat = file_abs_path.stat()
+        if stat.st_size > 5_000_000:
+            return False
+        with open(file_abs_path, "r", encoding="utf-8", errors="ignore") as handle:
+            content = handle.read()
+        language, is_memory_bank = self._detect_language(str(file_rel_path))
+        if is_memory_bank:
+            return False
+        file_id = ContextDB.insert_file(
+            repo_id, str(file_rel_path), language, False,
+            int(stat.st_mtime_ns), datetime.now(timezone.utc).isoformat(), conn=conn,
+        )
+        if replace_generated:
+            ContextDB.clear_file_ast_data(file_id, conn=conn)
+        self._extract_and_store_ast(file_id, str(file_rel_path), content, conn=conn)
+        return True
+
     def index_repository(self, repo_path: Path, repo_name: Optional[str] = None,
-                         on_progress: Optional[Callable] = None, clear: bool = True,
+                         clear: bool = True,
                          job_progress_cb: Optional[Callable] = None) -> Dict[str, Any]:
         repo_path = Path(repo_path).resolve()
         if not repo_path.exists():
@@ -490,45 +544,19 @@ class Indexer:
                     raise _CancelledError(repo_name)
 
                 try:
-                    if MemoryBankDetector.should_skip_in_memory_dir(str(file_rel_path)):
+                    indexed = self._index_file(
+                        repo_id, repo_path, file_rel_path, embedder, conn,
+                        replace_generated=not clear,
+                    )
+                    if not indexed:
                         continue
-
-                    file_abs_path = repo_path / file_rel_path
-                    stat = file_abs_path.stat()
-                    mtime_ns = int(stat.st_mtime_ns)
-
-                    if stat.st_size > 50_000_000:
-                        continue
-
-                    try:
-                        with open(file_abs_path, "r", encoding="utf-8", errors="ignore") as f:
-                            content = f.read()
-                        if "\x00" in content:
-                            continue
-                    except Exception:
-                        errors += 1
-                        continue
-
-                    language, is_memory_bank = self._detect_language(str(file_rel_path))
-                    if is_memory_bank:
+                    if indexed["is_memory_bank"]:
                         memory_bank_count += 1
                     else:
+                        language = indexed["language"]
                         lang_counts[language] = lang_counts.get(language, 0) + 1
-
-                    now = datetime.now(timezone.utc).isoformat()
-                    file_id = ContextDB.insert_file(
-                        repo_id, str(file_rel_path), language,
-                        is_memory_bank, mtime_ns, now, conn=conn
-                    )
                     files_indexed += 1
-
-                    self._extract_and_store_ast(file_id, str(file_rel_path), content, conn=conn)
-
-                    chunks = self.chunker.chunk_with_metadata(content)
-                    for chunk_index, chunk_text in chunks:
-                        vec = embedder.embed_one(chunk_text)
-                        ContextDB.insert_chunk(file_id, chunk_index, chunk_text, vec, conn=conn)
-                        chunks_indexed += 1
+                    chunks_indexed += indexed["chunks"]
 
                     pct = int(files_indexed / total_files * 100) if total_files else 100
                     _set_status(repo_name, phase="Embedding", files_done=files_indexed,
@@ -569,11 +597,7 @@ class Indexer:
         finally:
             release_connection(conn)
             _clear_cancel(repo_name)
-            def _cleanup():
-                import time
-                time.sleep(30)
-                _clear_status(repo_name)
-            threading.Thread(target=_cleanup, daemon=True).start()
+            _schedule_status_cleanup(repo_name)
 
     def generate_ast_for_repository(self, repo_path: Path, repo_name: Optional[str] = None,
                                     clear: bool = True,
@@ -616,33 +640,13 @@ class Indexer:
                     raise _CancelledError(repo_name)
 
                 try:
-                    if MemoryBankDetector.should_skip_in_memory_dir(str(file_rel_path)):
-                        continue
-
-                    file_abs_path = repo_path / file_rel_path
-                    stat = file_abs_path.stat()
-                    if stat.st_size > 5_000_000:
-                        continue
-
-                    try:
-                        with open(file_abs_path, "r", encoding="utf-8", errors="ignore") as f:
-                            content = f.read()
-                    except Exception:
-                        errors += 1
-                        continue
-
-                    language, is_memory_bank = self._detect_language(str(file_rel_path))
-                    if is_memory_bank:
-                        continue
-
-                    now = datetime.now(timezone.utc).isoformat()
-                    file_id = ContextDB.insert_file(
-                        repo_id, str(file_rel_path), language,
-                        is_memory_bank, int(stat.st_mtime_ns), now, conn=conn
+                    processed = self._generate_file_ast(
+                        repo_id, repo_path, file_rel_path, conn,
+                        replace_generated=not clear,
                     )
+                    if not processed:
+                        continue
                     files_indexed += 1
-
-                    self._extract_and_store_ast(file_id, str(file_rel_path), content, conn=conn)
 
                     pct = int(files_indexed / total_files * 100) if total_files else 100
                     _set_status(repo_name, phase="Extracting", files_done=files_indexed,
@@ -670,11 +674,7 @@ class Indexer:
         finally:
             release_connection(conn)
             _clear_cancel(repo_name)
-            def _cleanup():
-                import time
-                time.sleep(30)
-                _clear_status(repo_name)
-            threading.Thread(target=_cleanup, daemon=True).start()
+            _schedule_status_cleanup(repo_name)
 
     def index_in_background(self, repo_path: Path, repo_name: Optional[str] = None):
         def _run():

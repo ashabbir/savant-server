@@ -1,10 +1,52 @@
 """TaskDB — PostgreSQL backend."""
 
+from datetime import datetime, timedelta
 from db.base import _now, _row_to_dict
 from postgres_client import get_connection, release_connection
 
 
+def _next_available_workday(start_date_str: str, ended_days=None, work_week=None) -> str:
+    """Return next available workday date string skipping non-workdays and ended days."""
+    if not isinstance(work_week, (list, tuple, set)):
+        work_week = [1, 2, 3, 4, 5]
+    if not isinstance(ended_days, (set, list, tuple)):
+        ended_days = set()
+    else:
+        ended_days = set(ended_days)
+
+    valid_workdays = set(work_week)
+    use_iso = max(valid_workdays) > 6 if valid_workdays else False
+
+    try:
+        dt = datetime.strptime(start_date_str, "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return start_date_str
+
+    for _ in range(14):
+        dt += timedelta(days=1)
+        ds = dt.strftime("%Y-%m-%d")
+        iso_w = dt.isoweekday()
+        js_w = 0 if iso_w == 7 else iso_w
+        is_workday = (iso_w in valid_workdays) if use_iso else (js_w in valid_workdays)
+        if is_workday and ds not in ended_days:
+            return ds
+    return start_date_str
+
+
 class TaskDB:
+
+    @staticmethod
+    def clear_all() -> None:
+        """Clear all tasks, task dependencies, and ended days for testing isolation."""
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM task_deps")
+                cur.execute("DELETE FROM tasks")
+                cur.execute("DELETE FROM task_ended_days")
+            conn.commit()
+        finally:
+            release_connection(conn)
 
     @staticmethod
     def ensure_indexes():
@@ -102,7 +144,17 @@ class TaskDB:
                     """INSERT INTO tasks
                        (task_id, seq, workspace_id, title, description, status, priority,
                         date, "order", created_at, updated_at, created_session_id, user_id)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                       ON CONFLICT (task_id) DO UPDATE SET
+                         workspace_id=EXCLUDED.workspace_id,
+                         title=EXCLUDED.title,
+                         description=EXCLUDED.description,
+                         status=EXCLUDED.status,
+                         priority=EXCLUDED.priority,
+                         date=EXCLUDED.date,
+                         "order"=EXCLUDED."order",
+                         updated_at=EXCLUDED.updated_at,
+                         user_id=EXCLUDED.user_id""",
                     (
                         task["task_id"], seq, task["workspace_id"],
                         task.get("title", ""), task.get("description", ""),
@@ -205,7 +257,7 @@ class TaskDB:
         return TaskDB.get_by_id(ref, user_id=user_id)
 
     @staticmethod
-    def list_all(workspace_id: str | None = None, user_id: str = "") -> list[dict]:
+    def list_all(workspace_id: str | None = None, user_id: str = "", date: str | None = None, status: str | None = None) -> list[dict]:
         conn = get_connection()
         try:
             clauses = []
@@ -216,6 +268,12 @@ class TaskDB:
             if user_id:
                 clauses.append("user_id = %s")
                 params.append(user_id)
+            if date:
+                clauses.append("date = %s")
+                params.append(date)
+            if status:
+                clauses.append("status = %s")
+                params.append(status)
             where = "WHERE " + " AND ".join(clauses) if clauses else ""
             with conn.cursor() as cur:
                 cur.execute(
@@ -359,33 +417,38 @@ class TaskDB:
             release_connection(conn)
 
     @staticmethod
-    def add_dependency(task_id: str, depends_on: str) -> bool:
+    def add_dependency(task_id: str, depends_on: str, user_id: str = "") -> dict | None:
         conn = get_connection()
         try:
+            task = TaskDB.get_by_id(task_id, user_id=user_id)
+            if not task:
+                return None
             with conn.cursor() as cur:
                 cur.execute(
                     "INSERT INTO task_deps (task_id, depends_on) VALUES (%s, %s) ON CONFLICT DO NOTHING",
                     (task_id, depends_on),
                 )
             conn.commit()
-            return True
+            return TaskDB.get_by_id(task_id, user_id=user_id)
         except Exception:
-            return False
+            return None
         finally:
             release_connection(conn)
 
     @staticmethod
-    def remove_dependency(task_id: str, depends_on: str) -> bool:
+    def remove_dependency(task_id: str, depends_on: str, user_id: str = "") -> dict | None:
         conn = get_connection()
         try:
+            task = TaskDB.get_by_id(task_id, user_id=user_id)
+            if not task:
+                return None
             with conn.cursor() as cur:
                 cur.execute(
                     "DELETE FROM task_deps WHERE task_id = %s AND depends_on = %s",
                     (task_id, depends_on),
                 )
-                count = cur.rowcount
             conn.commit()
-            return count > 0
+            return TaskDB.get_by_id(task_id, user_id=user_id)
         finally:
             release_connection(conn)
 
@@ -510,5 +573,51 @@ class TaskDB:
                     )
                 rows = cur.fetchall()
             return {r["status"]: r["cnt"] for r in rows}
+        finally:
+            release_connection(conn)
+
+    @staticmethod
+    def get_ended_days(user_id: str = "") -> list[str]:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                if user_id:
+                    cur.execute("SELECT date FROM task_ended_days WHERE user_id = %s ORDER BY date ASC", (user_id,))
+                else:
+                    cur.execute("SELECT date FROM task_ended_days ORDER BY date ASC")
+                rows = cur.fetchall()
+            return [r["date"] for r in rows]
+        finally:
+            release_connection(conn)
+
+    @staticmethod
+    def end_day(date_str: str, user_id: str = "", work_week: list[int] | None = None) -> dict:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO task_ended_days (date, user_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                    (date_str, user_id),
+                )
+            conn.commit()
+            ended = TaskDB.get_ended_days(user_id=user_id)
+            next_date = _next_available_workday(date_str, ended_days=ended, work_week=work_week)
+            moved_count, _ = TaskDB.move_incomplete_tasks_on_or_before(date_str, next_date, user_id=user_id)
+            return {"date": date_str, "next_date": next_date, "moved_count": moved_count, "ended_days": ended}
+        finally:
+            release_connection(conn)
+
+    @staticmethod
+    def unend_day(date_str: str, user_id: str = "") -> dict:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                if user_id:
+                    cur.execute("DELETE FROM task_ended_days WHERE date = %s AND user_id = %s", (date_str, user_id))
+                else:
+                    cur.execute("DELETE FROM task_ended_days WHERE date = %s", (date_str,))
+            conn.commit()
+            ended = TaskDB.get_ended_days(user_id=user_id)
+            return {"date": date_str, "ended_days": ended}
         finally:
             release_connection(conn)

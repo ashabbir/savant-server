@@ -9,10 +9,7 @@ SSE flow:
 """
 
 import contextvars
-import logging
 from urllib.parse import parse_qs
-
-log = logging.getLogger("mcp-auth")
 
 # Session-level key storage: MCP session_id -> api_key
 # Populated on GET /sse, read on POST /messages/
@@ -59,6 +56,47 @@ def auth_headers() -> dict:
     return hdrs
 
 
+def _first_param(params: dict, *names: str) -> str:
+    for name in names:
+        values = params.get(name) or []
+        if values and values[0]:
+            return values[0]
+    return ""
+
+
+def _bind_request_value(value: str, session_id: str, context_var, session_values: dict[str, str]) -> None:
+    if value:
+        context_var.set(value)
+        if session_id:
+            session_values[session_id] = value
+        session_values["_last"] = value
+        return
+    if session_id:
+        context_var.set(session_values.get(session_id, ""))
+        return
+    context_var.set(session_values.get("_last", ""))
+
+
+def _capture_scope_context(scope: dict, server_name: str) -> None:
+    headers = dict(scope.get("headers", []))
+    params = parse_qs(scope.get("query_string", b"").decode(errors="replace"))
+    session_id = _first_param(params, "session_id")
+    api_key = headers.get(b"x-api-key", b"").decode(errors="replace") or _first_param(params, "api_key")
+    app_name = (
+        headers.get(b"x-app-name", b"").decode(errors="replace")
+        or headers.get(b"x-savant-app", b"").decode(errors="replace")
+        or _first_param(params, "app_name", "savant_app")
+    )
+    mcp_server = (
+        headers.get(b"x-mcp-server", b"").decode(errors="replace")
+        or _first_param(params, "mcp_server")
+        or server_name
+    )
+    _bind_request_value(api_key, session_id, _api_key_var, _session_keys)
+    _bind_request_value(app_name, session_id, _app_name_var, _session_app_names)
+    _bind_request_value(mcp_server, session_id, _mcp_server_var, _session_mcp_servers)
+
+
 def install_header_capture(mcp_instance):
     """Wrap the FastMCP SSE app to capture and persist API keys, app names, & MCP server names per session."""
     original_sse_app = mcp_instance.sse_app
@@ -69,52 +107,7 @@ def install_header_capture(mcp_instance):
 
         async def wrapper(scope, receive, send):
             if scope["type"] == "http":
-                headers = dict(scope.get("headers", []))
-                key = headers.get(b"x-api-key", b"").decode()
-                app_name = headers.get(b"x-app-name", b"").decode() or headers.get(b"x-savant-app", b"").decode()
-                mcp_server = headers.get(b"x-mcp-server", b"").decode() or server_name
-
-                qs = scope.get("query_string", b"").decode()
-                params = parse_qs(qs)
-                if not key:
-                    key = params.get("api_key", [""])[0]
-                if not app_name:
-                    app_name = params.get("app_name", [""])[0] or params.get("savant_app", [""])[0]
-                if not mcp_server:
-                    mcp_server = params.get("mcp_server", [""])[0] or server_name
-
-                path = scope.get("path", "")
-                sid = params.get("session_id", [""])[0] if params.get("session_id") else ""
-
-                if key:
-                    _api_key_var.set(key)
-                    if sid:
-                        _session_keys[sid] = key
-                    _session_keys["_last"] = key
-                elif sid and sid in _session_keys:
-                    _api_key_var.set(_session_keys[sid])
-                elif "_last" in _session_keys:
-                    _api_key_var.set(_session_keys["_last"])
-
-                if app_name:
-                    _app_name_var.set(app_name)
-                    if sid:
-                        _session_app_names[sid] = app_name
-                    _session_app_names["_last"] = app_name
-                elif sid and sid in _session_app_names:
-                    _app_name_var.set(_session_app_names[sid])
-                elif "_last" in _session_app_names:
-                    _app_name_var.set(_session_app_names["_last"])
-
-                if mcp_server:
-                    _mcp_server_var.set(mcp_server)
-                    if sid:
-                        _session_mcp_servers[sid] = mcp_server
-                    _session_mcp_servers["_last"] = mcp_server
-                elif sid and sid in _session_mcp_servers:
-                    _mcp_server_var.set(_session_mcp_servers[sid])
-                elif "_last" in _session_mcp_servers:
-                    _mcp_server_var.set(_session_mcp_servers["_last"])
+                _capture_scope_context(scope, server_name)
 
             await inner_app(scope, receive, send)
 

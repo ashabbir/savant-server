@@ -14,6 +14,7 @@ Resolution algorithm:
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 
 from .store import AbilityStore, Block
@@ -25,6 +26,28 @@ TYPE_ORDER = {
     "policy": 3,
     "style": 4,
 }
+
+
+@dataclass
+class _Selection:
+    blocks: Dict[str, Block] = field(default_factory=dict)
+    trace: List[Dict[str, Any]] = field(default_factory=list)
+
+    def add(self, block: Block, reason: str, detail: Optional[Dict[str, Any]] = None) -> None:
+        previous = self.blocks.get(block.id)
+        if not previous or block.priority > previous.priority or (
+            block.priority == previous.priority and block.id < previous.id
+        ):
+            self.blocks[block.id] = block
+        item: Dict[str, Any] = {
+            "id": block.id,
+            "type": block.type,
+            "priority": block.priority,
+            "reason": reason,
+        }
+        if detail is not None:
+            item["detail"] = detail
+        self.trace.append(item)
 
 
 class Resolver:
@@ -42,58 +65,47 @@ class Resolver:
         if not persona_block:
             raise RuntimeError(f"Unknown persona: {persona}")
 
-        selected: Dict[str, Block] = {}
-        trace: List[Dict[str, Any]] = []
-
-        def add_block(b: Block, reason: str, detail: Optional[Dict[str, Any]] = None) -> None:
-            prev = selected.get(b.id)
-            if not prev or b.priority > prev.priority or (b.priority == prev.priority and b.id < prev.id):
-                selected[b.id] = b
-            tr: Dict[str, Any] = {"id": b.id, "type": b.type, "priority": b.priority, "reason": reason}
-            if detail is not None:
-                tr["detail"] = detail
-            trace.append(tr)
-
-        # 1) Persona
-        add_block(persona_block, "persona")
-
-        # 2) Persona includes (recursive)
-        self._expand_includes(persona_block, add_block)
-
-        # 3) Repo overlay
-        repo_block = None
-        if repo_id:
-            repo_block, repo_detail = self.store.find_repo_fuzzy(str(repo_id))
-            if repo_block and repo_block.type != "repo":
-                repo_block = None
-            if repo_block:
-                add_block(repo_block, f"repo:{repo_block.id}", detail={"repo_match": repo_detail or {}})
-                self._expand_includes(repo_block, add_block)
-
-        # Effective tags = user tags ∪ repo tags
-        effective_tags: List[str] = []
-        if tags or (repo_block and repo_block.tags):
-            tag_set: Set[str] = {t.strip() for t in (tags or []) if t and t.strip()}
-            if repo_block and repo_block.tags:
-                for t in repo_block.tags:
-                    if t:
-                        tag_set.add(t.strip())
-            effective_tags = sorted(tag_set)
-
-        # 4) Rules/policies matching effective tags
-        allowed_types: Set[str] = {"rule", "policy", "style"}
-        matched = self.store.blocks_with_tags(effective_tags, allowed_types=allowed_types) if effective_tags else []
-        for blk, info in matched:
-            add_block(blk, "tag-match", detail={"effective_tags": effective_tags, "hit": info})
-            self._expand_includes(blk, add_block)
-
-        # 5) Deduplicate and order deterministically
+        selection = _Selection()
+        selection.add(persona_block, "persona")
+        self._expand_includes(persona_block, selection.add)
+        repo_block = self._select_repo(repo_id, selection)
+        effective_tags = self._effective_tags(tags, repo_block)
+        self._select_tag_matches(effective_tags, selection)
         ordered = sorted(
-            selected.values(),
+            selection.blocks.values(),
             key=lambda b: (-b.priority, TYPE_ORDER.get(b.type, 99), b.id),
         )
+        response = self._build_response(persona_block, repo_block, ordered)
+        if include_trace:
+            response["trace"] = selection.trace
+        return response
 
-        # 6) Render prompt by sections
+    def _select_repo(self, repo_id: Optional[str], selection: _Selection) -> Optional[Block]:
+        if not repo_id:
+            return None
+        repo_block, detail = self.store.find_repo_fuzzy(str(repo_id))
+        if not repo_block or repo_block.type != "repo":
+            return None
+        selection.add(repo_block, f"repo:{repo_block.id}", detail={"repo_match": detail or {}})
+        self._expand_includes(repo_block, selection.add)
+        return repo_block
+
+    @staticmethod
+    def _effective_tags(tags: List[str], repo_block: Optional[Block]) -> List[str]:
+        tag_values = [tags] if isinstance(tags, str) else (tags or [])
+        tag_set: Set[str] = {tag.strip() for tag in tag_values if tag and tag.strip()}
+        tag_set.update(tag.strip() for tag in (repo_block.tags if repo_block else []) if tag and tag.strip())
+        return sorted(tag_set)
+
+    def _select_tag_matches(self, effective_tags: List[str], selection: _Selection) -> None:
+        if not effective_tags:
+            return
+        allowed_types: Set[str] = {"rule", "policy", "style"}
+        for block, info in self.store.blocks_with_tags(effective_tags, allowed_types=allowed_types):
+            selection.add(block, "tag-match", detail={"effective_tags": effective_tags, "hit": info})
+            self._expand_includes(block, selection.add)
+
+    def _build_response(self, persona_block: Block, repo_block: Optional[Block], ordered: List[Block]) -> Dict[str, Any]:
         persona_section = self._render_section("Persona", [persona_block])
         repo_section = self._render_section("Repo Constraints", [repo_block] if repo_block else [])
         others = [b for b in ordered if b.id not in {persona_block.id, repo_block.id if repo_block else ""}]
@@ -124,7 +136,7 @@ class Resolver:
         policy_bodies = [self.store.blocks_by_id[p].body if p in self.store.blocks_by_id else p for p in applied["policies"]]
         repo_body = self.store.blocks_by_id[applied["repo"]].body if applied["repo"] and applied["repo"] in self.store.blocks_by_id else ""
 
-        resp: Dict[str, Any] = {
+        return {
             "persona": persona_block.body,
             "repo": repo_body,
             "rules": rule_bodies,
@@ -132,17 +144,21 @@ class Resolver:
             "prompt": prompt,
             "manifest": manifest,
         }
-        if include_trace:
-            resp["trace"] = trace
-        return resp
 
     def _expand_includes(self, blk: Block, add) -> None:
-        for inc_id in blk.includes or []:
-            inc = self.store.get(inc_id)
-            if not inc:
-                raise RuntimeError(f"Unknown include '{inc_id}' in {blk.id}")
-            add(inc, f"include:{blk.id}", detail={"include_of": blk.id})
-            self._expand_includes(inc, add)
+        """Expand includes depth-first while tolerating cycles and deep chains."""
+        visited = {blk.id}
+        pending = [(blk, include_id) for include_id in reversed(blk.includes or [])]
+        while pending:
+            parent, include_id = pending.pop()
+            included = self.store.get(include_id)
+            if not included:
+                raise RuntimeError(f"Unknown include '{include_id}' in {parent.id}")
+            if included.id in visited:
+                continue
+            visited.add(included.id)
+            add(included, f"include:{parent.id}", detail={"include_of": parent.id})
+            pending.extend((included, child_id) for child_id in reversed(included.includes or []))
 
     @staticmethod
     def _render_section(title: str, blocks: List[Block]) -> str:

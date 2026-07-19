@@ -8,8 +8,12 @@ regressions where a refactor or merge accidentally removes critical code.
 
 import os
 import re
-
 import pytest
+
+pytestmark = pytest.mark.skipif(
+    not os.path.exists(os.path.join(os.path.dirname(__file__), '..', 'terminal.html')),
+    reason="Client UI files located in savant-client repository"
+)
 
 # ── Paths ───────────────────────────────────────────────────────────────────
 

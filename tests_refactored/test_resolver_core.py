@@ -116,6 +116,23 @@ def test_expand_includes_unknown_include_raises():
         r.resolve("eng", tags=[])
 
 
+def test_expand_includes_handles_cycles_once_without_recursing_forever():
+    s = _Store()
+    persona = _b("persona.eng", "persona", "P", priority=100, includes=["rule.a"])
+    rule = _b("rule.a", "rule", "A", priority=10, includes=["persona.eng"])
+    s.blocks_by_id = {"persona.eng": persona, "rule.a": rule}
+
+    out = Resolver(s).resolve("eng", tags=[], include_trace=True)
+
+    assert out["rules"] == ["A"]
+    assert out["manifest"]["order"].count("rule.a") == 1
+    assert [item["id"] for item in out["trace"]].count("rule.a") == 1
+
+
+def test_effective_tags_treats_scalar_input_as_one_tag():
+    assert Resolver._effective_tags("python-api", None) == ["python-api"]
+
+
 def test_render_section_empty_and_non_empty():
     assert Resolver._render_section("Rules", []) == ""
     sec = Resolver._render_section("Rules", [_b("rule.a", "rule", "A", priority=1)])

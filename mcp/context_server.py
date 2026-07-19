@@ -1,6 +1,6 @@
 """Context MCP server — FastMCP SSE bridge on port 8093.
 
-Proxies 6 agent-facing tools to the Flask /api/context/* and /api/graphify/* REST APIs.
+Proxies agent-facing tools to the Flask /api/context/* REST APIs.
 Follows the same pattern as workspace (8091) and abilities (8092) servers.
 
 Tools:
@@ -8,7 +8,6 @@ Tools:
   structure_search      — AST structure search for classes, functions
   analyze_code          — Analyze a class/file before and after changes
   memory_bank_search    — Semantic search within memory bank markdown files
-  code_graph_search     — Search Graphify relationships and dependencies
   research              — Preferred AI-facing tool for broad code exploration
 """
 
@@ -17,9 +16,11 @@ import argparse
 import logging
 import os
 import sys
+from typing import Literal
 
 import requests
 from mcp.server.fastmcp import FastMCP
+from context.impact import build_impact_surface
 
 logging.basicConfig(level=logging.INFO, format="%(name)s %(levelname)s %(message)s")
 logger = logging.getLogger("savant-context-mcp")
@@ -67,21 +68,15 @@ install_header_capture(mcp)
 
 
 def _get(path: str, params: dict = None) -> dict:
-    try:
-        r = requests.get(f"{FLASK_URL}{path}", params=params, timeout=30, headers=auth_headers())
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        return {"error": str(e)}
+    r = requests.get(f"{FLASK_URL}{path}", params=params, timeout=30, headers=auth_headers())
+    r.raise_for_status()
+    return r.json()
 
 
 def _post(path: str, json: dict = None) -> dict:
-    try:
-        r = requests.post(f"{FLASK_URL}{path}", json=json, timeout=30, headers=auth_headers())
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        return {"error": str(e)}
+    r = requests.post(f"{FLASK_URL}{path}", json=json, timeout=30, headers=auth_headers())
+    r.raise_for_status()
+    return r.json()
 
 
 # ---------------------------------------------------------------------------
@@ -265,101 +260,15 @@ def memory_bank_search(
     return raw
 
 
-def code_graph_search(
-    query: str = None,
-    q: str = None,
-    repo: str | list[str] = None,
-    limit: int = 20,
-) -> dict:
-    """Search Graphify relationships, class hierarchies, and code dependencies."""
-    effective_query = query or q or ""
-    payload = {"query": effective_query, "limit": limit}
-    if repo:
-        payload["workspace_id"] = ",".join(repo) if isinstance(repo, list) else repo
-
-    raw = _post("/api/graphify/search", payload)
-    if isinstance(raw, list):
-        for node in raw:
-            # Format graph edges into human/agent readable relationship strings
-            if isinstance(node, dict) and "edges" in node and isinstance(node["edges"], list):
-                readable_edges = []
-                for edge in node["edges"]:
-                    src = edge.get("source_id", "")
-                    tgt = edge.get("target_id", "")
-                    rel = edge.get("label") or edge.get("edge_type") or "relates_to"
-                    readable_edges.append(f"{src} ──[{rel}]──> {tgt}")
-                node["readable_relationships"] = readable_edges[:10]
-    return raw
-
-
 def _build_impact_surface(results: dict, top_symbols: list[str], top_files: set[str]) -> dict:
-    """Extract 1 level up (upstream callers/importers) and 1 level down (downstream dependencies/callees)."""
-    upstream = []
-    downstream = []
-    seen_up = set()
-    seen_down = set()
-
-    graph_res = results.get("code_graph_search", {})
-    if isinstance(graph_res, dict):
-        for query_key, node_list in graph_res.items():
-            if not isinstance(node_list, list):
-                continue
-            for node in node_list:
-                if not isinstance(node, dict):
-                    continue
-                node_id = node.get("node_id", "")
-                title = node.get("title") or node.get("norm_label") or node_id
-                edges = node.get("edges", [])
-
-                for edge in edges:
-                    if not isinstance(edge, dict):
-                        continue
-                    src = edge.get("source_id", "")
-                    tgt = edge.get("target_id", "")
-                    rel = edge.get("label") or edge.get("edge_type") or "relates_to"
-
-                    # 1 level up: Upstream callers / importers targeting this symbol
-                    if (node_id and (tgt == node_id or node_id in tgt)) or any(sym.lower() in tgt.lower() for sym in top_symbols if sym):
-                        up_key = f"{src}->{tgt}:{rel}"
-                        if up_key not in seen_up:
-                            seen_up.add(up_key)
-                            upstream.append({
-                                "upstream_caller": src,
-                                "relationship": rel,
-                                "target_symbol": title,
-                            })
-
-                    # 1 level down: Downstream targets / callees called by this symbol
-                    if (node_id and (src == node_id or node_id in src)) or any(sym.lower() in src.lower() for sym in top_symbols if sym):
-                        down_key = f"{src}->{tgt}:{rel}"
-                        if down_key not in seen_down:
-                            seen_down.add(down_key)
-                            downstream.append({
-                                "source_symbol": title,
-                                "relationship": rel,
-                                "downstream_dependency": tgt,
-                            })
-
-    upstream_trimmed = upstream[:10]
-    downstream_trimmed = downstream[:10]
-
-    return {
-        "summary": (
-            f"Impact Surface Analysis: Identified {len(upstream)} upstream callers/importers (1 level up) "
-            f"and {len(downstream)} downstream dependencies/callees (1 level down). "
-            "AI AGENTS MUST evaluate these impact surfaces to prevent breaking changes when modifying code."
-        ),
-        "upstream_dependencies_1_level_up": upstream_trimmed,
-        "downstream_impacts_1_level_down": downstream_trimmed,
-        "affected_files": sorted(list(top_files))[:8],
-    }
+    return build_impact_surface(results, top_symbols, top_files)
 
 
 @mcp.tool()
 def research(
     q: str,
     repo: str | list[str] = None,
-    type: str = "all",
+    type: Literal["all", "code", "memory"] = "all",
     limit: int = 20,
     exclude_tests: bool = True,
 ) -> dict:
@@ -368,7 +277,7 @@ def research(
     AI AGENT INSTRUCTIONS:
       Use this tool as your single entry-point for searching the codebase, code dependencies, and project memory banks.
       Do not attempt to call individual search tools, as research unifies semantic code search, AST structure match,
-      Graphify code graph dependencies, and memory bank markdown search in one call.
+      CodeGraph dependencies and memory bank markdown search in one call.
 
     PARAM GUIDANCE FOR AGENTS:
       • q (str, required): The search query concept, symbol name, or topic (e.g. "auth middleware", "SessionDB", "user routes").
@@ -386,7 +295,7 @@ def research(
         - 'impact_surface': Upstream (1 level up) callers/importers and downstream (1 level down) dependencies.
         - 'code_search': High-signal production code snippets.
         - 'structure_search': AST class and function definition lines.
-        - 'code_graph_search': Readable Graphify dependency and call chains.
+        - 'code_graph_search': Readable CodeGraph dependency and call chains.
         - 'memory_bank_search': Architectural documentation and markdown bank excerpts.
     """
     payload = {

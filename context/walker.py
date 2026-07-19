@@ -20,7 +20,7 @@ class FileWalker:
         ".yarn", ".yarn-cache", "Pods", "Carthage", ".gradle", "__pycache__",
         ".pytest_cache", ".tox", "dist", "build", "*.egg-info", ".mypy_cache",
         ".vscode", ".idea", ".DS_Store", "target", "out", ".next", ".nuxt",
-        ".cache", "coverage", "tmp_wheels", "tmp_wheels_urls", "tmp", "graphify-out",
+        ".cache", "coverage", "tmp_wheels", "tmp_wheels_urls", "tmp",
     }
 
     SKIP_EXTENSIONS = {

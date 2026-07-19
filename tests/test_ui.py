@@ -15,6 +15,12 @@ import time
 import socket
 import pytest
 
+pytestmark = pytest.mark.skipif(
+    not os.path.exists(os.path.join(os.path.dirname(__file__), '..', 'templates', 'index.html')),
+    reason="Client UI files located in savant-client repository"
+)
+import pytest
+
 from playwright.sync_api import sync_playwright, Page
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))

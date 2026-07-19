@@ -30,7 +30,15 @@ class UserDB:
                 cur.execute(
                     """INSERT INTO users
                        (user_id, name, email, api_key, api_key_hash, role, is_active, created_at, updated_at)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                       ON CONFLICT (user_id) DO UPDATE SET
+                         name = EXCLUDED.name,
+                         email = EXCLUDED.email,
+                         api_key = EXCLUDED.api_key,
+                         api_key_hash = EXCLUDED.api_key_hash,
+                         role = EXCLUDED.role,
+                         is_active = EXCLUDED.is_active,
+                         updated_at = EXCLUDED.updated_at""",
                     (
                         user["user_id"],
                         user.get("name", ""),

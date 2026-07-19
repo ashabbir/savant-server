@@ -41,6 +41,12 @@ def _worker_loop():
         time.sleep(2)
 
 
+def run_forever():
+    """Run the persistent queue worker in a dedicated process."""
+    logger.info("Dedicated job worker starting")
+    _worker_loop()
+
+
 def _process_next_job():
     """Pick the next queued job and execute it."""
     from db.jobs import JobDB
@@ -114,14 +120,18 @@ def _run_code_intelligence_sync(target: str, progress_cb) -> dict:
     from db.code_intelligence import CodeIntelligenceConfigDB
 
     repo_path, repo_name = _resolve_repo(target)
+    # Preserve the stable repository identifier used by the caller. Converting
+    # numeric IDs to a display name here creates a second bridge registration
+    # and splits watcher/freshness state for the same repository.
+    provider_repo_id = str(target)
     progress_cb(5, "Preparing", "Resolving structural provider")
-    CodeIntelligenceConfigDB.upsert(repo_name, freshness="pending_sync", last_error_code=None)
+    CodeIntelligenceConfigDB.upsert(provider_repo_id, freshness="pending_sync", last_error_code=None)
     try:
-        result = build_service().ensure_index(repo_name, repo_path, mode="create_or_sync")
+        result = build_service().ensure_index(provider_repo_id, repo_path, mode="create_or_sync")
         progress_cb(95, "Finalizing", "Recording structural graph state")
-        health = build_service().health(repo_name, repo_path)
+        health = build_service().health(provider_repo_id, repo_path)
         CodeIntelligenceConfigDB.upsert(
-            repo_name,
+            provider_repo_id,
             provider=health.provider,
             graph_version=health.graph_version,
             last_indexed_at=health.indexed_at,
@@ -133,7 +143,7 @@ def _run_code_intelligence_sync(target: str, progress_cb) -> dict:
         return result.model_dump(mode="json") if hasattr(result, "model_dump") else dict(result)
     except Exception as exc:
         CodeIntelligenceConfigDB.upsert(
-            repo_name, freshness="stale", last_error_code=getattr(getattr(exc, "category", None), "value", "internal"),
+            provider_repo_id, freshness="stale", last_error_code=getattr(getattr(exc, "category", None), "value", "internal"),
             last_error_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
         )
         raise
@@ -157,8 +167,7 @@ def _run_index(target: str, progress_cb, clear: bool = True) -> dict:
     repo_path, repo_name = _resolve_repo(target)
     indexer = Indexer()
     return indexer.index_repository(repo_path, repo_name=repo_name,
-                                    on_progress=None, clear=clear,
-                                    job_progress_cb=progress_cb)
+                                    clear=clear, job_progress_cb=progress_cb)
 
 
 def _run_ast(target: str, progress_cb, clear: bool = True) -> dict:
@@ -216,3 +225,8 @@ def _run_batch_ast(progress_cb) -> dict:
             results.append({"name": repo["name"], "status": "failed", "error": str(e)[:200]})
 
     return {"count": total, "results": results}
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    run_forever()

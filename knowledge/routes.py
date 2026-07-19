@@ -1,5 +1,5 @@
 """Flask Blueprint for Knowledge Graph REST API. All routes under /api/knowledge/*."""
-
+import json
 import time
 import threading
 import re
@@ -47,6 +47,22 @@ def _safe_int(val, default: int, min_val: int = 1, max_val: int = 1000) -> int:
         return max(min_val, min(int(val), max_val))
     except (TypeError, ValueError):
         return default
+
+
+def _text_value(value, max_length: int) -> str:
+    return "" if value is None else str(value).strip()[:max_length]
+
+
+def _metadata_value(value) -> dict:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except (TypeError, ValueError):
+            return {}
+    return {}
 
 
 def _safe_id(val: str) -> str:
@@ -158,34 +174,36 @@ def update_node(node_id):
     if not ok:
         return jsonify({"error": err}), 403
 
-    data = request.get_json(force=True, silent=True) or {}
-    # Validate title if provided
-    if "title" in data:
-        title = (data.get("title") or "").strip()
-        if not title:
-            return jsonify({"error": "title cannot be empty"}), 400
-        data["title"] = title[:MAX_TITLE_LEN]
-    # Validate node_type if provided
-    if "node_type" in data:
-        nt = data.get("node_type", "")
-        if nt not in VALID_NODE_TYPES:
-            return jsonify({"error": f"invalid node_type '{nt}'"}), 400
-    # Truncate content if too long
-    if "content" in data and data["content"] and len(data["content"]) > MAX_CONTENT_LEN:
-        data["content"] = data["content"][:MAX_CONTENT_LEN]
-    # Inject graph_type into metadata if provided at top level
-    graph_type = (data.pop("graph_type", None) or "").strip()
-    if graph_type:
-        meta = data.get("metadata", {}) or {}
-        if isinstance(meta, str):
-            import json as _json
-            meta = _json.loads(meta)
-        meta["graph_type"] = graph_type
-        data["metadata"] = meta
-    node = KnowledgeGraphDB.update_node(node_id, data)
+    data = request.get_json(force=True, silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "request body must be a JSON object"}), 400
+    updates, validation_error = _normalized_node_updates(data)
+    if validation_error:
+        return jsonify({"error": validation_error}), 400
+    node = KnowledgeGraphDB.update_node(node_id, updates)
     if not node:
         return jsonify({"error": "not found"}), 404
     return jsonify(node)
+
+
+def _normalized_node_updates(data: dict) -> tuple[dict, str | None]:
+    updates = dict(data)
+    if "title" in updates:
+        updates["title"] = _text_value(updates["title"], MAX_TITLE_LEN)
+        if not updates["title"]:
+            return updates, "title cannot be empty"
+    if "node_type" in updates:
+        updates["node_type"] = _text_value(updates["node_type"], 50)
+        if updates["node_type"] not in VALID_NODE_TYPES:
+            return updates, f"invalid node_type '{updates['node_type']}'"
+    if "content" in updates and updates["content"] is not None:
+        updates["content"] = _text_value(updates["content"], MAX_CONTENT_LEN)
+    graph_type = _text_value(updates.pop("graph_type", None), 100)
+    if graph_type:
+        metadata = _metadata_value(updates.get("metadata"))
+        metadata["graph_type"] = graph_type
+        updates["metadata"] = metadata
+    return updates, None
 
 
 @knowledge_bp.route("/api/knowledge/nodes/<node_id>", methods=["DELETE"])
@@ -304,6 +322,8 @@ def merge_nodes():
     node_ids = data.get("node_ids", [])
     if not isinstance(node_ids, list) or len(node_ids) < 2:
         return jsonify({"error": "node_ids must be a list of at least 2 IDs"}), 400
+    if len({str(node_id) for node_id in node_ids}) != len(node_ids):
+        return jsonify({"error": "node_ids must not contain duplicates"}), 400
     # Validate all IDs
     for nid in node_ids:
         if not _safe_id(str(nid)):
@@ -572,85 +592,72 @@ def generate_prompt():
 @admin_required
 @require_savant_app
 def store_experience():
-    """Store a curated experience. Creates an insight node + auto-links to project.
-
-    When workspace_id is provided, the node is created as 'staged' (requires commit).
-    When workspace_id is omitted, the node is created as 'committed' (immediately visible).
-    """
+    """Store a curated experience and its optional graph connections."""
     data = request.get_json(force=True, silent=True) or {}
-    content = data.get("content", "").strip()
+    content = _text_value(data.get("content"), MAX_CONTENT_LEN)
     if not content:
         return jsonify({"error": "content is required"}), 400
-    if len(content) > MAX_CONTENT_LEN:
-        content = content[:MAX_CONTENT_LEN]
+    workspace_id = _text_value(data.get("workspace_id"), 200)
+    node = KnowledgeGraphDB.create_node(
+        _experience_node_payload(data, content, workspace_id)
+    )
+    _create_experience_connections(node["node_id"], data.get("connections"))
+    _store_legacy_experience(node["node_id"], data, content, workspace_id)
+    return jsonify(node)
 
-    workspace_id = data.get("workspace_id", "")
-    # Determine status: staged when workspace_id given, committed otherwise
-    status = "staged" if workspace_id else "committed"
 
-    # Create insight node
-    title = data.get("title") or content[:120].split("\n")[0] or "Untitled insight"
-    title = title.strip()[:MAX_TITLE_LEN]
-    node_type = data.get("node_type", "insight")
+def _experience_node_payload(data: dict, content: str, workspace_id: str) -> dict:
+    title = _text_value(data.get("title") or content.split("\n", 1)[0] or "Untitled insight", MAX_TITLE_LEN)
+    node_type = _text_value(data.get("node_type") or "insight", 50)
     if node_type not in VALID_NODE_TYPES:
         node_type = "insight"
     metadata = {
-        "source": data.get("source", "note"),
+        "source": _text_value(data.get("source") or "note", 100),
         "files": data.get("files", []),
-        "repo": data.get("repo", ""),
+        "repo": _text_value(data.get("repo"), 500),
     }
-    graph_type = (data.get("graph_type") or "").strip()
+    graph_type = _text_value(data.get("graph_type"), 100)
     if graph_type:
         metadata["graph_type"] = graph_type
-    node = KnowledgeGraphDB.create_node({
+    if workspace_id:
+        metadata["workspaces"] = [workspace_id]
+    return {
         "node_type": node_type,
         "title": title,
         "content": content,
         "metadata": metadata,
-        "status": status,
-    })
-
-    # Auto-link: connections from request
-    connections = data.get("connections", [])
-    for conn_info in connections:
-        target_id = conn_info.get("node_id", "")
-        edge_type = conn_info.get("edge_type", "relates_to")
-        if target_id:
-            try:
-                KnowledgeGraphDB.create_edge({
-                    "source_id": node["node_id"],
-                    "target_id": target_id,
-                    "edge_type": edge_type,
-                })
-            except (ValueError, Exception):
-                pass
-
-    # Auto-link: workspace → metadata.workspaces
-    workspace_id = data.get("workspace_id", "")
-    if workspace_id:
-        meta = node.get("metadata", {}) or {}
-        ws_list = meta.get("workspaces", []) or []
-        if workspace_id not in ws_list:
-            ws_list.append(workspace_id)
-        meta["workspaces"] = ws_list
-        KnowledgeGraphDB.update_node(node["node_id"], {"metadata": meta})
-        node = KnowledgeGraphDB.get_node(node["node_id"])
-
-    # Also store in legacy experiences table for backward compat
-    legacy_exp = {
-        "experience_id": node["node_id"],
-        "content": content,
-        "source": data.get("source", "note"),
-        "workspace_id": workspace_id,
-        "repo": data.get("repo", ""),
-        "files": data.get("files", []),
+        "status": "staged" if workspace_id else "committed",
     }
+
+
+def _create_experience_connections(source_id: str, connections) -> None:
+    if not isinstance(connections, list):
+        return
+    for connection in connections:
+        if not isinstance(connection, dict) or not connection.get("node_id"):
+            continue
+        try:
+            KnowledgeGraphDB.create_edge({
+                "source_id": source_id,
+                "target_id": connection["node_id"],
+                "edge_type": connection.get("edge_type", "relates_to"),
+            })
+        except Exception:
+            continue
+
+
+def _store_legacy_experience(node_id: str, data: dict, content: str, workspace_id: str) -> None:
     try:
-        ExperienceDB.create(legacy_exp)
+        ExperienceDB.create({
+            "experience_id": node_id,
+            "content": content,
+            "source": data.get("source", "note"),
+            "workspace_id": workspace_id,
+            "repo": data.get("repo", ""),
+            "files": data.get("files", []),
+        })
     except Exception:
         pass
-
-    return jsonify(node)
 
 
 # ---------------------------------------------------------------------------
@@ -1061,189 +1068,3 @@ def purge_workspace():
         "deleted_count": len(exclusive),
         "unlinked_count": len(shared),
     })
-
-
-# ---------------------------------------------------------------------------
-# Graphify Integration Endpoints
-# ---------------------------------------------------------------------------
-
-@knowledge_bp.route("/api/knowledge/import-graphify", methods=["POST"])
-@admin_required
-def import_graphify():
-    """Import Graphify JSON data, converting it to Savant KG format."""
-    import json as _json
-    data = request.get_json(force=True, silent=True) or {}
-    workspace_id = data.get("workspace_id", "").strip()
-    graph_data = data.get("graph", {}) or {}
-    
-    if not workspace_id:
-        return jsonify({"error": "workspace_id is required"}), 400
-        
-    nodes = graph_data.get("nodes", [])
-    links = graph_data.get("links", []) or graph_data.get("edges", [])
-    
-    def sanitize_id(raw_id):
-        sanitized = re.sub(r'[^a-zA-Z0-9_\-]', '_', str(raw_id))
-        return f"gf_{sanitized}"[:128]
-
-    imported_nodes_count = 0
-    node_id_map = {}
-    
-    for n in nodes:
-        raw_id = n.get("id") or n.get("node_id")
-        if not raw_id:
-            continue
-        san_id = sanitize_id(raw_id)
-        node_id_map[raw_id] = san_id
-        
-        title = n.get("label") or n.get("title") or str(raw_id)
-        gtype = (n.get("type") or "concept").lower()
-        
-        mapped_type = "concept"
-        if gtype in VALID_NODE_TYPES:
-            mapped_type = gtype
-        elif gtype in ("file", "code", "function", "class", "method", "variable"):
-            mapped_type = "concept"
-        elif gtype in ("documentation", "doc", "paper", "markdown", "text", "readme"):
-            mapped_type = "insight"
-        elif gtype in ("repo", "directory", "folder"):
-            mapped_type = "repo"
-            
-        meta = n.get("metadata") or {}
-        if isinstance(meta, str):
-            try:
-                meta = _json.loads(meta)
-            except Exception:
-                meta = {}
-        meta["graphify"] = True
-        meta["graphify_type"] = gtype
-        meta["workspaces"] = [workspace_id]
-        if "source_file" in n:
-            meta["source_file"] = n["source_file"]
-            
-        existing_node = KnowledgeGraphDB.get_node(san_id)
-        if existing_node:
-            KnowledgeGraphDB.update_node(san_id, {
-                "title": title,
-                "content": n.get("content") or "",
-                "node_type": mapped_type,
-                "metadata": meta
-            })
-        else:
-            KnowledgeGraphDB.create_node({
-                "node_id": san_id,
-                "node_type": mapped_type,
-                "title": title,
-                "content": n.get("content") or "",
-                "metadata": meta,
-                "status": "committed"
-            })
-        imported_nodes_count += 1
-        
-    imported_edges_count = 0
-    for link in links:
-        src = link.get("source") or link.get("source_id")
-        tgt = link.get("target") or link.get("target_id")
-        if not src or not tgt:
-            continue
-        
-        san_src = node_id_map.get(src) or sanitize_id(src)
-        san_tgt = node_id_map.get(tgt) or sanitize_id(tgt)
-        
-        raw_edge_type = (link.get("type") or link.get("edge_type") or "relates_to").lower()
-        mapped_edge_type = "relates_to"
-        if raw_edge_type in VALID_EDGE_TYPES:
-            mapped_edge_type = raw_edge_type
-        elif raw_edge_type in ("calls", "invokes"):
-            mapped_edge_type = "uses"
-        elif raw_edge_type in ("defines", "contains", "has"):
-            mapped_edge_type = "part_of"
-        elif raw_edge_type in ("imports", "requires"):
-            mapped_edge_type = "depends_on"
-        elif raw_edge_type in ("references", "refers"):
-            mapped_edge_type = "relates_to"
-            
-        edge_id = f"edge_{san_src}_{san_tgt}"[:128]
-        
-        if KnowledgeGraphDB.get_node(san_src) and KnowledgeGraphDB.get_node(san_tgt):
-            try:
-                KnowledgeGraphDB.create_edge({
-                    "edge_id": edge_id,
-                    "source_id": san_src,
-                    "target_id": san_tgt,
-                    "edge_type": mapped_edge_type,
-                    "status": "committed",
-                    "metadata": {
-                        "graphify": True,
-                        "graphify_edge_type": raw_edge_type,
-                        "workspaces": [workspace_id]
-                    }
-                })
-                imported_edges_count += 1
-            except Exception:
-                pass
-                
-    return jsonify({
-        "success": True,
-        "nodes_imported": imported_nodes_count,
-        "edges_imported": imported_edges_count
-    })
-
-
-@knowledge_bp.route("/api/knowledge/graphify/stats", methods=["GET"])
-def get_graphify_stats():
-    """Get Graphify node stats scoped to a workspace/repo."""
-    import json as _json
-    workspace_id = request.args.get("workspace_id", "").strip()
-    if not workspace_id:
-        return jsonify({"error": "workspace_id is required"}), 400
-    
-    nodes = KnowledgeGraphDB.list_nodes(limit=10000, include_staged=True)
-    stats = {}
-    total = 0
-    for n in nodes:
-        meta = n.get("metadata") or {}
-        if isinstance(meta, str):
-            try:
-                meta = _json.loads(meta)
-            except Exception:
-                meta = {}
-        workspaces = meta.get("workspaces", []) or []
-        if workspace_id in workspaces and meta.get("graphify"):
-            gtype = meta.get("graphify_type", "unknown")
-            stats[gtype] = stats.get(gtype, 0) + 1
-            total += 1
-            
-    return jsonify({"stats": stats, "total": total})
-
-
-@knowledge_bp.route("/api/knowledge/graphify/search", methods=["POST"])
-def search_graphify_nodes():
-    """Search Graphify nodes scoped to a workspace/repo."""
-    import json as _json
-    data = request.get_json(force=True, silent=True) or {}
-    query = data.get("query", "").strip()
-    workspace_id = data.get("workspace_id", "").strip()
-    
-    if not query:
-        return jsonify({"error": "query is required"}), 400
-    if not workspace_id:
-        return jsonify({"error": "workspace_id is required"}), 400
-        
-    limit = _safe_int(data.get("limit", 20), default=20, min_val=1, max_val=100)
-    results = KnowledgeGraphDB.search_nodes(query, limit=500, include_staged=True)
-    
-    filtered = []
-    for n in results:
-        meta = n.get("metadata") or {}
-        if isinstance(meta, str):
-            try:
-                meta = _json.loads(meta)
-            except Exception:
-                meta = {}
-        if meta.get("graphify") and workspace_id in (meta.get("workspaces", []) or []):
-            filtered.append(n)
-            if len(filtered) >= limit:
-                break
-                
-    return jsonify({"result": filtered})

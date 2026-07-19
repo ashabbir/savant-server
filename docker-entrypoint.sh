@@ -50,6 +50,13 @@ MCP_PIDS="$MCP_PIDS $!"
 
 CHILD_PIDS="$CHILD_PIDS $MCP_PIDS"
 
+# Run exactly one persistent queue consumer. Gunicorn workers must not each
+# start their own background thread; the DB claim is atomic, but a dedicated
+# process gives graph/index jobs an observable, supervised lifecycle.
+python -m context.job_worker &
+JOB_WORKER_PID="$!"
+CHILD_PIDS="$CHILD_PIDS $JOB_WORKER_PID"
+
 gunicorn \
   --bind "${FLASK_HOST:-0.0.0.0}:${FLASK_PORT:-8090}" \
   --workers "${GUNICORN_WORKERS:-2}" \

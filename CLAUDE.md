@@ -61,7 +61,7 @@ context/                Code indexing + semantic search (pgvector, tree-sitter)
 knowledge/              Knowledge graph routes
 reminders/              Reminder routes
 tools/                  Tool registry + KG integration
-graphify/               Graph visualization
+codegraph_bridge/       CodeGraph generation engine and private socket bridge
 utils/                  auth.py (admin_required decorator)
 ```
 
@@ -83,12 +83,12 @@ The context MCP allowlist intentionally exposes only agent-facing code intellige
 
 | Tool | Purpose |
 |------|---------|
-| `research` | Broad first-pass exploration across source code, AST, memory bank, and Graphify relationships. |
+| `research` | Broad first-pass exploration across source code, AST, memory bank, and CodeGraph relationships. |
 | `code_search` | Semantic search across indexed repository source code. |
 | `structure_search` | AST search for classes, functions, methods, and other code structures. |
 | `analyze_code` | Analyze a file, class, symbol, code body, or diff before/after a change. |
 | `memory_bank_search` | Semantic search over curated repository memory-bank Markdown. |
-| `code_graph_search` | Search imports, callers, dependencies, inheritance, and other Graphify relationships. |
+| `code_graph_search` | Search imports, callers, dependencies, inheritance, and other CodeGraph relationships. |
 
 Administrative/index diagnostics and low-level memory-resource operations remain available through REST where needed, but are not exposed as agent MCP tools.
 
@@ -100,7 +100,7 @@ Administrative/index diagnostics and low-level memory-resource operations remain
 - **No client imports:** Server communicates with savant-client over HTTP/SSE only.
 - **TDD:** `pytest` with `pytest-cov`. Write failing test first, then implement, then refactor.
 - **Testing:** `pytest tests/ -v`. File naming: `tests/test_<module>.py`.
-- **Blueprints:** Each feature module (`abilities/`, `context/`, `knowledge/`, `reminders/`, `tools/`, `graphify/`) has its own `routes.py` registered as a Flask blueprint.
+- **Blueprints:** Each feature module (`abilities/`, `context/`, `knowledge/`, `reminders/`, and `tools/`) has its own `routes.py` registered as a Flask blueprint. Structural graph operations use `code_intelligence/` and the private `codegraph_bridge/`.
 - **Knowledge graph staging:** Nodes created via `store()` are staged; call `commit_workspace(workspace_id)` to publish.
 - **Abilities assets:** Markdown files with YAML frontmatter in `<data>/abilities/{personas,rules,policies,styles,repos}/`. Use `resolver.py` to compose prompts.
 - **Semantic search:** `context/embeddings.py` wraps stsb-distilbert (768-dim). Embeddings stored in pgvector. Use `ContextDB` for search.

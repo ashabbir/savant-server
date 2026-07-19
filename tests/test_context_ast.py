@@ -372,7 +372,7 @@ def sample(a, b, c, d, e, f):
                 if True:
                     if True:
                         return 1
-    print("after return")
+                        print("after return")
 """.strip()
 
     analysis = analyze_code(

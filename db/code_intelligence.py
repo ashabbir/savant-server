@@ -21,9 +21,9 @@ class CodeIntelligenceConfigDB:
             if not row:
                 return None
             result = dict(row)
-            result["provider"] = result.get("provider") or "legacy"
+            result["provider"] = "codegraph"
             result["freshness"] = result.get("freshness") or "unavailable"
-            result["rollout_state"] = result.get("rollout_state") or "legacy"
+            result["rollout_state"] = "codegraph_primary"
             result["watch_enabled"] = bool(result.get("watch_enabled"))
             return result
         finally:

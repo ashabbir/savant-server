@@ -2,19 +2,10 @@
 
 from __future__ import annotations
 
+import ast
 import re
 from dataclasses import dataclass
-from typing import Any, Protocol, List, Dict
-
-
-_PY_DEF_RE = re.compile(r"^\s*def\s+([A-Za-z_]\w*)\s*\(")
-_JS_CLASS_RE = re.compile(r"^\s*class\s+([A-Za-z_$][\w$]*)")
-_JS_FN_RE = re.compile(r"^\s*(?:function\s+([A-Za-z_$][\w$]*)|(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*\()")
-
-
-class AnalysisRule(Protocol):
-    def check(self, lines: List[str], path: str, findings: List[Dict[str, Any]]) -> None:
-        ...
+from typing import Any, List, Dict
 
 
 @dataclass
@@ -48,7 +39,7 @@ def _push_finding(findings: list[dict[str, Any]], *, severity: str = "medium", c
     })
 
 
-def _detect_structural(lines: list[str], target_lines: list[str], path: str, findings: list[dict[str, Any]]) -> None:
+def _detect_deep_nesting(lines: list[str], path: str, findings: list[dict[str, Any]]) -> None:
     brace_depth = 0
     max_depth = 0
     max_depth_line = 1
@@ -84,20 +75,19 @@ def _detect_structural(lines: list[str], target_lines: list[str], path: str, fin
             detail=f"Detected nesting depth {max_depth} (threshold: 4).",
         )
 
-    file_nodes = []
-    for line in target_lines:
-        m = re.match(r"^\s*(class|def|function)\s+([A-Za-z_$][\w$]*)", line)
-        if m:
-            file_nodes.append((m.group(1), m.group(2), line))
-        else:
-            js_arrow = re.match(r"^\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*\(", line)
-            if js_arrow:
-                file_nodes.append(("function", js_arrow.group(1), line))
 
-    for node_type, name, line in file_nodes:
-        span = 1
-        child_count = sum(1 for other_type, other_name, other_line in file_nodes if other_line != line and other_line.strip())
-        is_class = node_type == "class"
+def _detect_python_bloat(lines: list[str], path: str, findings: list[dict[str, Any]]) -> None:
+    try:
+        tree = ast.parse("\n".join(lines))
+    except SyntaxError:
+        return
+    typed_nodes = (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+    for node in ast.walk(tree):
+        if not isinstance(node, typed_nodes):
+            continue
+        span = (node.end_lineno or node.lineno) - node.lineno + 1
+        child_count = sum(1 for child in ast.walk(node) if child is not node and isinstance(child, typed_nodes))
+        is_class = isinstance(node, ast.ClassDef)
         span_threshold = 220 if is_class else 120
         child_threshold = 12 if is_class else 8
         if span >= span_threshold or child_count >= child_threshold:
@@ -107,12 +97,14 @@ def _detect_structural(lines: list[str], target_lines: list[str], path: str, fin
                 category="structural",
                 rule_id="large_block_bloat",
                 path=path,
-                line=1,
+                line=node.lineno,
                 title=f"{'Large class' if is_class else 'Large function'} bloat",
-                detail=f"{name} spans {span} lines with {child_count} nested typed blocks.",
+                detail=f"{node.name} spans {span} lines with {child_count} nested typed blocks.",
             )
 
-    for idx, raw in enumerate(target_lines, start=1):
+
+def _detect_parameter_overload(lines: list[str], path: str, findings: list[dict[str, Any]]) -> None:
+    for idx, raw in enumerate(lines, start=1):
         line = raw or ""
         py = re.match(r"^\s*def\s+([A-Za-z_]\w*)\s*\(([^)]*)\)\s*:", line)
         js_fn = re.match(r"^\s*function\s+([A-Za-z_$][\w$]*)?\s*\(([^)]*)\)", line)
@@ -133,14 +125,45 @@ def _detect_structural(lines: list[str], target_lines: list[str], path: str, fin
                 detail=f"{hit.group(1) or 'Function'} has {len(params)} parameters.",
             )
 
-    for idx, raw in enumerate(target_lines, start=1):
+
+def _detect_empty_blocks(lines: list[str], path: str, findings: list[dict[str, Any]]) -> None:
+    source = "\n".join(lines)
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        tree = None
+
+    if tree is not None:
+        block_nodes = (ast.If, ast.For, ast.AsyncFor, ast.While, ast.Try, ast.ExceptHandler, ast.With, ast.AsyncWith)
+        for node in ast.walk(tree):
+            if not isinstance(node, block_nodes):
+                continue
+            body = getattr(node, "body", [])
+            if body and all(isinstance(statement, ast.Pass) for statement in body):
+                _push_finding(
+                    findings,
+                    severity="low",
+                    category="structural",
+                    rule_id="empty_block",
+                    path=path,
+                    line=node.lineno,
+                    title="Empty block",
+                    detail="Python control block has a pass-only body.",
+                )
+
+    for idx, raw in enumerate(lines, start=1):
         line = (raw or "").strip()
         if not line:
             continue
         if re.search(r"(if|for|while|try|catch)\s*\([^)]*\)\s*\{\s*\}", line):
             _push_finding(findings, severity="low", category="structural", rule_id="empty_block", path=path, line=idx, title="Empty block", detail="Control block has an empty body.")
-        if re.search(r"^(if|for|while|try|except)\b.*:\s*$", line):
-            _push_finding(findings, severity="low", category="structural", rule_id="empty_block", path=path, line=idx, title="Empty block", detail="Python block appears empty/pass-only.")
+
+
+def _detect_structural(lines: list[str], target_lines: list[str], path: str, findings: list[dict[str, Any]]) -> None:
+    _detect_deep_nesting(lines, path, findings)
+    _detect_python_bloat(target_lines, path, findings)
+    _detect_parameter_overload(target_lines, path, findings)
+    _detect_empty_blocks(target_lines, path, findings)
 
 
 def _detect_security(lines: list[str], path: str, findings: list[dict[str, Any]]) -> None:
@@ -176,6 +199,36 @@ def _detect_style(lines: list[str], path: str, findings: list[dict[str, Any]]) -
 
 
 def _detect_dead_code(lines: list[str], path: str, findings: list[dict[str, Any]]) -> None:
+    try:
+        tree = ast.parse("\n".join(lines))
+    except SyntaxError:
+        tree = None
+
+    if tree is not None:
+        terminal_nodes = (ast.Return, ast.Raise, ast.Break, ast.Continue)
+        reported_lines: set[int] = set()
+        for node in ast.walk(tree):
+            for _field, value in ast.iter_fields(node):
+                if not isinstance(value, list) or not value or not all(isinstance(item, ast.stmt) for item in value):
+                    continue
+                terminated = False
+                for statement in value:
+                    if terminated and statement.lineno not in reported_lines:
+                        reported_lines.add(statement.lineno)
+                        _push_finding(
+                            findings,
+                            severity="medium",
+                            category="dead_code",
+                            rule_id="unreachable_code",
+                            path=path,
+                            line=statement.lineno,
+                            title="Potential unreachable code",
+                            detail="Code appears after an early exit statement in the same block.",
+                        )
+                        break
+                    terminated = isinstance(statement, terminal_nodes)
+        return
+
     for i in range(len(lines) - 1):
         curr = (lines[i] or "").strip()
         if not re.match(r"^(return|break|raise|throw)\b", curr):
@@ -209,27 +262,49 @@ class StructuralRule:
         # Note: _detect_structural takes lines twice
         _detect_structural(lines, lines, path, findings)
 
-def _score_text(text: str) -> dict[str, Any]:
+
+RULES = (StructuralRule(), SecurityRule(), ModernizationRule(), StyleRule(), DeadCodeRule())
+
+
+def _python_complexity(text: str) -> int | None:
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return None
+    complexity = 1
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.If, ast.For, ast.AsyncFor, ast.While, ast.IfExp, ast.comprehension)):
+            complexity += 1
+        elif isinstance(node, ast.BoolOp):
+            complexity += max(0, len(node.values) - 1)
+        elif isinstance(node, ast.Try):
+            complexity += len(node.handlers) + bool(node.orelse) + bool(node.finalbody)
+        elif isinstance(node, ast.Match):
+            complexity += len(node.cases)
+    return complexity
+
+
+def _fallback_complexity(lines: list[str]) -> int:
+    complexity = 1
+    for raw in lines:
+        line = (raw or "").strip()
+        if not line or line.startswith(("#", "//")):
+            continue
+        complexity += len(re.findall(r"\b(?:if|else if|for|while|catch|case)\b", line))
+        complexity += len(re.findall(r"&&|\|\|", line))
+    return complexity
+
+
+def _score_text(text: str, path: str = "") -> dict[str, Any]:
     if not text.strip():
         return {"complexity": 0, "findings": [], "line_count": 0}
     lines = text.splitlines()
-    complexity = 1
     findings: list[dict[str, Any]] = []
-    
-    rules = [StructuralRule(), SecurityRule(), ModernizationRule(), StyleRule(), DeadCodeRule()]
-    for rule in rules:
-        rule.check(lines, "", findings)
-    max_depth = 0
-    depth = 0
-    for raw in lines:
-        line = (raw or "").rstrip()
-        stripped = line.strip()
-        if not stripped:
-            continue
-        depth += stripped.count("{")
-        max_depth = max(max_depth, depth)
-        depth -= stripped.count("}")
-        depth = max(depth, 0)
+    for rule in RULES:
+        rule.check(lines, path, findings)
+    complexity = _python_complexity(text)
+    if complexity is None:
+        complexity = _fallback_complexity(lines)
     complexity += _clamp(_line_count(text) // 25, 0, 8)
     return {
         "complexity": complexity,
@@ -333,29 +408,19 @@ def analyze_code(
     if target_missing_is_new and not before.strip() and not after_pick["target_found"]:
         before_pick = {"text": "", "target_found": False}
 
-    before_lines = before_pick["text"].splitlines()
-    after_lines = after_pick["text"].splitlines()
-    before_score = _score_text(before_pick["text"])
-    after_score = _score_text(after_pick["text"])
+    path = target.path if target else ""
+    before_score = _score_text(before_pick["text"], path)
+    after_score = _score_text(after_pick["text"], path)
     delta = after_score["complexity"] - before_score["complexity"]
 
-    if before_pick["text"].strip():
-        before_score["findings"] = []
-        _detect_structural(before_lines, before_lines, target.path if target else "", before_score["findings"])
-        _detect_security(before_lines, target.path if target else "", before_score["findings"])
-        _detect_modernization(before_lines, target.path if target else "", before_score["findings"])
-        _detect_style(before_lines, target.path if target else "", before_score["findings"])
-        _detect_dead_code(before_lines, target.path if target else "", before_score["findings"])
-        before_score["line_count"] = _line_count(before_pick["text"])
-
-    if after_pick["text"].strip():
-        after_score["findings"] = []
-        _detect_structural(after_lines, after_lines, target.path if target else "", after_score["findings"])
-        _detect_security(after_lines, target.path if target else "", after_score["findings"])
-        _detect_modernization(after_lines, target.path if target else "", after_score["findings"])
-        _detect_style(after_lines, target.path if target else "", after_score["findings"])
-        _detect_dead_code(after_lines, target.path if target else "", after_score["findings"])
-        after_score["line_count"] = _line_count(after_pick["text"])
+    if not before_pick["target_found"] and after_pick["target_found"]:
+        status = "new"
+    elif before_pick["target_found"] and not after_pick["target_found"]:
+        status = "removed"
+    elif before_pick["text"] == after_pick["text"]:
+        status = "unchanged"
+    else:
+        status = "updated"
 
     return {
         "target": {
@@ -386,6 +451,6 @@ def analyze_code(
             "delta_complexity": delta,
             "before_findings": len(before_score["findings"]),
             "after_findings": len(after_score["findings"]),
-            "status": "new" if not before_pick["target_found"] and after_pick["target_found"] else "updated",
+            "status": status,
         },
     }

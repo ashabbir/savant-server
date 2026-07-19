@@ -10,8 +10,12 @@ Every test here corresponds to a real bug that shipped and broke the terminal.
 
 import os
 import re
-
 import pytest
+
+pytestmark = pytest.mark.skipif(
+    not os.path.exists(os.path.join(os.path.dirname(__file__), '..', 'terminal.html')),
+    reason="Client terminal UI files located in savant-client repository"
+)
 
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 TERMINAL_HTML = os.path.join(_PROJECT_ROOT, 'terminal.html')

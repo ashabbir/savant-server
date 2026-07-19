@@ -75,7 +75,17 @@ class JiraTicketDB:
                     """INSERT INTO jira_tickets
                        (ticket_id, workspace_id, ticket_key, title, status, priority,
                         assignee, reporter, created_at, updated_at, user_id)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                       ON CONFLICT (ticket_id) DO UPDATE SET
+                         workspace_id=EXCLUDED.workspace_id,
+                         ticket_key=EXCLUDED.ticket_key,
+                         title=EXCLUDED.title,
+                         status=EXCLUDED.status,
+                         priority=EXCLUDED.priority,
+                         assignee=EXCLUDED.assignee,
+                         reporter=EXCLUDED.reporter,
+                         updated_at=EXCLUDED.updated_at,
+                         user_id=EXCLUDED.user_id""",
                     (
                         ticket["ticket_id"], ticket["workspace_id"], ticket["ticket_key"],
                         ticket.get("title", ""), ticket.get("status", "todo"),
@@ -128,7 +138,7 @@ class JiraTicketDB:
                 clauses.append("status = %s")
                 params.append(status)
             if user_id:
-                clauses.append("user_id = %s")
+                clauses.append("(user_id = %s OR user_id = '')")
                 params.append(user_id)
             where = "WHERE " + " AND ".join(clauses)
             params.append(limit)
@@ -183,7 +193,9 @@ class JiraTicketDB:
             release_connection(conn)
 
     @staticmethod
-    def list_all(limit: int = 1000, user_id: str = "") -> list[dict]:
+    def list_all(limit: int = 1000, user_id: str = "", workspace_id: str | None = None) -> list[dict]:
+        if workspace_id:
+            return JiraTicketDB.list_by_workspace(workspace_id=workspace_id, limit=limit, user_id=user_id)
         conn = get_connection()
         try:
             with conn.cursor() as cur:

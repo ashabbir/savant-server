@@ -26,19 +26,6 @@ def _coerce_vec(vec: List[float]) -> list:
     return [float(v) for v in vec]
 
 
-def vec_loaded() -> bool:
-    """Check if pgvector extension is available."""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT extname FROM pg_extension WHERE extname = 'vector'")
-            return cur.fetchone() is not None
-    except Exception:
-        return False
-    finally:
-        release_connection(conn)
-
-
 def vec_version() -> Optional[str]:
     """Return pgvector version string, or None."""
     conn = get_connection()
@@ -198,6 +185,21 @@ class ContextDB:
                 release_connection(conn)
 
     @staticmethod
+    def mark_repo_fetched(name: str, fetched_at=None) -> None:
+        """Persist the last successful remote fetch/clone timestamp."""
+        from db.base import _now
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE ctx_repos SET last_fetched_at = %s WHERE name = %s",
+                    (fetched_at or _now(), name),
+                )
+            conn.commit()
+        finally:
+            release_connection(conn)
+
+    @staticmethod
     def clear_repo_data(repo_id: int, conn=None):
         """Delete all files and chunks for a repo (for reindex)."""
         local_conn = False
@@ -251,6 +253,41 @@ class ContextDB:
                     DELETE FROM ctx_ast_nodes
                     WHERE file_id IN (SELECT id FROM ctx_files WHERE repo_id = %s)
                 """, (repo_id,))
+            conn.commit()
+        finally:
+            if local_conn:
+                release_connection(conn)
+
+    @staticmethod
+    def clear_file_generated_data(file_id: int, conn=None):
+        """Remove chunks, vectors, and AST rows before replacing one indexed file."""
+        local_conn = False
+        if conn is None:
+            conn = get_connection()
+            local_conn = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM ctx_vec_chunks WHERE chunk_id IN (SELECT id FROM ctx_chunks WHERE file_id = %s)",
+                    (file_id,),
+                )
+                cur.execute("DELETE FROM ctx_chunks WHERE file_id = %s", (file_id,))
+                cur.execute("DELETE FROM ctx_ast_nodes WHERE file_id = %s", (file_id,))
+            conn.commit()
+        finally:
+            if local_conn:
+                release_connection(conn)
+
+    @staticmethod
+    def clear_file_ast_data(file_id: int, conn=None):
+        """Remove AST rows before replacing one file's structural index."""
+        local_conn = False
+        if conn is None:
+            conn = get_connection()
+            local_conn = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM ctx_ast_nodes WHERE file_id = %s", (file_id,))
             conn.commit()
         finally:
             if local_conn:

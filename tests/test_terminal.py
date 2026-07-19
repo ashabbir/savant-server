@@ -1,8 +1,12 @@
-"""Tests for terminal preferences storage via Flask API."""
 import json
 import os
 import re
 import pytest
+
+pytestmark = pytest.mark.skipif(
+    not os.path.exists(os.path.join(os.path.dirname(__file__), '..', 'terminal.html')),
+    reason="Client terminal UI files located in savant-client repository"
+)
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TERMINAL_HTML = os.path.join(REPO, "terminal.html")

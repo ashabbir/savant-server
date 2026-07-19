@@ -27,6 +27,22 @@ test('ping reports the exact pinned engine and protocol versions', async () => {
   assert.deepEqual(await operations.execute({ op: 'ping' }), { engine_version: '1.4.1', protocol_version: 1 });
 });
 
+test('list_symbols is deterministic and cursor bounded', async () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'savant-cg-list-'));
+  fs.writeFileSync(path.join(repo, 'sample.py'), 'def zebra():\n    return 1\n\ndef alpha():\n    return 2\n');
+  const operations = new Operations({ baseRoots: [os.tmpdir()], timeoutMs: 10000 });
+  operations.register('repo', repo);
+  await operations.execute({ id: 'index-list', op: 'ensure_index', repo_id: 'repo', params: {} });
+  const first = await operations.execute({ id: 'list-1', op: 'list_symbols', repo_id: 'repo', params: { limit: 1 } });
+  assert.equal(first.items.length, 1);
+  assert.equal(first.incomplete, true);
+  assert.ok(first.next_cursor);
+  const second = await operations.execute({ id: 'list-2', op: 'list_symbols', repo_id: 'repo', params: { limit: 1, cursor: first.next_cursor } });
+  assert.equal(second.items.length, 1);
+  assert.notEqual(second.items[0].id, first.items[0].id);
+  operations.close();
+});
+
 test('a timed out disposable read releases capacity without blocking health traffic', async () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'savant-cg-read-'));
   fs.writeFileSync(path.join(repo, 'sample.py'), 'def hello():\n    return 1\n');

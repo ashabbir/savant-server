@@ -8,7 +8,8 @@
 
 - `app.py` creates the Flask app and registers feature blueprints.
 - `db/` contains the data access layer.
-- `abilities/`, `context/`, `knowledge/`, `reminders/`, and `graphify/` expose domain routes.
+- `abilities/`, `context/`, `knowledge/`, and `reminders/` expose domain routes.
+- `code_intelligence/` exposes CodeGraph-backed structural source analysis through the private `codegraph_bridge/`.
 - `mcp/` contains the MCP server and related bridge code.
 - `server_paths.py` resolves host/container data paths.
 

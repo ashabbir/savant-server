@@ -40,6 +40,12 @@ class CodeGraphProvider:
         result = self.client.call("search_symbols", repo_id=repo_id, params={"query": query, "filters": filters, "limit": limit})
         return [CodeSymbol.model_validate(item) for item in result]
 
+    def list_symbols(self, repo, filters, limit, cursor=None):
+        repo_id = self._repo(repo)
+        result = self.client.call("list_symbols", repo_id=repo_id, params={"filters": filters, "limit": limit, "cursor": cursor})
+        result["items"] = [CodeSymbol.model_validate(item) for item in result.get("items", [])]
+        return result
+
     def explore(self, repo, query, max_files, include_source=True):
         repo_id = self._repo(repo)
         return ExploreResult.model_validate(self.client.call("explore", repo_id=repo_id, params={"query": query, "max_files": max_files, "include_source": include_source}))

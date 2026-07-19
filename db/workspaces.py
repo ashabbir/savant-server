@@ -2,6 +2,7 @@
 
 from db.base import _now, _row_to_dict
 from postgres_client import get_connection, release_connection
+import uuid
 
 
 class WorkspaceDB:
@@ -27,14 +28,23 @@ class WorkspaceDB:
         conn = get_connection()
         try:
             now = _now()
+            ws_id = workspace.get("workspace_id") or str(uuid.uuid4().int)[:19]
             with conn.cursor() as cur:
                 cur.execute(
                     """INSERT INTO workspaces
                        (workspace_id, name, description, priority, status,
                         created_at, updated_at, created_session_id, user_id, color)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                       ON CONFLICT (workspace_id) DO UPDATE SET
+                         name=EXCLUDED.name,
+                         description=EXCLUDED.description,
+                         priority=EXCLUDED.priority,
+                         status=EXCLUDED.status,
+                         updated_at=EXCLUDED.updated_at,
+                         user_id=EXCLUDED.user_id,
+                         color=EXCLUDED.color""",
                     (
-                        workspace["workspace_id"],
+                        ws_id,
                         workspace.get("name", ""),
                         workspace.get("description", ""),
                         workspace.get("priority", "medium"),
@@ -47,7 +57,7 @@ class WorkspaceDB:
                     ),
                 )
             conn.commit()
-            return WorkspaceDB._get_by_id_with_conn(workspace["workspace_id"], conn, user_id=workspace.get("user_id", ""))
+            return WorkspaceDB._get_by_id_with_conn(ws_id, conn, user_id=workspace.get("user_id", ""))
         finally:
             release_connection(conn)
 

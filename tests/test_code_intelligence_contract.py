@@ -27,7 +27,7 @@ def test_canonical_dtos_serialize_stable_provider_neutral_shapes():
         end_column=20,
     )
     symbol = CodeSymbol(
-        id="legacy:42",
+        id="codegraph:42",
         name="run",
         qualified_name="Service.run",
         kind="function",
@@ -39,17 +39,17 @@ def test_canonical_dtos_serialize_stable_provider_neutral_shapes():
         metadata={"provider_kind": "method"},
     )
     edge = CodeEdge(
-        source_id="legacy:42",
-        target_id="legacy:84",
+        source_id="codegraph:42",
+        target_id="codegraph:84",
         kind="calls",
         location=None,
-        provenance=Provenance.LEGACY,
+        provenance=Provenance.STATIC,
         confidence=None,
         metadata={},
     )
     indexed_at = datetime(2026, 7, 18, tzinfo=timezone.utc)
     health = ProviderHealth(
-        provider="legacy",
+        provider="codegraph",
         indexed=True,
         freshness=Freshness.FRESH,
         indexed_at=indexed_at,
@@ -61,7 +61,7 @@ def test_canonical_dtos_serialize_stable_provider_neutral_shapes():
     )
 
     assert symbol.model_dump(mode="json") == {
-        "id": "legacy:42",
+        "id": "codegraph:42",
         "name": "run",
         "qualified_name": "Service.run",
         "kind": "function",
@@ -79,7 +79,7 @@ def test_canonical_dtos_serialize_stable_provider_neutral_shapes():
         "flags": {"async": False},
         "metadata": {"provider_kind": "method"},
     }
-    assert edge.model_dump(mode="json")["provenance"] == "legacy"
+    assert edge.model_dump(mode="json")["provenance"] == "static"
     assert edge.model_dump(mode="json")["confidence"] is None
     assert health.model_dump(mode="json")["indexed_at"] == indexed_at.isoformat()
     assert health.model_dump(mode="json")["freshness"] == "fresh"

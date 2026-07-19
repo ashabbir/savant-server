@@ -239,6 +239,7 @@ def test_refresh_repo_updates_existing_checkout(client, monkeypatch):
     from context import db as context_db
 
     monkeypatch.setattr(routes, "_ensure_init", lambda: True)
+    monkeypatch.setattr(routes, "_validate_repo_path", lambda _repo: (Path("/tmp/repos/repo"), None))
     monkeypatch.setattr(
         context_db.ContextDB,
         "get_repo",
@@ -256,6 +257,7 @@ def test_refresh_repo_updates_existing_checkout(client, monkeypatch):
         "add_repo",
         staticmethod(lambda name, path: {"id": 4, "name": name, "path": path, "status": "added"}),
     )
+    monkeypatch.setattr(context_db.ContextDB, "mark_repo_fetched", staticmethod(lambda name: None))
 
     resp = client.post("/api/context/repos/repo/refresh")
 

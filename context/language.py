@@ -26,12 +26,10 @@ class MemoryBankDetector:
 
     @classmethod
     def is_memory_bank_file(cls, rel_path: str) -> bool:
-        if not cls.is_markdown(rel_path):
-            return False
-        p = Path(rel_path)
-        # Root-level markdown files (e.g., README.md, AGENTS.md, GEMINI.md) or memory/docs dir files
-        is_root_md = len(p.parts) == 1
-        return is_root_md or cls.is_in_memory_dir(rel_path)
+        # Markdown is repository memory/documentation regardless of where it
+        # lives. Keeping nested Markdown in the language bucket made the
+        # project summary contradict the memory-bank browser.
+        return cls.is_markdown(rel_path)
 
     @classmethod
     def should_skip_in_memory_dir(cls, rel_path: str) -> bool:

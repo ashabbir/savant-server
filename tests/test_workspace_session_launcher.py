@@ -1,5 +1,9 @@
+import os
 import json
+import pytest
 from pathlib import Path
+
+UI_EXISTS = Path("savant/templates/index.html").exists()
 
 
 def test_savant_seed_marker_auto_assigns_workspace(client, sample_workspace, tmp_path, monkeypatch):
@@ -44,6 +48,7 @@ def test_savant_seed_marker_auto_assigns_workspace(client, sample_workspace, tmp
     assert (s.get("last_intent") or "").startswith("Implement feature kickoff")
 
 
+@pytest.mark.skipif(not UI_EXISTS, reason="Client UI files located in savant-client repository")
 def test_workspace_new_session_ui_hooks_exist():
     index_html = Path("savant/templates/index.html").read_text(encoding="utf-8")
     ws_js = Path("savant/static/js/workspaces.js").read_text(encoding="utf-8")
@@ -74,12 +79,14 @@ def test_workspace_new_session_ui_hooks_exist():
     assert "Session name already exists in this workspace. Try:" in ws_js
 
 
+@pytest.mark.skipif(not UI_EXISTS, reason="Client UI files located in savant-client repository")
 def test_workspace_savant_launcher_uses_one_shot_query_command():
     ws_js = Path("savant/static/js/workspaces.js").read_text(encoding="utf-8")
 
     assert "savant --yolo chat -q" in ws_js
 
 
+@pytest.mark.skipif(not UI_EXISTS, reason="Client UI files located in savant-client repository")
 def test_workspace_session_launcher_allows_empty_seed_for_any_provider():
     ws_js = Path("savant/static/js/workspaces.js").read_text(encoding="utf-8")
 
@@ -87,12 +94,14 @@ def test_workspace_session_launcher_allows_empty_seed_for_any_provider():
     assert "const followupPrompt = (provider === 'savant' || provider === 'gemini' || provider === 'copilot') ? '' : seedPrompt;" in ws_js
 
 
+@pytest.mark.skipif(not UI_EXISTS, reason="Client UI files located in savant-client repository")
 def test_workspace_savant_launcher_reopens_continue_after_query():
     ws_js = Path("savant/static/js/workspaces.js").read_text(encoding="utf-8")
 
     assert "savant --yolo --continue" in ws_js
 
 
+@pytest.mark.skipif(not UI_EXISTS, reason="Client UI files located in savant-client repository")
 def test_workspace_gemini_launch_uses_inline_prompt_flag():
     ws_js = Path("savant/static/js/workspaces.js").read_text(encoding="utf-8")
 
@@ -101,12 +110,14 @@ def test_workspace_gemini_launch_uses_inline_prompt_flag():
     assert "const followupPrompt = (provider === 'savant' || provider === 'gemini' || provider === 'copilot') ? '' : seedPrompt;" in ws_js
 
 
+@pytest.mark.skipif(not UI_EXISTS, reason="Client UI files located in savant-client repository")
 def test_workspace_codex_followup_uses_provider_delay():
     ws_js = Path("savant/static/js/workspaces.js").read_text(encoding="utf-8")
 
     assert "codex: 2200" in ws_js
 
 
+@pytest.mark.skipif(not UI_EXISTS, reason="Client UI files located in savant-client repository")
 def test_workspace_copilot_launch_uses_inline_prompt_flag():
     ws_js = Path("savant/static/js/workspaces.js").read_text(encoding="utf-8")
 
@@ -115,6 +126,7 @@ def test_workspace_copilot_launch_uses_inline_prompt_flag():
     assert "const followupPrompt = (provider === 'savant' || provider === 'gemini' || provider === 'copilot') ? '' : seedPrompt;" in ws_js
 
 
+@pytest.mark.skipif(not UI_EXISTS, reason="Client UI files located in savant-client repository")
 def test_workspace_followup_injection_targets_created_tab_not_current_focus():
     term_html = Path("terminal.html").read_text(encoding="utf-8")
 
@@ -123,6 +135,7 @@ def test_workspace_followup_injection_targets_created_tab_not_current_focus():
     assert "_termApi.write(latestLeaf.tabId, followup + ENTER);" not in term_html
 
 
+@pytest.mark.skipif(not UI_EXISTS, reason="Client UI files located in savant-client repository")
 def test_workspace_savant_launcher_composes_full_safe_command():
     ws_js = Path("savant/static/js/workspaces.js").read_text(encoding="utf-8")
 

@@ -218,6 +218,13 @@ CREATE TABLE IF NOT EXISTS task_deps (
     FOREIGN KEY (depends_on) REFERENCES tasks(task_id) ON DELETE CASCADE
 );
 
+-- Task ended days
+CREATE TABLE IF NOT EXISTS task_ended_days (
+    date        TEXT PRIMARY KEY,
+    user_id     TEXT DEFAULT '',
+    created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- Auto-increment counter for task seq
 CREATE TABLE IF NOT EXISTS counters (
     name    TEXT PRIMARY KEY,
@@ -413,44 +420,9 @@ CREATE TABLE IF NOT EXISTS ctx_repos (
     path        TEXT NOT NULL,
     status      TEXT DEFAULT 'added',
     indexed_at  TIMESTAMPTZ,
+    last_fetched_at TIMESTAMPTZ,
     created_at  TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
-
--- Graphify: Nodes
-CREATE TABLE IF NOT EXISTS graphify_nodes (
-    node_id      TEXT NOT NULL,
-    workspace_id TEXT NOT NULL REFERENCES ctx_repos(name) ON DELETE CASCADE,
-    node_type    TEXT NOT NULL,
-    title        TEXT NOT NULL,
-    content      TEXT DEFAULT '',
-    metadata     TEXT DEFAULT '{}',
-    created_at   TIMESTAMPTZ NOT NULL,
-    updated_at   TIMESTAMPTZ NOT NULL,
-    PRIMARY KEY (workspace_id, node_id)
-);
-CREATE INDEX IF NOT EXISTS idx_gfn_ws      ON graphify_nodes(workspace_id);
-CREATE INDEX IF NOT EXISTS idx_gfn_type    ON graphify_nodes(node_type);
-CREATE INDEX IF NOT EXISTS idx_gfn_title   ON graphify_nodes(title);
-CREATE INDEX IF NOT EXISTS idx_gfn_created ON graphify_nodes(created_at DESC);
-
--- Graphify: Edges
-CREATE TABLE IF NOT EXISTS graphify_edges (
-    edge_id      TEXT PRIMARY KEY,
-    workspace_id TEXT NOT NULL REFERENCES ctx_repos(name) ON DELETE CASCADE,
-    source_id    TEXT NOT NULL,
-    target_id    TEXT NOT NULL,
-    edge_type    TEXT NOT NULL,
-    weight       REAL DEFAULT 1.0,
-    label        TEXT DEFAULT '',
-    created_at   TIMESTAMPTZ NOT NULL,
-    FOREIGN KEY (workspace_id, source_id) REFERENCES graphify_nodes(workspace_id, node_id) ON DELETE CASCADE,
-    FOREIGN KEY (workspace_id, target_id) REFERENCES graphify_nodes(workspace_id, node_id) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS idx_gfe_ws     ON graphify_edges(workspace_id);
-CREATE INDEX IF NOT EXISTS idx_gfe_source ON graphify_edges(source_id);
-CREATE INDEX IF NOT EXISTS idx_gfe_target ON graphify_edges(target_id);
-CREATE INDEX IF NOT EXISTS idx_gfe_type   ON graphify_edges(edge_type);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_gfe_unique ON graphify_edges(workspace_id, source_id, target_id, edge_type);
 
 -- Job queue
 CREATE TABLE IF NOT EXISTS jobs (
@@ -474,8 +446,8 @@ CREATE INDEX IF NOT EXISTS idx_jobs_target  ON jobs(target, job_type);
 -- Graph nodes/edges remain owned by the selected provider and are never mirrored here.
 CREATE TABLE IF NOT EXISTS code_intelligence_config (
     repo_id          INTEGER PRIMARY KEY REFERENCES ctx_repos(id) ON DELETE CASCADE,
-    provider         TEXT NOT NULL DEFAULT 'legacy'
-                     CHECK (provider IN ('legacy', 'codegraph')),
+    provider         TEXT NOT NULL DEFAULT 'codegraph'
+                     CHECK (provider = 'codegraph'),
     index_root       TEXT,
     engine_version   TEXT,
     graph_version    TEXT,
@@ -486,8 +458,8 @@ CREATE TABLE IF NOT EXISTS code_intelligence_config (
     last_error_code  TEXT,
     last_error_at    TIMESTAMPTZ,
     watch_enabled    BOOLEAN NOT NULL DEFAULT FALSE,
-    rollout_state    TEXT NOT NULL DEFAULT 'legacy'
-                     CHECK (rollout_state IN ('legacy', 'shadow', 'codegraph_primary', 'rolled_back')),
+    rollout_state    TEXT NOT NULL DEFAULT 'codegraph_primary'
+                     CHECK (rollout_state = 'codegraph_primary'),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_ci_config_provider ON code_intelligence_config(provider);
@@ -586,6 +558,28 @@ _SCHEMA_MIGRATIONS = (
             "CREATE INDEX IF NOT EXISTS idx_reminders_user ON reminders(user_id)",
         ),
     ),
+    (
+        2,
+        "track repository fetch timestamps",
+        (
+            "ALTER TABLE ctx_repos ADD COLUMN IF NOT EXISTS last_fetched_at TIMESTAMPTZ",
+        ),
+    ),
+    (
+        3,
+        "remove legacy graphify storage and select codegraph",
+        (
+            "UPDATE code_intelligence_config SET provider = 'codegraph', rollout_state = 'codegraph_primary'",
+            "ALTER TABLE code_intelligence_config ALTER COLUMN provider SET DEFAULT 'codegraph'",
+            "ALTER TABLE code_intelligence_config ALTER COLUMN rollout_state SET DEFAULT 'codegraph_primary'",
+            "ALTER TABLE code_intelligence_config DROP CONSTRAINT IF EXISTS code_intelligence_config_provider_check",
+            "ALTER TABLE code_intelligence_config ADD CONSTRAINT code_intelligence_config_provider_check CHECK (provider = 'codegraph')",
+            "ALTER TABLE code_intelligence_config DROP CONSTRAINT IF EXISTS code_intelligence_config_rollout_state_check",
+            "ALTER TABLE code_intelligence_config ADD CONSTRAINT code_intelligence_config_rollout_state_check CHECK (rollout_state = 'codegraph_primary')",
+            "DROP TABLE IF EXISTS graphify_edges",
+            "DROP TABLE IF EXISTS graphify_nodes",
+        ),
+    ),
 )
 
 
@@ -632,47 +626,6 @@ def _reconcile_additive_schema(cur: psycopg2.extensions.cursor) -> None:
             cur.execute(statement)
 
 
-def _migrate_graphify_primary_key(cur: psycopg2.extensions.cursor) -> None:
-    """Upgrade legacy graphify tables to their current composite primary key."""
-    cur.execute("""
-        SELECT COUNT(*) AS cnt
-        FROM information_schema.table_constraints tc
-        JOIN information_schema.key_column_usage kcu
-          ON tc.constraint_name = kcu.constraint_name
-         AND tc.table_schema = kcu.table_schema
-        WHERE tc.table_schema = current_schema()
-          AND tc.table_name = 'graphify_nodes'
-          AND tc.constraint_type = 'PRIMARY KEY'
-    """)
-    row = cur.fetchone()
-    primary_key_columns = row["cnt"] if isinstance(row, dict) else row[0]
-    if primary_key_columns != 1:
-        return
-
-    logger.info("Migrating graphify tables for multi-repo isolation")
-    cur.execute("ALTER TABLE graphify_edges DROP CONSTRAINT IF EXISTS graphify_edges_source_id_fkey")
-    cur.execute("ALTER TABLE graphify_edges DROP CONSTRAINT IF EXISTS graphify_edges_target_id_fkey")
-    cur.execute("ALTER TABLE graphify_nodes DROP CONSTRAINT IF EXISTS graphify_nodes_pkey")
-    cur.execute(
-        "ALTER TABLE graphify_nodes ADD CONSTRAINT graphify_nodes_pkey "
-        "PRIMARY KEY (workspace_id, node_id)"
-    )
-    cur.execute("""
-        ALTER TABLE graphify_edges
-        ADD CONSTRAINT graphify_edges_source_fk
-        FOREIGN KEY (workspace_id, source_id)
-        REFERENCES graphify_nodes(workspace_id, node_id)
-        ON DELETE CASCADE
-    """)
-    cur.execute("""
-        ALTER TABLE graphify_edges
-        ADD CONSTRAINT graphify_edges_target_fk
-        FOREIGN KEY (workspace_id, target_id)
-        REFERENCES graphify_nodes(workspace_id, node_id)
-        ON DELETE CASCADE
-    """)
-
-
 def init_schema() -> None:
     """Create missing schema objects and apply pending migrations."""
     logger.info("Checking database schema and pending migrations")
@@ -685,7 +638,6 @@ def init_schema() -> None:
             _execute_schema_sql(cur)
             _run_pending_migrations(cur)
             _reconcile_additive_schema(cur)
-            _migrate_graphify_primary_key(cur)
         conn.commit()
     except Exception:
         conn.rollback()

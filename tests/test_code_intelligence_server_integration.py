@@ -45,7 +45,7 @@ def test_service_bounds_subgraph_depth_and_size(tmp_path):
     from code_intelligence.service import CodeIntelligenceService
 
     class Provider:
-        name = "legacy"
+        name = "codegraph"
         def get_callers(self, repo, ref, depth=1, limit=20):
             assert repo["root"] == tmp_path
             assert ref == {"id": "symbol-1"}

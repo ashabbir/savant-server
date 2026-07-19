@@ -3,6 +3,12 @@
 import os
 import re
 import unittest
+import pytest
+
+pytestmark = pytest.mark.skipif(
+    not os.path.exists(os.path.join(os.path.dirname(__file__), "..", "templates", "index.html")),
+    reason="Client tab UI files located in savant-client repository"
+)
 
 SHARED_CSS = os.path.join(os.path.dirname(__file__), "..", "static", "css", "shared.css")
 TABS_JS = os.path.join(os.path.dirname(__file__), "..", "static", "js", "tabs.js")

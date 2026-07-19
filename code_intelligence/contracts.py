@@ -20,7 +20,6 @@ class Provenance(str, Enum):
     STATIC = "static"
     HEURISTIC = "heuristic"
     IMPORTED = "imported"
-    LEGACY = "legacy"
     UNKNOWN = "unknown"
 
 

@@ -44,6 +44,17 @@ class TestMergeValidation:
         r = client.post("/api/knowledge/nodes/merge", json={"node_ids": "not-a-list"})
         assert r.status_code == 400
 
+    def test_merge_rejects_duplicate_ids(self, client):
+        node = _create_node(client, "Only node")
+
+        r = client.post("/api/knowledge/nodes/merge", json={
+            "node_ids": [node["node_id"], node["node_id"]]
+        })
+
+        assert r.status_code == 400
+        assert "duplicate" in r.get_json()["error"].lower()
+        assert _get_node(client, node["node_id"]).status_code == 200
+
     def test_merge_rejects_invalid_node_type(self, client):
         n1 = _create_node(client, "A")
         n2 = _create_node(client, "B")

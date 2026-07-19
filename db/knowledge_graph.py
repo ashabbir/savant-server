@@ -23,6 +23,127 @@ def _row_to_dict(row):
     return _base_row(row, json_fields={"metadata": {}})
 
 
+def _fetch_graph_nodes(cur, columns: str, node_type: str, limit: int, include_staged: bool):
+    status_clause = "" if include_staged else " AND status = 'committed'"
+    if node_type:
+        cur.execute(
+            f"SELECT {columns} FROM kg_nodes WHERE node_type = %s{status_clause} "
+            "ORDER BY created_at DESC LIMIT %s",
+            (node_type, limit),
+        )
+    else:
+        status_where = "" if include_staged else " WHERE status = 'committed'"
+        cur.execute(
+            f"SELECT {columns} FROM kg_nodes{status_where} ORDER BY created_at DESC LIMIT %s",
+            (limit,),
+        )
+    return list(cur.fetchall())
+
+
+def _fetch_graph_edges(cur, node_ids: set[str], include_connected: bool):
+    if not node_ids:
+        return []
+    operator = "OR" if include_connected else "AND"
+    cur.execute(
+        f"SELECT * FROM kg_edges WHERE source_id = ANY(%s) {operator} target_id = ANY(%s)",
+        (list(node_ids), list(node_ids)),
+    )
+    return list(cur.fetchall())
+
+
+def _expand_connected_nodes(cur, nodes: list, edges: list, columns: str, include_staged: bool):
+    node_ids = {dict(node)["node_id"] for node in nodes}
+    connected_ids = {
+        endpoint
+        for edge in edges
+        for endpoint in (dict(edge)["source_id"], dict(edge)["target_id"])
+    }
+    missing_ids = connected_ids - node_ids
+    if not missing_ids:
+        return nodes, node_ids
+    status_clause = "" if include_staged else " AND status = 'committed'"
+    cur.execute(
+        f"SELECT {columns} FROM kg_nodes WHERE node_id = ANY(%s){status_clause}",
+        (list(missing_ids),),
+    )
+    extra_nodes = list(cur.fetchall())
+    nodes.extend(extra_nodes)
+    node_ids.update(dict(node)["node_id"] for node in extra_nodes)
+    return nodes, node_ids
+
+
+def _edges_between_nodes(edges: list, node_ids: set[str]):
+    return [
+        edge for edge in edges
+        if dict(edge)["source_id"] in node_ids and dict(edge)["target_id"] in node_ids
+    ]
+
+
+def _merge_content(survivor: dict, absorbed_nodes: list[dict]) -> str:
+    parts = []
+    for node in [survivor, *absorbed_nodes]:
+        content = (node.get("content") or "").strip()
+        if content and content not in parts:
+            parts.append(content)
+    return "\n\n---\n\n".join(parts)
+
+
+def _merge_metadata(survivor: dict, absorbed_nodes: list[dict]) -> dict:
+    merged = dict(survivor.get("metadata") or {})
+    files = set(merged.get("files") or [])
+    for node in absorbed_nodes:
+        metadata = node.get("metadata") or {}
+        files.update(metadata.get("files") or [])
+        for key in ("repo", "source", "workspace_id"):
+            if metadata.get(key) and not merged.get(key):
+                merged[key] = metadata[key]
+    if files:
+        merged["files"] = sorted(files)
+    return merged
+
+
+def _fetch_nodes(conn, node_ids: list[str]) -> list[dict]:
+    if not node_ids:
+        return []
+    with conn.cursor() as cur:
+        cur.execute("SELECT * FROM kg_nodes WHERE node_id = ANY(%s)", (node_ids,))
+        by_id = {row["node_id"]: _row_to_dict(row) for row in cur.fetchall()}
+    return [by_id[node_id] for node_id in node_ids if node_id in by_id]
+
+
+def _resolve_edge_conflict(cur, edge: dict, survivor_id: str, absorbed_ids: set[str], direction: str) -> None:
+    external_id = edge["target_id"] if direction == "outgoing" else edge["source_id"]
+    if external_id in absorbed_ids or external_id == survivor_id:
+        cur.execute("DELETE FROM kg_edges WHERE edge_id = %s", (edge["edge_id"],))
+        return
+    source_id = survivor_id if direction == "outgoing" else external_id
+    target_id = external_id if direction == "outgoing" else survivor_id
+    cur.execute(
+        "SELECT edge_id, weight FROM kg_edges WHERE source_id = %s AND target_id = %s AND edge_type = %s",
+        (source_id, target_id, edge["edge_type"]),
+    )
+    existing = cur.fetchone()
+    if existing:
+        if edge["weight"] > existing["weight"]:
+            cur.execute("UPDATE kg_edges SET weight = %s WHERE edge_id = %s", (edge["weight"], existing["edge_id"]))
+        cur.execute("DELETE FROM kg_edges WHERE edge_id = %s", (edge["edge_id"],))
+        return
+    column = "source_id" if direction == "outgoing" else "target_id"
+    cur.execute(f"UPDATE kg_edges SET {column} = %s WHERE edge_id = %s", (survivor_id, edge["edge_id"]))
+
+
+def _rewire_absorbed_edges(cur, survivor_id: str, absorbed_ids: list[str]) -> None:
+    absorbed_set = set(absorbed_ids)
+    edge_columns = "edge_id, source_id, target_id, edge_type, weight"
+    for node_id in absorbed_ids:
+        cur.execute(f"SELECT {edge_columns} FROM kg_edges WHERE source_id = %s", (node_id,))
+        for edge in cur.fetchall():
+            _resolve_edge_conflict(cur, edge, survivor_id, absorbed_set, "outgoing")
+        cur.execute(f"SELECT {edge_columns} FROM kg_edges WHERE target_id = %s", (node_id,))
+        for edge in cur.fetchall():
+            _resolve_edge_conflict(cur, edge, survivor_id, absorbed_set, "incoming")
+
+
 VALID_NODE_TYPES = {"insight", "project", "session", "concept", "repo",
                    "client", "domain", "service", "library", "technology", "issue", "person"}
 VALID_EDGE_TYPES = {"relates_to", "learned_from", "applies_to", "uses",
@@ -420,63 +541,19 @@ class KnowledgeGraphDB:
         conn = get_connection()
         try:
             node_cols = "node_id, node_type, title, status, created_at" if slim else "*"
-            status_filter = "" if include_staged else " AND status = 'committed'"
             with conn.cursor() as cur:
+                nodes = _fetch_graph_nodes(cur, node_cols, node_type, limit, include_staged)
+                node_ids = {dict(node)["node_id"] for node in nodes}
+                edges = _fetch_graph_edges(cur, node_ids, include_connected=bool(node_type))
                 if node_type:
-                    cur.execute(
-                        f"SELECT {node_cols} FROM kg_nodes WHERE node_type = %s{status_filter} ORDER BY created_at DESC LIMIT %s",
-                        (node_type, limit)
+                    nodes, node_ids = _expand_connected_nodes(
+                        cur, nodes, edges, node_cols, include_staged
                     )
-                    nodes = cur.fetchall()
-                    node_ids = {dict(n)["node_id"] for n in nodes}
-                    if node_ids:
-                        cur.execute(
-                            "SELECT * FROM kg_edges WHERE source_id = ANY(%s) OR target_id = ANY(%s)",
-                            (list(node_ids), list(node_ids))
-                        )
-                        extra_edges = cur.fetchall()
-                        extra_ids = set()
-                        for e in extra_edges:
-                            ed = dict(e)
-                            extra_ids.add(ed["source_id"])
-                            extra_ids.add(ed["target_id"])
-                        missing = extra_ids - node_ids
-                        if missing:
-                            status_clause = "" if include_staged else " AND status = 'committed'"
-                            cur.execute(
-                                f"SELECT {node_cols} FROM kg_nodes WHERE node_id = ANY(%s){status_clause}",
-                                (list(missing),)
-                            )
-                            extra_nodes = cur.fetchall()
-                            nodes = list(nodes) + list(extra_nodes)
-                            node_ids.update(dict(n)["node_id"] for n in extra_nodes)
-                        edges = [e for e in extra_edges if dict(e)["source_id"] in node_ids and dict(e)["target_id"] in node_ids]
-                    else:
-                        edges = []
-                else:
-                    status_where = " WHERE status = 'committed'" if not include_staged else ""
-                    cur.execute(
-                        f"SELECT {node_cols} FROM kg_nodes{status_where} ORDER BY created_at DESC LIMIT %s", (limit,)
-                    )
-                    nodes = cur.fetchall()
-                    node_ids = {dict(n)["node_id"] for n in nodes}
-                    if node_ids:
-                        cur.execute(
-                            "SELECT * FROM kg_edges WHERE source_id = ANY(%s) AND target_id = ANY(%s)",
-                            (list(node_ids), list(node_ids))
-                        )
-                        edges = cur.fetchall()
-                    else:
-                        edges = []
-
-            if slim:
-                node_list = [dict(n) for n in nodes]
-            else:
-                node_list = [_row_to_dict(n) for n in nodes]
-
+                    edges = _edges_between_nodes(edges, node_ids)
+            node_list = [dict(node) for node in nodes] if slim else [_row_to_dict(node) for node in nodes]
             return {
                 "nodes": node_list,
-                "edges": [_row_to_dict(e) for e in edges]
+                "edges": [_row_to_dict(edge) for edge in edges]
             }
         finally:
             release_connection(conn)
@@ -555,92 +632,28 @@ class KnowledgeGraphDB:
             if not survivor_row:
                 return None
             survivor = _row_to_dict(survivor_row)
-
-            absorbed_nodes = []
-            for nid in absorbed_ids:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT * FROM kg_nodes WHERE node_id = %s", (nid,))
-                    row = cur.fetchone()
-                if row:
-                    absorbed_nodes.append(_row_to_dict(row))
-
+            unique_absorbed_ids = list(dict.fromkeys(
+                node_id for node_id in absorbed_ids if node_id != survivor_id
+            ))
+            absorbed_nodes = _fetch_nodes(conn, unique_absorbed_ids)
             if not absorbed_nodes:
                 return survivor
-
-            merged_content = survivor.get("content", "") or ""
-            for an in absorbed_nodes:
-                ac = (an.get("content") or "").strip()
-                if ac and ac != merged_content:
-                    merged_content = merged_content.rstrip() + "\n\n---\n\n" + ac if merged_content.strip() else ac
-
-            merged_meta = dict(survivor.get("metadata") or {})
-            for an in absorbed_nodes:
-                am = an.get("metadata") or {}
-                if am.get("files"):
-                    existing = set(merged_meta.get("files") or [])
-                    for f in am["files"]:
-                        existing.add(f)
-                    merged_meta["files"] = sorted(existing)
-                if am.get("repo") and not merged_meta.get("repo"):
-                    merged_meta["repo"] = am["repo"]
-                if am.get("source") and not merged_meta.get("source"):
-                    merged_meta["source"] = am["source"]
-                if am.get("workspace_id") and not merged_meta.get("workspace_id"):
-                    merged_meta["workspace_id"] = am["workspace_id"]
-
             all_absorbed = [n["node_id"] for n in absorbed_nodes]
-            absorbed_set = set(all_absorbed)
-
             with conn.cursor() as cur:
-                for nid in all_absorbed:
-                    cur.execute("SELECT edge_id, source_id, target_id, edge_type, weight FROM kg_edges WHERE source_id = %s", (nid,))
-                    src_edges = cur.fetchall()
-                    for e in src_edges:
-                        new_tgt = e["target_id"]
-                        if new_tgt in absorbed_set or new_tgt == survivor_id:
-                            cur.execute("DELETE FROM kg_edges WHERE edge_id = %s", (e["edge_id"],))
-                            continue
-                        cur.execute(
-                            "SELECT edge_id, weight FROM kg_edges WHERE source_id = %s AND target_id = %s AND edge_type = %s",
-                            (survivor_id, new_tgt, e["edge_type"])
-                        )
-                        existing = cur.fetchone()
-                        if existing:
-                            if e["weight"] > existing["weight"]:
-                                cur.execute("UPDATE kg_edges SET weight = %s WHERE edge_id = %s", (e["weight"], existing["edge_id"]))
-                            cur.execute("DELETE FROM kg_edges WHERE edge_id = %s", (e["edge_id"],))
-                        else:
-                            cur.execute("UPDATE kg_edges SET source_id = %s WHERE edge_id = %s", (survivor_id, e["edge_id"]))
-
-                    cur.execute("SELECT edge_id, source_id, target_id, edge_type, weight FROM kg_edges WHERE target_id = %s", (nid,))
-                    tgt_edges = cur.fetchall()
-                    for e in tgt_edges:
-                        new_src = e["source_id"]
-                        if new_src in absorbed_set or new_src == survivor_id:
-                            cur.execute("DELETE FROM kg_edges WHERE edge_id = %s", (e["edge_id"],))
-                            continue
-                        cur.execute(
-                            "SELECT edge_id, weight FROM kg_edges WHERE source_id = %s AND target_id = %s AND edge_type = %s",
-                            (new_src, survivor_id, e["edge_type"])
-                        )
-                        existing = cur.fetchone()
-                        if existing:
-                            if e["weight"] > existing["weight"]:
-                                cur.execute("UPDATE kg_edges SET weight = %s WHERE edge_id = %s", (e["weight"], existing["edge_id"]))
-                            cur.execute("DELETE FROM kg_edges WHERE edge_id = %s", (e["edge_id"],))
-                        else:
-                            cur.execute("UPDATE kg_edges SET target_id = %s WHERE edge_id = %s", (survivor_id, e["edge_id"]))
-
+                _rewire_absorbed_edges(cur, survivor_id, all_absorbed)
                 final_type = node_type if node_type else survivor.get("node_type", "insight")
                 cur.execute(
                     "UPDATE kg_nodes SET content = %s, metadata = %s, node_type = %s, updated_at = %s WHERE node_id = %s",
-                    (merged_content, json.dumps(merged_meta), final_type, _now(), survivor_id)
+                    (_merge_content(survivor, absorbed_nodes), json.dumps(_merge_metadata(survivor, absorbed_nodes)), final_type, _now(), survivor_id)
                 )
                 for nid in all_absorbed:
                     cur.execute("DELETE FROM kg_nodes WHERE node_id = %s", (nid,))
 
             conn.commit()
             return KnowledgeGraphDB._get_node_with_conn(survivor_id, conn)
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             release_connection(conn)
 
