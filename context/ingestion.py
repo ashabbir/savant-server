@@ -337,6 +337,12 @@ def _clone_checkout(target_path: Path, safe_url: str, provider: str, token: str,
 
 
 def _update_checkout(target_path: Path, safe_url: str, provider: str, token: str, branch: Optional[str]) -> None:
+    lock_file = target_path / ".git" / "index.lock"
+    if lock_file.exists():
+        try:
+            lock_file.unlink()
+        except Exception:
+            pass
     with _git_auth_environment(provider, token) as env:
         _run_git(["git", "-C", str(target_path), "remote", "set-url", "origin", safe_url], env=env)
         try:
