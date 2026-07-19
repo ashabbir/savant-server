@@ -32,6 +32,15 @@ def test_periodic_sync_pass_runs_for_all_projects(tmp_path, _isolated_db, monkey
     ContextDB.add_repo("repo-alpha", str(repo1_dir))
     ContextDB.add_repo("repo-beta", str(repo2_dir))
 
+    monkeypatch.setattr(
+        ContextDB,
+        "list_repos",
+        staticmethod(lambda: [
+            {"id": 1, "name": "repo-alpha", "path": str(repo1_dir), "status": "indexed"},
+            {"id": 2, "name": "repo-beta", "path": str(repo2_dir), "status": "indexed"},
+        ]),
+    )
+
     # Mock embedder
     mock_embedder = MagicMock()
     mock_embedder.embed_one.return_value = [0.1] * 768

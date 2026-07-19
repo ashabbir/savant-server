@@ -47,6 +47,22 @@ class IngestedProject:
     provider: str = "git"
 
 
+def _get_git_head(repo_path: Path) -> str:
+    """Get current HEAD commit hash for a git repository."""
+    try:
+        res = subprocess.run(
+            ["git", "-C", str(repo_path), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if res.returncode == 0:
+            return res.stdout.strip()
+    except Exception:
+        pass
+    return ""
+
+
 def inspect_project_source(repo_path: str) -> Dict[str, str]:
     """Infer source metadata for a stored project path."""
     resolved = Path(repo_path or "").expanduser().resolve()
