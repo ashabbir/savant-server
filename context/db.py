@@ -293,6 +293,47 @@ class ContextDB:
             if local_conn:
                 release_connection(conn)
 
+    @staticmethod
+    def get_repo_files_mtime(repo_id: int, conn=None) -> Dict[str, Dict[str, Any]]:
+        """Get relative paths, IDs, and mtime_ns for all stored files in a repo."""
+        local_conn = False
+        if conn is None:
+            conn = get_connection()
+            local_conn = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, rel_path, mtime_ns FROM ctx_files WHERE repo_id = %s",
+                    (repo_id,),
+                )
+                rows = cur.fetchall()
+            return {row["rel_path"]: {"id": row["id"], "mtime_ns": row["mtime_ns"]} for row in rows}
+        finally:
+            if local_conn:
+                release_connection(conn)
+
+    @staticmethod
+    def delete_files_by_id(file_ids: List[int], conn=None) -> int:
+        """Delete files by ID list (cascades to chunks, vectors, AST nodes)."""
+        if not file_ids:
+            return 0
+        local_conn = False
+        if conn is None:
+            conn = get_connection()
+            local_conn = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM ctx_files WHERE id = ANY(%s)",
+                    (list(file_ids),),
+                )
+                deleted = cur.rowcount
+            conn.commit()
+            return deleted
+        finally:
+            if local_conn:
+                release_connection(conn)
+
     # ------------------------------------------------------------------
     # File & chunk operations
     # ------------------------------------------------------------------

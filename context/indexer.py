@@ -498,7 +498,7 @@ class Indexer:
         return True
 
     def index_repository(self, repo_path: Path, repo_name: Optional[str] = None,
-                         clear: bool = True,
+                         clear: bool = True, differential: bool = False,
                          job_progress_cb: Optional[Callable] = None) -> Dict[str, Any]:
         repo_path = Path(repo_path).resolve()
         if not repo_path.exists():
@@ -513,7 +513,6 @@ class Indexer:
                         progress=0, total=0, files_done=0, chunks_done=0,
                         current_file="", error=None)
             ContextDB.update_repo_status(repo_name, "indexing", conn=conn)
-            embedder = self._get_embedder()
 
             repo = ContextDB.get_repo(repo_name, conn=conn)
             if not repo:
@@ -532,16 +531,44 @@ class Indexer:
             files_to_index = list(walker.walk())
             total_files = len(files_to_index)
 
+            stored_files = {}
+            files_removed = 0
+            if not clear:
+                stored_files = ContextDB.get_repo_files_mtime(repo_id, conn=conn)
+                files_to_index_set = {str(f) for f in files_to_index}
+                removed_ids = [info["id"] for rel_path, info in stored_files.items() if rel_path not in files_to_index_set]
+                if removed_ids:
+                    files_removed = ContextDB.delete_files_by_id(removed_ids, conn=conn)
+                    logger.info(f"Differential indexing removed {files_removed} deleted files for {repo_name}")
+
+            embedder = self._get_embedder()
+
             _set_status(repo_name, phase="Reading files", total=total_files)
             files_indexed = 0
+            files_skipped = 0
             chunks_indexed = 0
             memory_bank_count = 0
             lang_counts = {}
             errors = 0
 
-            for file_rel_path in files_to_index:
+            for idx, file_rel_path in enumerate(files_to_index):
                 if _is_cancelled(repo_name):
                     raise _CancelledError(repo_name)
+
+                str_rel = str(file_rel_path)
+                file_abs_path = repo_path / file_rel_path
+
+                if not clear and str_rel in stored_files:
+                    try:
+                        stat = file_abs_path.stat()
+                        if stored_files[str_rel]["mtime_ns"] == int(stat.st_mtime_ns):
+                            files_skipped += 1
+                            pct = int((idx + 1) / total_files * 100) if total_files else 100
+                            if job_progress_cb and (idx + 1) % 10 == 0:
+                                job_progress_cb(pct, "Embedding (Skipping unchanged)", str_rel)
+                            continue
+                    except Exception:
+                        pass
 
                 try:
                     indexed = self._index_file(
@@ -549,6 +576,7 @@ class Indexer:
                         replace_generated=not clear,
                     )
                     if not indexed:
+                        files_skipped += 1
                         continue
                     if indexed["is_memory_bank"]:
                         memory_bank_count += 1
@@ -558,14 +586,14 @@ class Indexer:
                     files_indexed += 1
                     chunks_indexed += indexed["chunks"]
 
-                    pct = int(files_indexed / total_files * 100) if total_files else 100
-                    _set_status(repo_name, phase="Embedding", files_done=files_indexed,
+                    pct = int((idx + 1) / total_files * 100) if total_files else 100
+                    _set_status(repo_name, phase="Embedding", files_done=files_indexed + files_skipped,
                                 chunks_done=chunks_indexed, progress=pct,
-                                current_file=str(file_rel_path), errors=errors,
+                                current_file=str_rel, errors=errors,
                                 memory_bank=memory_bank_count, languages=dict(lang_counts))
 
-                    if job_progress_cb and files_indexed % 5 == 0:
-                        job_progress_cb(pct, "Embedding", str(file_rel_path))
+                    if job_progress_cb and (idx + 1) % 5 == 0:
+                        job_progress_cb(pct, "Embedding", str_rel)
 
                 except _CancelledError:
                     raise
@@ -576,12 +604,14 @@ class Indexer:
             now = datetime.now(timezone.utc).isoformat()
             ContextDB.update_repo_status(repo_name, "indexed", indexed_at=now, conn=conn)
             _set_status(repo_name, status="indexed", phase="Complete", progress=100,
-                        files_done=files_indexed, chunks_done=chunks_indexed,
+                        files_done=files_indexed + files_skipped, chunks_done=chunks_indexed,
                         current_file="", errors=errors)
 
             return {
                 "repo_name": repo_name,
                 "files_indexed": files_indexed,
+                "files_skipped": files_skipped,
+                "files_removed": files_removed,
                 "chunks_indexed": chunks_indexed,
                 "errors": errors,
             }

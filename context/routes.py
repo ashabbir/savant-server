@@ -552,7 +552,70 @@ def refresh_repo(name):
 
     ContextDB.add_repo(refreshed.name, refreshed.path)
     ContextDB.mark_repo_fetched(refreshed.name)
-    return jsonify(ContextDB.get_repo(refreshed.name))
+
+    # Check for differential index & graph generation requirements:
+    # 1. Provider is GitHub or GitLab
+    # 2. Local code changed after fetch/pull
+    # 3. Project was previously indexed and graphed
+    differential_job_id = None
+    if getattr(refreshed, "provider", "git") in {"github", "gitlab"} and getattr(refreshed, "changed", False):
+        is_indexed = (repo.get("status") in {"indexed", "ast_only"}) or bool(repo.get("indexed_at"))
+        from db.code_intelligence import CodeIntelligenceConfigDB
+        config = CodeIntelligenceConfigDB.get(name) or CodeIntelligenceConfigDB.get(str(repo.get("id")))
+        is_graphed = bool(config and config.get("provider") == "codegraph")
+
+        if is_indexed and is_graphed:
+            from db.jobs import JobDB
+            existing = JobDB.find_active("differential_sync", name)
+            if not existing:
+                job = JobDB.create_job("differential_sync", name)
+                differential_job_id = job["id"]
+            else:
+                differential_job_id = existing["id"]
+
+    res = ContextDB.get_repo(refreshed.name) or {}
+    if differential_job_id:
+        res["differential_sync_job_id"] = differential_job_id
+        res["differential_sync_triggered"] = True
+    return jsonify(res)
+
+
+@context_bp.route("/api/context/repos/<name>/differential-sync", methods=["POST"])
+@admin_required
+def trigger_differential_sync(name):
+    """Manually trigger a differential index and graph sync via the job queue."""
+    if not _ensure_init():
+        return jsonify({"error": "Context not initialized"}), 503
+
+    from .db import ContextDB
+    repo = ContextDB.get_repo(name)
+    if not repo:
+        return jsonify({"error": f"Project not found: {name}"}), 404
+    repo_path, path_err = _validate_repo_path(repo)
+    if path_err:
+        return jsonify({"error": path_err}), 400
+
+    from .ingestion import inspect_project_source
+    source_info = inspect_project_source(str(repo_path))
+    provider = source_info.get("source")
+    if provider not in {"github", "gitlab"}:
+        return jsonify({"error": "Differential sync is only supported for GitHub or GitLab repositories"}), 400
+
+    is_indexed = (repo.get("status") in {"indexed", "ast_only"}) or bool(repo.get("indexed_at"))
+    from db.code_intelligence import CodeIntelligenceConfigDB
+    config = CodeIntelligenceConfigDB.get(name) or CodeIntelligenceConfigDB.get(str(repo.get("id")))
+    is_graphed = bool(config and config.get("provider") == "codegraph")
+
+    if not (is_indexed and is_graphed):
+        return jsonify({"error": "Repository must be already indexed and graphed before differential sync can run"}), 400
+
+    from db.jobs import JobDB
+    existing = JobDB.find_active("differential_sync", name)
+    if existing:
+        return jsonify({"started": True, "name": name, "job_id": existing["id"], "reused": True})
+
+    job = JobDB.create_job("differential_sync", name)
+    return jsonify({"started": True, "name": name, "job_id": job["id"]})
 
 
 @context_bp.route("/api/context/repos/<name>", methods=["DELETE"])

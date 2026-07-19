@@ -97,6 +97,44 @@ def sample():
     )
 
 
+def test_every_statement_after_terminal_in_same_block_is_unreachable():
+    source = """\
+def sample(items):
+    for item in items:
+        if item is None:
+            continue
+            print("never")
+            item = "also never"
+        print(item)
+"""
+
+    result = analyze_code(content_before=source, target=AnalysisTarget(path="sample.py"))
+
+    unreachable_lines = {
+        finding["line"]
+        for finding in result["after"]["findings"]
+        if finding["rule_id"] == "unreachable_code"
+    }
+    assert unreachable_lines == {5, 6}
+
+
+def test_nested_guard_clause_does_not_make_parent_block_unreachable():
+    source = """\
+def sample(value):
+    if not value:
+        raise ValueError("value required")
+    normalized = value.strip()
+    return normalized
+"""
+
+    result = analyze_code(content_before=source, target=AnalysisTarget(path="sample.py"))
+
+    assert not any(
+        finding["rule_id"] == "unreachable_code"
+        for finding in result["after"]["findings"]
+    )
+
+
 def test_unchanged_analysis_reports_unchanged_status():
     source = "def sample() -> int:\n    return 1\n"
 

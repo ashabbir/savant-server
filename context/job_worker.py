@@ -110,8 +110,35 @@ def _execute_job(job_id: str, job_type: str, target: str) -> dict:
         return _run_batch_ast(progress_cb)
     elif job_type in ("codegraph_index", "codegraph_sync"):
         return _run_code_intelligence_sync(target, progress_cb)
+    elif job_type == "differential_sync":
+        return _run_differential_sync(target, progress_cb)
     else:
         raise ValueError(f"Unknown job type: {job_type}")
+
+
+def _run_differential_sync(target: str, progress_cb) -> dict:
+    """Run differential semantic index update and structural graph sync for a single repo."""
+    progress_cb(5, "Preparing", f"Starting differential sync for {target}")
+
+    from context.indexer import Indexer
+    repo_path, repo_name = _resolve_repo(target)
+    indexer = Indexer()
+
+    progress_cb(15, "Differential Indexing", "Updating semantic search index")
+    index_res = indexer.index_repository(
+        repo_path, repo_name=repo_name, clear=False, differential=True, job_progress_cb=progress_cb
+    )
+
+    progress_cb(60, "Differential Graph Sync", "Syncing structural code graph")
+    graph_res = _run_code_intelligence_sync(target, progress_cb)
+
+    progress_cb(100, "Complete", "Differential sync completed successfully")
+    return {
+        "repo_name": repo_name,
+        "index_result": index_res,
+        "graph_result": graph_res,
+        "mode": "differential",
+    }
 
 
 def _run_code_intelligence_sync(target: str, progress_cb) -> dict:

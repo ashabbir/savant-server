@@ -43,6 +43,8 @@ class SourceAvailability:
 class IngestedProject:
     name: str
     path: str
+    changed: bool = False
+    provider: str = "git"
 
 
 def inspect_project_source(repo_path: str) -> Dict[str, str]:
@@ -186,8 +188,13 @@ def refresh_repo(repo_path: str, branch: Optional[str] = None) -> IngestedProjec
     if not token:
         raise IngestionError(f"{provider.title()} source is not configured")
 
+    head_before = _get_git_head(target_path)
     _update_checkout(target_path, _normalize_remote_url(parsed), provider, token, branch)
-    return IngestedProject(name=target_path.name, path=str(target_path))
+    head_after = _get_git_head(target_path)
+
+    changed = bool(head_before and head_after and head_before != head_after)
+
+    return IngestedProject(name=target_path.name, path=str(target_path), changed=changed, provider=provider)
 
 
 def ingest_directory(directory: str) -> IngestedProject:
@@ -310,6 +317,7 @@ def _clone_checkout(target_path: Path, safe_url: str, provider: str, token: str,
     cmd.extend([safe_url, str(target_path)])
     with _git_auth_environment(provider, token) as env:
         _run_git(cmd, env=env)
+        _run_git(["git", "-C", str(target_path), "remote", "set-url", "origin", safe_url], env=env)
 
 
 def _update_checkout(target_path: Path, safe_url: str, provider: str, token: str, branch: Optional[str]) -> None:

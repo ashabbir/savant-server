@@ -127,7 +127,7 @@ def test_ssh_repo_clone_uses_askpass_environment_not_token_in_command(tmp_path, 
     auth_env = next(env for env in environments if env)
     assert auth_env["GIT_ASKPASS"]
     assert auth_env["SAVANT_GIT_ASKPASS_TOKEN"] == "ghp_test_token"
-    assert any(cmd[-3:] == ["remote", "set-url", "origin"] and "https://github.com/acme/repo.git" in cmd for cmd in commands)
+    assert any("remote" in cmd and "set-url" in cmd and "origin" in cmd and "https://github.com/acme/repo.git" in cmd for cmd in commands)
 
 
 def test_ingest_repo_rejects_missing_token(tmp_path, monkeypatch):
