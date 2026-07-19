@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from .contracts import ExploreResult, SearchResult
+from .contracts import ExploreResult, SearchResult, SubgraphRequest
 
 
 class CodeIntelligenceService:
@@ -65,21 +65,17 @@ class CodeIntelligenceService:
             result = ExploreResult.model_validate(result)
         return result
 
-    def subgraph(self, repo_id, root, *, roots, mode="neighbors", depth=1, limit=100, edge_kinds=None, direction="both"):
-        if not roots:
-            raise ValueError("roots required")
-        depth = max(1, min(int(depth), 3))
-        limit = max(1, min(int(limit), 500))
-        symbol_ref = roots[0]
+    def subgraph(self, repo_id, root, request: SubgraphRequest):
+        depth = max(1, min(int(request.depth), 3))
+        limit = max(1, min(int(request.limit), 500))
+        symbol_ref = request.roots[0]
         operations = {
-            "neighbors": ("get_neighbors", {"depth": depth, "edge_kinds": edge_kinds}),
+            "neighbors": ("get_neighbors", {"depth": depth, "edge_kinds": request.edge_kinds}),
             "callers": ("get_callers", {"depth": depth, "limit": limit}),
             "callees": ("get_callees", {"depth": depth, "limit": limit}),
-            "impact": ("get_impact", {"depth": depth, "direction": direction}),
+            "impact": ("get_impact", {"depth": depth, "direction": request.direction}),
         }
-        if mode not in operations:
-            raise ValueError("mode must be neighbors, callers, callees, or impact")
-        operation, kwargs = operations[mode]
+        operation, kwargs = operations[request.mode]
         _provider, result = self._dispatch(repo_id, root, operation, symbol_ref, **kwargs)
         result.symbols = result.symbols[:limit]
         result.edges = result.edges[: min(limit * 2, 1000)]

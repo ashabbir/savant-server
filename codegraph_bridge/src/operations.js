@@ -162,26 +162,32 @@ export class Operations {
     state.finish(state.reject, new BridgeError('TIMEOUT', 'operation timed out and worker was replaced', true));
   }
 
+  async startWatching(repoId) {
+    try {
+      const watcher = await this.graph(repoId);
+      return watcher.watch();
+    } catch {
+      return false;
+    }
+  }
+
+  async completeSuccessfulTask(request, state, result) {
+    if (!state.write) return result;
+    this.recoveryRequired.delete(state.repoId);
+    this.successfullySynced.add(state.repoId);
+    if (request.params?.watch !== false) result.watching = await this.startWatching(state.repoId);
+    return result;
+  }
+
   async handleWorkerMessage(request, state, message) {
     state.completing = true;
     state.worker.terminate();
     if (message.ok) {
-      if (state.write) {
-        this.recoveryRequired.delete(state.repoId);
-        this.successfullySynced.add(state.repoId);
-        if (request.params?.watch !== false) {
-          try {
-            const watcher = await this.graph(state.repoId);
-            message.result.watching = watcher.watch();
-          } catch {
-            message.result.watching = false;
-          }
-        }
-      }
-      state.finish(state.resolve, message.result);
-    } else {
-      state.finish(state.reject, new BridgeError(message.error?.code || 'INTERNAL', message.error?.message || 'worker error'));
+      const result = await this.completeSuccessfulTask(request, state, message.result);
+      state.finish(state.resolve, result);
+      return;
     }
+    state.finish(state.reject, new BridgeError(message.error?.code || 'INTERNAL', message.error?.message || 'worker error'));
   }
 
   runTask(request, write = false) {

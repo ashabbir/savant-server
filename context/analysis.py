@@ -198,6 +198,17 @@ def _detect_style(lines: list[str], path: str, findings: list[dict[str, Any]]) -
             _push_finding(findings, severity="low", category="style", rule_id="missing_return_type_hint", path=path, line=idx, title="Missing return type hint", detail=f"{m.group(1)} has no return type annotation.")
 
 
+_PYTHON_TERMINAL_STATEMENTS = (ast.Return, ast.Raise, ast.Break, ast.Continue)
+
+
+def _iter_python_statement_blocks(tree: ast.AST):
+    """Yield syntactic statement blocks without conflating nested scopes."""
+    for node in ast.walk(tree):
+        for _field, value in ast.iter_fields(node):
+            if value and isinstance(value, list) and all(isinstance(item, ast.stmt) for item in value):
+                yield value
+
+
 def _detect_dead_code(lines: list[str], path: str, findings: list[dict[str, Any]]) -> None:
     try:
         tree = ast.parse("\n".join(lines))
@@ -205,28 +216,28 @@ def _detect_dead_code(lines: list[str], path: str, findings: list[dict[str, Any]
         tree = None
 
     if tree is not None:
-        terminal_nodes = (ast.Return, ast.Raise, ast.Break, ast.Continue)
         reported_lines: set[int] = set()
-        for node in ast.walk(tree):
-            for _field, value in ast.iter_fields(node):
-                if not isinstance(value, list) or not value or not all(isinstance(item, ast.stmt) for item in value):
+        for block in _iter_python_statement_blocks(tree):
+            terminal_index = next(
+                (index for index, statement in enumerate(block) if isinstance(statement, _PYTHON_TERMINAL_STATEMENTS)),
+                None,
+            )
+            if terminal_index is None:
+                continue
+            for statement in block[terminal_index + 1:]:
+                if statement.lineno in reported_lines:
                     continue
-                terminated = False
-                for statement in value:
-                    if terminated and statement.lineno not in reported_lines:
-                        reported_lines.add(statement.lineno)
-                        _push_finding(
-                            findings,
-                            severity="medium",
-                            category="dead_code",
-                            rule_id="unreachable_code",
-                            path=path,
-                            line=statement.lineno,
-                            title="Potential unreachable code",
-                            detail="Code appears after an early exit statement in the same block.",
-                        )
-                        break
-                    terminated = isinstance(statement, terminal_nodes)
+                reported_lines.add(statement.lineno)
+                _push_finding(
+                    findings,
+                    severity="medium",
+                    category="dead_code",
+                    rule_id="unreachable_code",
+                    path=path,
+                    line=statement.lineno,
+                    title="Potential unreachable code",
+                    detail="Code appears after an early exit statement in the same block.",
+                )
         return
 
     for i in range(len(lines) - 1):

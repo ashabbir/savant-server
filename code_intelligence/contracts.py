@@ -3,7 +3,7 @@
 from datetime import datetime
 from enum import Enum
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
 
@@ -113,3 +113,16 @@ class Subgraph(BaseModel):
     edges: list[CodeEdge] = Field(default_factory=list)
     incomplete: bool = False
     warnings: list[str] = Field(default_factory=list)
+
+
+class SubgraphRequest(BaseModel):
+    """Provider-independent subgraph query accepted by service boundaries."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    roots: list[Any] = Field(min_length=1)
+    mode: Literal["neighbors", "callers", "callees", "impact"] = "neighbors"
+    depth: int = 1
+    limit: int = 100
+    edge_kinds: list[str] | None = None
+    direction: Literal["both", "upstream", "downstream"] = "both"

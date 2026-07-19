@@ -8,6 +8,7 @@ from context.db import ContextDB
 from db.jobs import JobDB
 
 from .provider import CodeIntelligenceError, ErrorCategory
+from .contracts import SubgraphRequest
 from .runtime import build_service
 
 code_intelligence_bp = Blueprint("code_intelligence", __name__)
@@ -110,9 +111,8 @@ def subgraph(repo_id):
         return error
     data = request.get_json(silent=True) or {}
     try:
-        result = build_service().subgraph(repo_id, Path(record["path"]), roots=data.get("roots") or [],
-            mode=data.get("mode", "neighbors"), depth=data.get("depth", 1), limit=data.get("limit", 100),
-            edge_kinds=data.get("edge_kinds"), direction=data.get("direction", "both"))
+        graph_request = SubgraphRequest.model_validate(data)
+        result = build_service().subgraph(repo_id, Path(record["path"]), graph_request)
         return jsonify(result.model_dump(mode="json"))
     except Exception as exc:
         return _error(exc)
@@ -196,7 +196,7 @@ def analysis(repo_id):
             if exact:
                 symbol_ref = {"id": exact[0].id}
         if symbol_ref:
-            topology = service.subgraph(repo_id, root, roots=[symbol_ref], mode="neighbors", depth=1, limit=100)
+            topology = service.subgraph(repo_id, root, SubgraphRequest(roots=[symbol_ref]))
             graph_metrics.update({"nodes": len(topology.symbols), "edges": len(topology.edges), "incomplete": topology.incomplete})
         else:
             graph_metrics["warnings"].append("symbol could not be resolved for graph metrics")

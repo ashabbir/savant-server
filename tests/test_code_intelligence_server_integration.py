@@ -41,7 +41,7 @@ def test_job_claim_is_atomic_and_uses_skip_locked(monkeypatch):
 
 
 def test_service_bounds_subgraph_depth_and_size(tmp_path):
-    from code_intelligence.contracts import Subgraph
+    from code_intelligence.contracts import Subgraph, SubgraphRequest
     from code_intelligence.service import CodeIntelligenceService
 
     class Provider:
@@ -57,8 +57,17 @@ def test_service_bounds_subgraph_depth_and_size(tmp_path):
         def get_provider(self, _repo_id): return Provider()
 
     service = CodeIntelligenceService(Registry(), authorize_repo=lambda *_args: None)
-    result = service.subgraph("repo-1", tmp_path, roots=[{"id": "symbol-1"}], mode="callers", depth=99, limit=9999)
+    request = SubgraphRequest(roots=[{"id": "symbol-1"}], mode="callers", depth=99, limit=9999)
+    result = service.subgraph("repo-1", tmp_path, request)
     assert result.symbols == []
+
+
+def test_subgraph_request_requires_at_least_one_root():
+    from pydantic import ValidationError
+    from code_intelligence.contracts import SubgraphRequest
+
+    with pytest.raises(ValidationError):
+        SubgraphRequest(roots=[])
 
 
 def test_source_route_rejects_parent_traversal(monkeypatch, tmp_path):

@@ -89,3 +89,37 @@ test('explicit cancellation terminates and replaces the assigned worker', async 
   assert.equal(operations.active.size, 0);
   operations.close();
 });
+
+test('successful writes enable watching and settle once', async () => {
+  const operations = new Operations({ baseRoots: [os.tmpdir()] });
+  operations.graph = async () => ({ watch: () => true });
+  const settled = [];
+  const state = {
+    repoId: 'repo', write: true,
+    worker: { terminate() {} },
+    finish(callback, value) { settled.push(value); callback(value); },
+    resolve() {}
+  };
+  const message = { ok: true, result: {} };
+
+  await operations.handleWorkerMessage({ params: {} }, state, message);
+
+  assert.equal(message.result.watching, true);
+  assert.equal(settled.length, 1);
+});
+
+test('successful writes tolerate watcher startup failures', async () => {
+  const operations = new Operations({ baseRoots: [os.tmpdir()] });
+  operations.graph = async () => { throw new Error('watch failed'); };
+  const state = {
+    repoId: 'repo', write: true,
+    worker: { terminate() {} },
+    finish(callback, value) { callback(value); },
+    resolve() {}
+  };
+  const message = { ok: true, result: {} };
+
+  await operations.handleWorkerMessage({ params: {} }, state, message);
+
+  assert.equal(message.result.watching, false);
+});
