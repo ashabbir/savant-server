@@ -19,7 +19,8 @@ echo "→ Building Docker image: $IMAGE_TAG ..."
 docker build \
   --build-arg SAVANT_UID="$(id -u)" \
   --build-arg SAVANT_GID="$(id -g)" \
-  -t "$IMAGE_TAG" .
+  -t "$IMAGE_TAG" \
+  -t "ashabbir/savant-server:latest" .
 
 echo ""
 echo "✔ Build complete."
