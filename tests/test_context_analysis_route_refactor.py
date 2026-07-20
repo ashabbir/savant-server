@@ -52,16 +52,21 @@ def test_research_route_explores_multiple_repositories(monkeypatch, client, tmp_
 
     class Service:
         def search_symbols(self, repo_id, root, query, **_kwargs):
-            symbol = SimpleNamespace(
-                id=f"symbol:{repo_id}",
-                kind="function",
-                name=f"run_{repo_id}",
-                location=SimpleNamespace(start_line=1, end_line=2, file_path="service.py"),
-                qualified_name=f"{repo_id}.run",
-                signature="()",
-            )
             return SimpleNamespace(
-                items=[symbol], provider="codegraph", incomplete=False, warnings=[]
+                items=[
+                    SimpleNamespace(
+                        id=f"symbol:{repo_id}:{index}",
+                        kind="function",
+                        name=f"run_{repo_id}_{index}",
+                        location=SimpleNamespace(start_line=1, end_line=2, file_path="service.py"),
+                        qualified_name=f"{repo_id}.run_{index}",
+                        signature="()",
+                    )
+                    for index in range(3)
+                ],
+                provider="codegraph",
+                incomplete=False,
+                warnings=[],
             )
 
         def explore(self, repo_id, root, query, **_kwargs):
@@ -79,7 +84,7 @@ def test_research_route_explores_multiple_repositories(monkeypatch, client, tmp_
 
     response = client.post(
         "/api/context/research",
-        json={"q": "run", "repo": ["repo-one", "repo-two"], "type": "code", "limit": 10},
+        json={"q": "run", "repo": ["repo-one", "repo-two"], "type": "code", "limit": 3},
     )
 
     assert response.status_code == 200
@@ -88,7 +93,7 @@ def test_research_route_explores_multiple_repositories(monkeypatch, client, tmp_
         "repo-one",
         "repo-two",
     }
-    graph_result = payload["code_graph_search"]["run_repo-one"]
+    graph_result = payload["code_graph_search"]["run_repo-one_0"]
     assert graph_result["provider"] == "multi_repo"
     assert set(graph_result["repositories"]) == {"repo-one", "repo-two"}
     assert {item["id"] for item in graph_result["symbols"]} == {

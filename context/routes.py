@@ -1131,7 +1131,7 @@ def context_research():
         if repo_ids:
             from code_intelligence.runtime import build_service
             service = build_service()
-            res = []
+            results_by_repo = []
             warnings = []
             incomplete = False
             providers = set()
@@ -1152,12 +1152,22 @@ def context_research():
                 providers.add(search_result.provider)
                 incomplete = incomplete or search_result.incomplete
                 warnings.extend(f"{repo_id}: {warning}" for warning in search_result.warnings)
-                res.extend({"id": s.id, "node_type": s.kind, "name": s.name,
-                            "start_line": s.location.start_line, "end_line": s.location.end_line,
-                            "rel_path": s.location.file_path, "repo": repo_id,
-                            "qualified_name": s.qualified_name, "signature": s.signature}
-                           for s in search_result.items)
-            res = res[:limit]
+                results_by_repo.append([
+                    {"id": s.id, "node_type": s.kind, "name": s.name,
+                     "start_line": s.location.start_line, "end_line": s.location.end_line,
+                     "rel_path": s.location.file_path, "repo": repo_id,
+                     "qualified_name": s.qualified_name, "signature": s.signature}
+                    for s in search_result.items
+                ])
+            res = []
+            for index in range(limit):
+                for repo_results in results_by_repo:
+                    if index < len(repo_results):
+                        res.append(repo_results[index])
+                        if len(res) == limit:
+                            break
+                if len(res) == limit:
+                    break
             provider = next(iter(providers)) if len(providers) == 1 else "multi_repo"
             if len(repo_ids) > 1:
                 provider = "multi_repo"
