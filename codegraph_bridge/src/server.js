@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import { Operations } from './operations.js';
 import { BridgeError, responseError } from './protocol.js';
+import { guardSocket } from './socket.js';
 
 const socketPath = process.env.SAVANT_CODEGRAPH_SOCKET || '/run/savant/codegraph.sock';
 const baseRoots = (process.env.SAVANT_CODEGRAPH_BASE_ROOTS || process.env.BASE_CODE_DIR || '/base-code').split(':').filter(Boolean);
@@ -20,6 +21,7 @@ fs.mkdirSync(new URL('.', `file://${socketPath}`).pathname, { recursive: true })
 try { fs.unlinkSync(socketPath); } catch (error) { if (error.code !== 'ENOENT') throw error; }
 
 const server = net.createServer(socket => {
+  guardSocket(socket);
   let buffer = '';
   socket.setEncoding('utf8');
   socket.on('data', chunk => {
