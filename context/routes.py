@@ -1092,6 +1092,11 @@ def context_research():
         return jsonify({"error": "q required", "overview": {}, "impact_surface": {}}), 400
 
     repo = data.get("repo")
+    repo_ids = []
+    if isinstance(repo, str):
+        repo_ids = [item.strip() for item in repo.split(",") if item.strip()]
+    elif isinstance(repo, list):
+        repo_ids = [str(item).strip() for item in repo if str(item).strip()]
     search_type = (data.get("type") or "all").lower().strip()
     allowed_types = ("all", "code", "memory")
     if search_type not in allowed_types:
@@ -1123,19 +1128,41 @@ def context_research():
         return {"query": q, "result_count": len(res[:limit]), "results": res[:limit]}
 
     def _exec_structure_search():
-        if repo and isinstance(repo, str) and "," not in repo:
-            record = ContextDB.get_repo(repo)
-            if record:
-                from code_intelligence.runtime import build_service
-                search_result = build_service().search_symbols(repo, _resolve_repo_path(record["path"]), q, limit=limit)
-                res = [{"id": s.id, "node_type": s.kind, "name": s.name,
-                        "start_line": s.location.start_line, "end_line": s.location.end_line,
-                        "rel_path": s.location.file_path, "repo": repo,
-                        "qualified_name": s.qualified_name, "signature": s.signature}
-                       for s in search_result.items]
-                return {"query": q, "result_count": len(res), "results": res,
-                        "provider": search_result.provider, "incomplete": search_result.incomplete,
-                        "warnings": search_result.warnings}
+        if repo_ids:
+            from code_intelligence.runtime import build_service
+            service = build_service()
+            res = []
+            warnings = []
+            incomplete = False
+            providers = set()
+            for repo_id in repo_ids:
+                record = ContextDB.get_repo(repo_id)
+                if not record:
+                    warnings.append(f"{repo_id}: repository not found")
+                    incomplete = True
+                    continue
+                try:
+                    search_result = service.search_symbols(
+                        repo_id, _resolve_repo_path(record["path"]), q, limit=limit
+                    )
+                except Exception as exc:
+                    warnings.append(f"{repo_id}: {exc}")
+                    incomplete = True
+                    continue
+                providers.add(search_result.provider)
+                incomplete = incomplete or search_result.incomplete
+                warnings.extend(f"{repo_id}: {warning}" for warning in search_result.warnings)
+                res.extend({"id": s.id, "node_type": s.kind, "name": s.name,
+                            "start_line": s.location.start_line, "end_line": s.location.end_line,
+                            "rel_path": s.location.file_path, "repo": repo_id,
+                            "qualified_name": s.qualified_name, "signature": s.signature}
+                           for s in search_result.items)
+            res = res[:limit]
+            provider = next(iter(providers)) if len(providers) == 1 else "multi_repo"
+            if len(repo_ids) > 1:
+                provider = "multi_repo"
+            return {"query": q, "result_count": len(res), "results": res,
+                    "provider": provider, "incomplete": incomplete, "warnings": warnings}
         repo_filter = repo.split(",") if repo and isinstance(repo, str) and "," in repo else repo
         res = ContextDB.search_ast_nodes(q, repo_filter=repo_filter)
         if should_exclude_tests:
@@ -1152,19 +1179,57 @@ def context_research():
         return {"query": q, "result_count": len(res), "results": res}
 
     def _exec_graph_search(g_query):
-        if not isinstance(repo, str) or "," in repo:
-            return {"error": "explicit single repo is required for structural exploration"}
-        record = ContextDB.get_repo(repo)
-        if not record:
-            return {"error": "repository not found"}
         from code_intelligence.runtime import build_service
-        explored = build_service().explore(repo, _resolve_repo_path(record["path"]), g_query, max_files=min(limit, 20))
+        if not repo_ids:
+            return {"error": "explicit repo is required for structural exploration"}
+
+        service = build_service()
+        repository_results = {}
+        combined_symbols = []
+        combined_edges = []
+        combined_warnings = []
+        incomplete = False
+        for repo_id in repo_ids:
+            record = ContextDB.get_repo(repo_id)
+            if not record:
+                repository_results[repo_id] = {"error": "repository not found"}
+                combined_warnings.append(f"{repo_id}: repository not found")
+                incomplete = True
+                continue
+            try:
+                explored = service.explore(
+                    repo_id,
+                    _resolve_repo_path(record["path"]),
+                    g_query,
+                    max_files=min(limit, 20),
+                )
+            except Exception as exc:
+                repository_results[repo_id] = {"error": str(exc)}
+                combined_warnings.append(f"{repo_id}: {exc}")
+                incomplete = True
+                continue
+            repo_result = {
+                "provider": explored.provider,
+                "incomplete": explored.incomplete,
+                "warnings": explored.warnings,
+                "symbols": [s.model_dump(mode="json") for s in explored.symbols],
+                "edges": [e.model_dump(mode="json") for e in explored.edges],
+            }
+            repository_results[repo_id] = repo_result
+            incomplete = incomplete or explored.incomplete
+            combined_warnings.extend(f"{repo_id}: {warning}" for warning in explored.warnings)
+            combined_symbols.extend(repo_result["symbols"])
+            combined_edges.extend(repo_result["edges"])
+
+        if len(repo_ids) == 1 and repo_ids[0] in repository_results:
+            return repository_results[repo_ids[0]]
         return {
-            "provider": explored.provider,
-            "incomplete": explored.incomplete,
-            "warnings": explored.warnings,
-            "symbols": [s.model_dump(mode="json") for s in explored.symbols],
-            "edges": [e.model_dump(mode="json") for e in explored.edges],
+            "provider": "multi_repo",
+            "incomplete": incomplete,
+            "warnings": combined_warnings,
+            "symbols": combined_symbols,
+            "edges": combined_edges,
+            "repositories": repository_results,
         }
 
     with ThreadPoolExecutor(max_workers=8) as executor:
