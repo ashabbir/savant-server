@@ -26,6 +26,21 @@ class WorkspaceSessionLinkDB:
         return _row_to_dict(row)
 
     @staticmethod
+    def list_all(user_id: str = "") -> list[dict]:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT workspace_id, provider, session_id, attached_at
+                       FROM workspace_session_links
+                       ORDER BY attached_at DESC"""
+                )
+                rows = cur.fetchall()
+            return [_row_to_dict(r) for r in rows]
+        finally:
+            release_connection(conn)
+
+    @staticmethod
     def list_by_workspace(workspace_id: str) -> list[dict]:
         conn = get_connection()
         try:

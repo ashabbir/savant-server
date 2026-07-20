@@ -70,7 +70,7 @@ class WorkspaceDB:
             release_connection(conn)
 
     @staticmethod
-    def list_all(status: str | None = None, limit: int = 1000, user_id: str = "") -> list[dict]:
+    def list_all(status: str | None = None, limit: int = 1000, user_id: str = "", include_archived: bool = False) -> list[dict]:
         conn = get_connection()
         try:
             clauses = []
