@@ -62,7 +62,7 @@ services:
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
     volumes:
       - ${SAVANT_DATA_DIR:-~/.savant/server-data}:/data/savant
-      - ${BASE_CODE_HOST_DIR:-/Users/home/code}:/base-code:rw
+      - ${BASE_CODE_HOST_DIR:-/Users/home/base-code}:/base-code:rw
     healthcheck:
       test: ["CMD-SHELL", "node /app/codegraph_bridge/src/healthcheck.js && python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health/ready', timeout=3)\""]
       interval: 15s
