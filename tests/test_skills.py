@@ -36,6 +36,69 @@ def test_skills_management_rbac(client):
     # Should be 400 because no file attached, not 403
     assert resp.status_code == 400
 
+
+def test_create_generated_skill_writes_arbitrary_files_atomically(client):
+    payload = {
+        "name": "summarize-releases",
+        "description": "Summarize release history",
+        "files": [
+            {
+                "path": "SKILL.md",
+                "content": "---\nname: summarize-releases\ndescription: Summarize releases\n---\n\n# Workflow\n",
+            },
+            {"path": "scripts/summarize.py", "content": "print('ok')\n"},
+            {"path": "references/format.md", "content": "# Output format\n"},
+        ],
+    }
+
+    resp = client.post(
+        "/api/skills",
+        json=payload,
+        headers={"X-API-Key": "sk-ahmed-savant-001"},
+    )
+
+    assert resp.status_code == 201
+    assert resp.get_json()["id"] == "summarize-releases"
+    skill_dir = SKILLS_DIR / "summarize-releases"
+    assert (skill_dir / "SKILL.md").read_text() == payload["files"][0]["content"]
+    assert (skill_dir / "scripts" / "summarize.py").read_text() == "print('ok')\n"
+    assert (skill_dir / "metadata.json").exists()
+
+
+def test_create_generated_skill_validates_paths_and_required_skill_file(client):
+    headers = {"X-API-Key": "sk-ahmed-savant-001"}
+    unsafe = client.post(
+        "/api/skills",
+        json={"name": "unsafe-skill", "files": [{"path": "../escape", "content": "no"}]},
+        headers=headers,
+    )
+    assert unsafe.status_code == 400
+    assert not (SKILLS_DIR / "unsafe-skill").exists()
+
+    missing_manifest = client.post(
+        "/api/skills",
+        json={"name": "missing-manifest", "files": [{"path": "notes.md", "content": "no"}]},
+        headers=headers,
+    )
+    assert missing_manifest.status_code == 400
+    assert "SKILL.md is required" in missing_manifest.get_json()["error"]
+
+
+def test_update_generated_skill_file(client):
+    skill_dir = SKILLS_DIR / "editable-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("before")
+    (skill_dir / "metadata.json").write_text('{"id":"editable-skill","title":"editable-skill"}')
+
+    resp = client.put(
+        "/api/skills/editable-skill/file?path=SKILL.md",
+        json={"content": "after"},
+        headers={"X-API-Key": "sk-ahmed-savant-001"},
+    )
+
+    assert resp.status_code == 200
+    assert (skill_dir / "SKILL.md").read_text() == "after"
+
 def test_skills_file_exploration(client):
     # Setup: Create a fake skill
     import os

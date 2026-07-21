@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import logging
 import io
+import re
 from server_paths import get_server_data_dir
 
 skills_bp = Blueprint("skills", __name__, url_prefix="/api/skills")
@@ -22,6 +23,11 @@ SKILLS_DIR = Path(
 )
 SKILLS_DIR.mkdir(parents=True, exist_ok=True)
 
+MAX_SKILL_FILES = 128
+MAX_SKILL_FILE_BYTES = 1024 * 1024
+MAX_SKILL_TOTAL_BYTES = 4 * 1024 * 1024
+SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -29,6 +35,83 @@ def _now_iso() -> str:
 
 def _safe_rel_path(rel_path: str) -> bool:
     return not (rel_path.startswith("/") or ".." in Path(rel_path).parts)
+
+
+def _validated_skill_files(raw_files) -> dict[str, str]:
+    if isinstance(raw_files, dict):
+        entries = [{"path": path, "content": content} for path, content in raw_files.items()]
+    elif isinstance(raw_files, list):
+        entries = raw_files
+    else:
+        raise ValueError("files must be an object or an array of path/content entries")
+
+    if not entries or len(entries) > MAX_SKILL_FILES:
+        raise ValueError(f"files must contain between 1 and {MAX_SKILL_FILES} entries")
+
+    files: dict[str, str] = {}
+    total_bytes = 0
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError("each file must contain path and content")
+        rel_path = str(entry.get("path", "")).strip().replace("\\", "/")
+        content = entry.get("content")
+        path_parts = Path(rel_path).parts
+        if (not rel_path or not _safe_rel_path(rel_path) or Path(rel_path).is_absolute()
+                or any(part in ("", ".") for part in path_parts)):
+            raise ValueError(f"unsafe skill file path: {rel_path or '<empty>'}")
+        if rel_path == "metadata.json":
+            raise ValueError("metadata.json is managed by the server")
+        if rel_path in files:
+            raise ValueError(f"duplicate skill file path: {rel_path}")
+        if any(existing.startswith(f"{rel_path}/") or rel_path.startswith(f"{existing}/") for existing in files):
+            raise ValueError(f"skill file conflicts with another path: {rel_path}")
+        if not isinstance(content, str):
+            raise ValueError(f"skill file content must be text: {rel_path}")
+        content_bytes = len(content.encode("utf-8"))
+        if content_bytes > MAX_SKILL_FILE_BYTES:
+            raise ValueError(f"skill file is too large: {rel_path}")
+        total_bytes += content_bytes
+        if total_bytes > MAX_SKILL_TOTAL_BYTES:
+            raise ValueError("skill files exceed the total size limit")
+        files[rel_path] = content
+
+    if "SKILL.md" not in files:
+        raise ValueError("SKILL.md is required")
+    return files
+
+
+def _create_skill_from_json(data: dict):
+    name = str(data.get("name", "")).strip().lower()
+    if not SKILL_NAME_RE.fullmatch(name) or len(name) > 64:
+        raise ValueError("name must be 1-64 lowercase letters, digits, or hyphen-separated words")
+    if (SKILLS_DIR / name).exists() or _has_duplicate_title(name):
+        return None, (jsonify({"error": f"Skill title '{name}' already exists"}), 409)
+
+    files = _validated_skill_files(data.get("files"))
+    now = _now_iso()
+    meta = {
+        "id": name,
+        "title": name,
+        "description": str(data.get("description", "")).strip(),
+        "uploaded_by": g.user_id,
+        "status": "active",
+        "created_at": now,
+        "updated_at": now,
+    }
+    temp_path = SKILLS_DIR / f".creating-{uuid.uuid4().hex}"
+    final_path = SKILLS_DIR / name
+    try:
+        temp_path.mkdir(parents=True, exist_ok=False)
+        for rel_path, content in files.items():
+            target = temp_path / rel_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+        _write_meta(temp_path, meta)
+        os.replace(temp_path, final_path)
+    except Exception:
+        shutil.rmtree(temp_path, ignore_errors=True)
+        raise
+    return {**meta, "files": files}, None
 
 
 def _safe_extract_zip(archive_path: Path, target_dir: Path) -> None:
@@ -199,7 +282,7 @@ def list_skill_files(skill_id):
     files.sort()
     return jsonify({"files": files})
 
-@skills_bp.route("/<skill_id>/file", methods=["GET"])
+@skills_bp.route("/<skill_id>/file", methods=["GET", "PUT"])
 @admin_required
 def get_skill_file(skill_id):
     file_path = request.args.get("path")
@@ -208,8 +291,34 @@ def get_skill_file(skill_id):
         
     skill_path = (SKILLS_DIR / skill_id).resolve()
     target_path = (skill_path / file_path).resolve()
-    
-    if not target_path.exists() or not str(target_path).startswith(str(skill_path)):
+
+    if not skill_path.exists() or not str(skill_path).startswith(str(SKILLS_DIR.resolve()) + os.sep):
+        return jsonify({"error": "Skill not found"}), 404
+    if not str(target_path).startswith(str(skill_path) + os.sep):
+        return jsonify({"error": "File not found or access denied"}), 404
+
+    if request.method == "PUT":
+        if file_path == "metadata.json":
+            return jsonify({"error": "metadata.json is managed by the server"}), 400
+        data = request.get_json(silent=True) or {}
+        content = data.get("content")
+        if not isinstance(content, str):
+            return jsonify({"error": "content must be text"}), 400
+        if len(content.encode("utf-8")) > MAX_SKILL_FILE_BYTES:
+            return jsonify({"error": "Skill file is too large"}), 400
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = target_path.with_name(f".{target_path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            temp_path.write_text(content, encoding="utf-8")
+            os.replace(temp_path, target_path)
+        finally:
+            temp_path.unlink(missing_ok=True)
+        meta = _read_meta(skill_path)
+        meta["updated_at"] = _now_iso()
+        _write_meta(skill_path, meta)
+        return jsonify({"path": file_path, "content": content})
+
+    if not target_path.exists():
         return jsonify({"error": "File not found or access denied"}), 404
     if not _looks_like_text_file(target_path):
         return jsonify({"error": "Binary files are not supported for skill content API"}), 400
@@ -223,6 +332,18 @@ def get_skill_file(skill_id):
 @skills_bp.route("", methods=["POST"])
 @admin_required
 def upload_skill():
+    if request.is_json:
+        try:
+            created, error_response = _create_skill_from_json(request.get_json(silent=True) or {})
+            if error_response:
+                return error_response
+            return jsonify(created), 201
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            logger.exception("Failed creating generated skill")
+            return jsonify({"error": f"Failed to create skill: {exc}"}), 500
+
     if "file" not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
     file = request.files["file"]
