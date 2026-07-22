@@ -8,6 +8,7 @@ The MCP server and (future) UI both call these endpoints.
 import io
 import logging
 import os
+import tarfile
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -231,28 +232,41 @@ def stats():
         return jsonify({"error": str(e)}), 500
 
 
-# ── GET /api/abilities/export — download all abilities as a zip ──────────────
+# ── GET /api/abilities/export — download the abilities directory tree ────────
 
 @abilities_bp.route("/api/abilities/export", methods=["GET"])
 def export_abilities():
     try:
+        archive_format = request.args.get("format", "zip").strip().lower()
+        if archive_format not in {"zip", "tar"}:
+            return jsonify({"error": "format must be zip or tar"}), 400
         base_dir = Path(str(get_server_abilities_base_dir())) / "abilities"
         buf = io.BytesIO()
         count = 0
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            if base_dir.exists():
-                for cat in _CATEGORIES:
-                    cat_dir = base_dir / cat
-                    if not cat_dir.exists():
-                        continue
-                    for path in cat_dir.rglob("*.md"):
-                        arcname = str(Path("abilities") / path.relative_to(base_dir))
-                        zf.write(path, arcname)
-                        count += 1
+        paths = []
+        if base_dir.exists():
+            paths = sorted(
+                path for path in base_dir.rglob("*")
+                if path.is_file() and not path.is_symlink()
+            )
+        if archive_format == "zip":
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                for path in paths:
+                    arcname = str(Path("abilities") / path.relative_to(base_dir))
+                    zf.write(path, arcname)
+                    count += 1
+            mimetype, extension = "application/zip", "zip"
+        else:
+            with tarfile.open(fileobj=buf, mode="w") as tf:
+                for path in paths:
+                    arcname = str(Path("abilities") / path.relative_to(base_dir))
+                    tf.add(path, arcname=arcname, recursive=False)
+                    count += 1
+            mimetype, extension = "application/x-tar", "tar"
         buf.seek(0)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        filename = f"savant-abilities-{stamp}.zip"
-        resp = send_file(buf, mimetype="application/zip", as_attachment=True, download_name=filename)
+        filename = f"savant-abilities-{stamp}.{extension}"
+        resp = send_file(buf, mimetype=mimetype, as_attachment=True, download_name=filename)
         resp.headers["X-Abilities-Count"] = str(count)
         return resp
     except Exception as e:
@@ -260,50 +274,68 @@ def export_abilities():
         return jsonify({"error": str(e)}), 500
 
 
-# ── POST /api/abilities/import — upload zip, extract into abilities dir ──────
+# ── POST /api/abilities/import — insert missing files from ZIP or TAR ────────
 
 @abilities_bp.route("/api/abilities/import", methods=["POST"])
+@admin_required
 def import_abilities():
     try:
-        # Accept either multipart "file" upload or raw application/zip body.
+        # Accept either multipart "file" upload or a raw ZIP/TAR body.
         if "file" in request.files:
             blob = request.files["file"].read()
         else:
             blob = request.get_data() or b""
         if not blob:
-            return jsonify({"error": "zip body required (multipart 'file' or raw application/zip)"}), 400
+            return jsonify({"error": "archive required (multipart 'file' or raw ZIP/TAR body)"}), 400
 
         base_dir = Path(str(get_server_abilities_base_dir())) / "abilities"
         base_dir.mkdir(parents=True, exist_ok=True)
 
         imported, skipped = [], []
-        try:
+        def insert_file(name: str, content: bytes) -> None:
+            normalized = name.replace("\\", "/")
+            rel = normalized[len("abilities/"):] if normalized.startswith("abilities/") else normalized
+            parts = Path(rel).parts
+            if not rel or not parts or any(part in {"", ".", ".."} for part in parts):
+                skipped.append({"name": normalized, "reason": "invalid_path"})
+                return
+            dest = (base_dir / rel).resolve()
+            try:
+                dest.relative_to(base_dir.resolve())
+            except ValueError:
+                skipped.append({"name": normalized, "reason": "path_outside_base"})
+                return
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with dest.open("xb") as output:
+                    output.write(content)
+            except FileExistsError:
+                skipped.append({"name": normalized, "reason": "already_exists"})
+                return
+            imported.append(rel)
+
+        if zipfile.is_zipfile(io.BytesIO(blob)):
             with zipfile.ZipFile(io.BytesIO(blob), "r") as zf:
                 for info in zf.infolist():
                     if info.is_dir():
                         continue
-                    name = info.filename.replace("\\", "/")
-                    # Strip an optional leading "abilities/" prefix.
-                    rel = name[len("abilities/"):] if name.startswith("abilities/") else name
-                    if not rel.endswith(".md"):
-                        skipped.append({"name": name, "reason": "not_markdown"})
-                        continue
-                    parts = rel.split("/")
-                    if not parts or parts[0] not in _CATEGORIES:
-                        skipped.append({"name": name, "reason": "unknown_category"})
-                        continue
-                    # zip-slip protection: resolve and ensure inside base_dir
-                    dest = (base_dir / rel).resolve()
-                    try:
-                        dest.relative_to(base_dir.resolve())
-                    except ValueError:
-                        skipped.append({"name": name, "reason": "path_outside_base"})
-                        continue
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    dest.write_bytes(zf.read(info))
-                    imported.append(rel)
-        except zipfile.BadZipFile:
-            return jsonify({"error": "invalid zip archive"}), 400
+                    insert_file(info.filename, zf.read(info))
+        else:
+            try:
+                with tarfile.open(fileobj=io.BytesIO(blob), mode="r:*") as tf:
+                    for member in tf.getmembers():
+                        if member.isdir():
+                            continue
+                        if not member.isfile():
+                            skipped.append({"name": member.name, "reason": "unsupported_entry"})
+                            continue
+                        source = tf.extractfile(member)
+                        if source is None:
+                            skipped.append({"name": member.name, "reason": "unreadable_entry"})
+                            continue
+                        insert_file(member.name, source.read())
+            except tarfile.TarError:
+                return jsonify({"error": "invalid ZIP or TAR archive"}), 400
 
         # Drop singletons so the next request reloads from disk.
         global _store, _resolver

@@ -4,6 +4,7 @@ and confirm the assets are restored byte-for-byte."""
 import io
 import os
 import shutil
+import tarfile
 import zipfile
 from pathlib import Path
 
@@ -87,7 +88,7 @@ def test_import_rejects_zip_slip(client, abilities_base):
     payload = resp.get_json()
     assert "rules/legit.md" in payload["imported"]
     reasons = {s["reason"] for s in payload["skipped"]}
-    assert "path_outside_base" in reasons or "unknown_category" in reasons
+    assert "invalid_path" in reasons or "path_outside_base" in reasons
 
 
 def test_import_rejects_bad_zip(client, abilities_base):
@@ -97,3 +98,49 @@ def test_import_rejects_bad_zip(client, abilities_base):
         headers={"Content-Type": "application/zip"},
     )
     assert resp.status_code == 400
+
+
+def test_import_skips_existing_files_without_overwriting(client, abilities_base):
+    original = (abilities_base / "personas" / "alpha.md").read_bytes()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("abilities/personas/alpha.md", b"replacement must not win")
+        zf.writestr(
+            "abilities/rules/new.md",
+            b"---\nid: rule.new\ntype: rule\ntags: []\npriority: 1\n---\nnew\n",
+        )
+        zf.writestr("abilities/clients/acme.md", b"client migration data")
+
+    resp = client.post(
+        "/api/abilities/import",
+        data=buf.getvalue(),
+        headers={"Content-Type": "application/zip"},
+    )
+
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert payload["imported"] == ["rules/new.md", "clients/acme.md"]
+    assert {item["reason"] for item in payload["skipped"]} == {"already_exists"}
+    assert (abilities_base / "personas" / "alpha.md").read_bytes() == original
+    assert (abilities_base / "clients" / "acme.md").read_bytes() == b"client migration data"
+
+
+def test_tar_export_and_import_preserve_directory_structure(client, abilities_base):
+    exported = client.get("/api/abilities/export?format=tar")
+    assert exported.status_code == 200
+    assert exported.mimetype == "application/x-tar"
+    with tarfile.open(fileobj=io.BytesIO(exported.data), mode="r:") as tf:
+        assert "abilities/personas/alpha.md" in tf.getnames()
+        assert "abilities/rules/core.md" in tf.getnames()
+
+    shutil.rmtree(abilities_base)
+    abilities_base.mkdir(parents=True)
+    imported = client.post(
+        "/api/abilities/import",
+        data=exported.data,
+        headers={"Content-Type": "application/x-tar"},
+    )
+
+    assert imported.status_code == 200
+    assert imported.get_json()["imported_count"] == 2
+    assert (abilities_base / "personas" / "alpha.md").exists()
