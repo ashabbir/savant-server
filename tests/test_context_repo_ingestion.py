@@ -243,6 +243,65 @@ def test_repository_sync_uses_provider_credentials_and_redacts_token():
     assert str(error) == "denied for [REDACTED]"
 
 
+def test_repository_sync_clone_falls_back_to_anonymous_for_public_repo(tmp_path, monkeypatch):
+    from context.ingestion import RepositorySyncService
+
+    calls = []
+
+    class FakeRepo:
+        def close(self):
+            pass
+
+    def fake_clone(_url, target, **kwargs):
+        calls.append({key: kwargs[key] for key in ("username", "password") if key in kwargs})
+        if "username" in kwargs:
+            raise RuntimeError("No valid credentials provided")
+        (Path(target) / ".git").mkdir()
+        return FakeRepo()
+
+    monkeypatch.setattr("context.ingestion.porcelain.clone", fake_clone)
+
+    target = tmp_path / "public-repo"
+    RepositorySyncService().clone(
+        target,
+        "https://gitlab.example.org/group/public-repo.git",
+        "gitlab",
+        "invalid-for-host",
+        None,
+    )
+
+    assert calls == [
+        {"username": "oauth2", "password": "invalid-for-host"},
+        {},
+    ]
+    assert (target / ".git").is_dir()
+
+
+def test_repository_sync_fetch_falls_back_to_anonymous_for_public_repo(monkeypatch):
+    from context.ingestion import RepositorySyncService
+
+    calls = []
+    expected = object()
+
+    def fake_fetch(_repo, _remote, **kwargs):
+        calls.append({key: kwargs[key] for key in ("username", "password") if key in kwargs})
+        if "username" in kwargs:
+            raise RuntimeError("No valid credentials provided")
+        return expected
+
+    monkeypatch.setattr("context.ingestion.porcelain.fetch", fake_fetch)
+
+    result = RepositorySyncService._fetch_with_public_fallback(
+        object(), "gitlab", "invalid-for-host",
+    )
+
+    assert result is expected
+    assert calls == [
+        {"username": "oauth2", "password": "invalid-for-host"},
+        {},
+    ]
+
+
 def test_add_repo_route_updates_existing_repo_without_duplicate(client, monkeypatch):
     from context import routes
     from context import db as context_db

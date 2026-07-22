@@ -60,6 +60,7 @@ services:
       SAVANT_API_ONLY: "1"
       SAVANT_API_KEY: "sk-ahmed-savant-001"
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITLAB_TOKEN: ${GITLAB_TOKEN:-}
     volumes:
       - ${SAVANT_DATA_DIR:-~/.savant/server-data}:/data/savant
       - ${BASE_CODE_HOST_DIR:-/Users/home/base-code}:/base-code:rw

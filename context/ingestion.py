@@ -336,26 +336,33 @@ class RepositorySyncService:
         branch: Optional[str],
     ) -> None:
         with self._lock(target_path):
-            temporary_path = Path(
-                tempfile.mkdtemp(
-                    prefix=f".{target_path.name}.savant-clone-",
-                    dir=str(target_path.parent),
+            authenticated_error = None
+            for credentials in (self._credentials(provider, token), {}):
+                temporary_path = Path(
+                    tempfile.mkdtemp(
+                        prefix=f".{target_path.name}.savant-clone-",
+                        dir=str(target_path.parent),
+                    )
                 )
-            )
-            try:
-                porcelain.clone(
-                    safe_url,
-                    temporary_path,
-                    branch=branch,
-                    errstream=io.BytesIO(),
-                    **self._credentials(provider, token),
-                ).close()
-                temporary_path.replace(target_path)
-            except Exception as exc:
-                raise self._ingestion_error(exc, token) from exc
-            finally:
-                if temporary_path.exists():
-                    shutil.rmtree(temporary_path, ignore_errors=True)
+                try:
+                    porcelain.clone(
+                        safe_url,
+                        temporary_path,
+                        branch=branch,
+                        errstream=io.BytesIO(),
+                        **credentials,
+                    ).close()
+                    temporary_path.replace(target_path)
+                    return
+                except Exception as exc:
+                    if credentials:
+                        authenticated_error = exc
+                        continue
+                    error = authenticated_error or exc
+                    raise self._ingestion_error(error, token) from error
+                finally:
+                    if temporary_path.exists():
+                        shutil.rmtree(temporary_path, ignore_errors=True)
 
     def update(
         self,
@@ -370,16 +377,7 @@ class RepositorySyncService:
             try:
                 repo = Repo(str(target_path))
                 self._set_origin_url(repo, safe_url)
-                fetch_result = porcelain.fetch(
-                    repo,
-                    "origin",
-                    prune=True,
-                    force=True,
-                    quiet=True,
-                    outstream=io.StringIO(),
-                    errstream=io.BytesIO(),
-                    **self._credentials(provider, token),
-                )
+                fetch_result = self._fetch_with_public_fallback(repo, provider, token)
                 selected_branch = branch or self._default_branch(repo, fetch_result)
                 remote_ref = f"refs/remotes/origin/{selected_branch}".encode()
                 try:
@@ -404,6 +402,27 @@ class RepositorySyncService:
     def _credentials(provider: str, token: str) -> Dict[str, str]:
         username = "x-access-token" if provider == "github" else "oauth2"
         return {"username": username, "password": token}
+
+    @classmethod
+    def _fetch_with_public_fallback(cls, repo: Repo, provider: str, token: str):
+        authenticated_error = None
+        for credentials in (cls._credentials(provider, token), {}):
+            try:
+                return porcelain.fetch(
+                    repo,
+                    "origin",
+                    prune=True,
+                    force=True,
+                    quiet=True,
+                    outstream=io.StringIO(),
+                    errstream=io.BytesIO(),
+                    **credentials,
+                )
+            except Exception as exc:
+                if credentials:
+                    authenticated_error = exc
+                    continue
+                raise authenticated_error or exc
 
     @staticmethod
     def _set_origin_url(repo: Repo, safe_url: str) -> None:
