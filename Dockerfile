@@ -23,6 +23,7 @@ COPY --from=codegraph-runtime /bridge/node_modules /app/codegraph_bridge/node_mo
 # Overlay the checked-out server source, including the Git ingestion fix.
 # .dockerignore excludes local credentials such as .env.
 COPY --chown=savant:savant . /app
-RUN chmod +x /app/docker-entrypoint.sh
+RUN python -m pip install --no-cache-dir "$(grep '^dulwich' /app/requirements.txt)" \
+    && chmod +x /app/docker-entrypoint.sh
 
 USER savant
