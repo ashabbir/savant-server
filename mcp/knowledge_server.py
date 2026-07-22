@@ -167,7 +167,8 @@ def store(
     node_type:    The type of node to create. Determines how the node is
                   categorized and displayed.
                   Valid values: insight | client | domain | service | library |
-                  technology | project | concept | repo | session | issue
+                  technology | project | concept | repo | session | issue |
+                  person | operation | organization
                   Default: 'insight'
     graph_type:   Optional classification for which knowledge graph/namespace
                   this node belongs to. Use this to organize nodes into logical

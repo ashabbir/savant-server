@@ -145,7 +145,8 @@ def _rewire_absorbed_edges(cur, survivor_id: str, absorbed_ids: list[str]) -> No
 
 
 VALID_NODE_TYPES = {"insight", "project", "session", "concept", "repo",
-                   "client", "domain", "service", "library", "technology", "issue", "person"}
+                   "client", "domain", "service", "library", "technology", "issue", "person",
+                   "operation", "organization"}
 VALID_EDGE_TYPES = {"relates_to", "learned_from", "applies_to", "uses",
                    "evolved_from", "contributed_to", "part_of",
                    "integrates_with", "depends_on", "built_with"}

@@ -22,6 +22,19 @@ class TestIssueNodeType:
     def test_person_in_valid_node_types(self):
         assert "person" in VALID_NODE_TYPES
 
+    @pytest.mark.parametrize("node_type", ["operation", "organization"])
+    def test_operational_node_types_are_valid(self, node_type):
+        assert node_type in VALID_NODE_TYPES
+
+    @pytest.mark.parametrize("node_type", ["operation", "organization"])
+    def test_create_node_route_accepts_operational_node_types(self, client, node_type):
+        resp = client.post("/api/knowledge/nodes", json={
+            "title": f"Test {node_type}",
+            "node_type": node_type,
+        })
+        assert resp.status_code == 200
+        assert resp.get_json()["node_type"] == node_type
+
     def test_create_issue_node(self, _isolated_db):
         node = KnowledgeGraphDB.create_node({
             "title": "Login bug",
