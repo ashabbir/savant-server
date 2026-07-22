@@ -165,11 +165,9 @@ def api_llm_config():
 @preferences_bp.route("/version", methods=["GET"])
 @preferences_bp.route("/api/version", methods=["GET"])
 def api_version():
-    return jsonify({
-        "version": "1.0.0",
-        "app": "savant-server",
-        "status": "ok",
-    })
+    from server_version import get_build_info
+
+    return jsonify({**get_build_info(), "app": "savant-server", "status": "ok"})
 
 
 @preferences_bp.route("/api/utils/markdown", methods=["POST"])

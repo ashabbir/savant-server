@@ -203,12 +203,16 @@ def api_setup_mcp():
 
 @jobs_system_bp.route("/health/live", methods=["GET"])
 def health_live():
-    return jsonify({"status": "live"})
+    from server_version import get_build_info
+
+    return jsonify({"status": "live", **get_build_info()})
 
 
 @jobs_system_bp.route("/health/ready", methods=["GET"])
 def health_ready():
-    return jsonify({"status": "ready"})
+    from server_version import get_build_info
+
+    return jsonify({"status": "ready", **get_build_info()})
 
 
 @jobs_system_bp.route("/api/events", methods=["GET"])
