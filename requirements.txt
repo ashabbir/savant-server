@@ -5,6 +5,7 @@ pydantic>=2.11,<3
 psycopg2-binary>=2.9.9
 pgvector>=0.3.2
 pathspec>=0.11.0
+dulwich>=0.24,<0.25
 pygments>=2.15.0
 tree-sitter==0.21.3
 tree-sitter-languages>=1.10.2

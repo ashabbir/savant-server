@@ -82,7 +82,7 @@ def test_periodic_sync_pass_runs_for_all_projects(tmp_path, _isolated_db, monkey
         assert r["indexed"] is True
         assert r["graphed"] is True
 
-    # Verify logs were recorded in database table ctx_periodic_sync_logs
+    # Verify logs were recorded in the unified repository activity table.
     logs = ContextDB.list_periodic_sync_logs()
     assert len(logs) >= 2
     logged_repos = [l["repo_name"] for l in logs]
@@ -109,14 +109,21 @@ def test_periodic_sync_api_endpoints(client, _isolated_db, monkeypatch):
 
     monkeypatch.setattr(routes, "_ensure_init", lambda: True)
 
-    ContextDB.record_periodic_sync_log(
+    ContextDB.record_repo_sync_log(
         repo_name="demo-repo",
+        operation="periodic_refresh",
+        trigger="scheduled",
+        provider="github",
+        branch="main",
         status="success",
+        before_commit="abc123",
+        after_commit="def456",
         fetched=True,
         code_changed=True,
         indexed=True,
         graphed=True,
         details="Fetched origin (code_changed=True); Indexed; CodeGraph synced",
+        duration_ms=125,
     )
 
     # Status route
@@ -130,6 +137,16 @@ def test_periodic_sync_api_endpoints(client, _isolated_db, monkeypatch):
     data = resp.get_json()
     assert data["count"] >= 1
     assert data["logs"][0]["repo_name"] == "demo-repo"
+    assert data["logs"][0]["operation"] == "periodic_refresh"
+    assert data["logs"][0]["after_commit"] == "def456"
+
+    resp = client.get("/api/context/repos/sync-logs?repo_name=demo-repo")
+    assert resp.status_code == 200
+    assert resp.get_json()["logs"][0]["duration_ms"] == 125
+
+    resp = client.get("/api/context/repos/demo-repo/sync-logs")
+    assert resp.status_code == 200
+    assert resp.get_json()["logs"][0]["trigger"] == "scheduled"
 
     # Manual run route
     monkeypatch.setattr("context.periodic_runner.run_periodic_sync_now", lambda: {"count": 1, "results": []})

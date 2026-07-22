@@ -335,10 +335,15 @@ class ContextDB:
                 release_connection(conn)
 
     @staticmethod
-    def record_periodic_sync_log(repo_name: str, status: str, fetched: bool = False,
-                                 code_changed: bool = False, indexed: bool = False,
-                                 graphed: bool = False, details: str = "", conn=None) -> Dict[str, Any]:
-        """Persist a periodic 6-hour sync execution log entry into PostgreSQL."""
+    def record_repo_sync_log(repo_name: str, status: str, operation: str = "refresh",
+                             trigger: str = "manual", provider: str = "", branch: str = "",
+                             actor_id: str = "", source_app: str = "",
+                             before_commit: str = "", after_commit: str = "",
+                             fetched: bool = False, code_changed: bool = False,
+                             indexed: bool = False, graphed: bool = False,
+                             duration_ms: int = 0, error: str = "", details: str = "",
+                             conn=None) -> Dict[str, Any]:
+        """Persist one durable repository synchronization activity entry."""
         local_conn = False
         if conn is None:
             conn = get_connection()
@@ -346,34 +351,59 @@ class ContextDB:
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    """INSERT INTO ctx_periodic_sync_logs
-                       (repo_name, status, fetched, code_changed, indexed, graphed, details)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s)
-                       RETURNING id, repo_name, status, fetched, code_changed, indexed, graphed, details, created_at""",
-                    (repo_name, status, fetched, code_changed, indexed, graphed, details),
+                    """INSERT INTO ctx_repo_sync_logs
+                       (repo_name, operation, trigger, provider, branch, actor_id, source_app, status,
+                        before_commit, after_commit, fetched, code_changed, indexed,
+                        graphed, duration_ms, error, details)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                       RETURNING *""",
+                    (repo_name, operation, trigger, provider, branch, actor_id, source_app, status,
+                     before_commit, after_commit, fetched, code_changed, indexed,
+                     graphed, max(0, int(duration_ms)), error, details),
                 )
                 row = cur.fetchone()
             conn.commit()
-            return dict(row) if row else {}
+            result = dict(row) if row else {}
+            logger.info(
+                "Repository sync activity repo=%s operation=%s trigger=%s status=%s "
+                "provider=%s branch=%s actor=%s source_app=%s changed=%s duration_ms=%s",
+                repo_name, operation, trigger, status, provider, branch,
+                actor_id, source_app, code_changed, max(0, int(duration_ms)),
+            )
+            return result
         finally:
             if local_conn:
                 release_connection(conn)
 
     @staticmethod
-    def list_periodic_sync_logs(repo_name: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
-        """Retrieve recent periodic sync log entries."""
+    def list_repo_sync_logs(repo_name: Optional[str] = None, limit: int = 50,
+                            operation: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Retrieve recent repository synchronization activity entries."""
         conn = get_connection()
         try:
             with conn.cursor() as cur:
-                if repo_name:
+                if repo_name and operation:
                     cur.execute(
-                        """SELECT * FROM ctx_periodic_sync_logs
+                        """SELECT * FROM ctx_repo_sync_logs
+                           WHERE repo_name = %s AND operation = %s
+                           ORDER BY created_at DESC LIMIT %s""",
+                        (repo_name, operation, limit),
+                    )
+                elif repo_name:
+                    cur.execute(
+                        """SELECT * FROM ctx_repo_sync_logs
                            WHERE repo_name = %s ORDER BY created_at DESC LIMIT %s""",
                         (repo_name, limit),
                     )
+                elif operation:
+                    cur.execute(
+                        """SELECT * FROM ctx_repo_sync_logs
+                           WHERE operation = %s ORDER BY created_at DESC LIMIT %s""",
+                        (operation, limit),
+                    )
                 else:
                     cur.execute(
-                        """SELECT * FROM ctx_periodic_sync_logs
+                        """SELECT * FROM ctx_repo_sync_logs
                            ORDER BY created_at DESC LIMIT %s""",
                         (limit,),
                     )
@@ -381,6 +411,24 @@ class ContextDB:
             return [dict(r) for r in rows]
         finally:
             release_connection(conn)
+
+    @staticmethod
+    def record_periodic_sync_log(repo_name: str, status: str, fetched: bool = False,
+                                 code_changed: bool = False, indexed: bool = False,
+                                 graphed: bool = False, details: str = "", conn=None) -> Dict[str, Any]:
+        """Compatibility wrapper for the former periodic-only log API."""
+        return ContextDB.record_repo_sync_log(
+            repo_name=repo_name, status=status, operation="periodic_refresh",
+            trigger="scheduled", fetched=fetched, code_changed=code_changed,
+            indexed=indexed, graphed=graphed, details=details, conn=conn,
+        )
+
+    @staticmethod
+    def list_periodic_sync_logs(repo_name: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
+        """Compatibility wrapper for the former periodic-only log API."""
+        return ContextDB.list_repo_sync_logs(
+            repo_name=repo_name, limit=limit, operation="periodic_refresh"
+        )
 
     # ------------------------------------------------------------------
     # File & chunk operations

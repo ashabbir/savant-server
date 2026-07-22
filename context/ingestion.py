@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import io
 import os
 import re
-import stat
-import subprocess
+import shutil
 import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterator, Optional
 from urllib.parse import urlparse, urlunparse
+
+import fcntl
+from dulwich import porcelain
+from dulwich.repo import Repo
 
 
 class IngestionError(Exception):
@@ -45,22 +49,23 @@ class IngestedProject:
     path: str
     changed: bool = False
     provider: str = "git"
+    operation: str = ""
+    branch: str = ""
+    before_commit: str = ""
+    after_commit: str = ""
 
 
 def _get_git_head(repo_path: Path) -> str:
     """Get current HEAD commit hash for a git repository."""
+    repo = None
     try:
-        res = subprocess.run(
-            ["git", "-C", str(repo_path), "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if res.returncode == 0:
-            return res.stdout.strip()
+        repo = Repo(str(repo_path))
+        return repo.head().decode("ascii")
     except Exception:
-        pass
-    return ""
+        return ""
+    finally:
+        if repo is not None:
+            repo.close()
 
 
 def inspect_project_source(repo_path: str) -> Dict[str, str]:
@@ -175,17 +180,27 @@ def ingest_repo(url: str, branch: Optional[str] = None) -> IngestedProject:
 
     safe_url = _normalize_remote_url(parsed)
 
-    if target_path.exists():
+    checkout_exists = target_path.exists()
+    if checkout_exists:
         if not (target_path / ".git").is_dir():
             raise IngestionError(
                 f"Target path already exists and is not a git repository: {target_path}"
             )
-        _update_checkout(target_path, safe_url, provider, token, branch)
+        _repository_sync_service.update(target_path, safe_url, provider, token, branch)
     else:
         target_path.parent.mkdir(parents=True, exist_ok=True)
-        _clone_checkout(target_path, safe_url, provider, token, branch)
+        _repository_sync_service.clone(target_path, safe_url, provider, token, branch)
 
-    return IngestedProject(name=slug, path=str(target_path))
+    after_commit = _get_git_head(target_path)
+    return IngestedProject(
+        name=slug,
+        path=str(target_path),
+        changed=bool(after_commit),
+        provider=provider,
+        operation="refresh" if checkout_exists else "clone",
+        branch=branch or _get_git_branch(target_path),
+        after_commit=after_commit,
+    )
 
 
 def refresh_repo(repo_path: str, branch: Optional[str] = None) -> IngestedProject:
@@ -205,12 +220,23 @@ def refresh_repo(repo_path: str, branch: Optional[str] = None) -> IngestedProjec
         raise IngestionError(f"{provider.title()} source is not configured")
 
     head_before = _get_git_head(target_path)
-    _update_checkout(target_path, _normalize_remote_url(parsed), provider, token, branch)
+    _repository_sync_service.update(
+        target_path, _normalize_remote_url(parsed), provider, token, branch
+    )
     head_after = _get_git_head(target_path)
 
     changed = bool(head_before and head_after and head_before != head_after)
 
-    return IngestedProject(name=target_path.name, path=str(target_path), changed=changed, provider=provider)
+    return IngestedProject(
+        name=target_path.name,
+        path=str(target_path),
+        changed=changed,
+        provider=provider,
+        operation="refresh",
+        branch=branch or _get_git_branch(target_path),
+        before_commit=head_before,
+        after_commit=head_after,
+    )
 
 
 def ingest_directory(directory: str) -> IngestedProject:
@@ -298,133 +324,164 @@ def _assert_under_base(target: Path, base: Path) -> None:
         raise IngestionError("Path must stay within BASE_CODE_DIR") from exc
 
 
-@contextmanager
-def _git_auth_environment(provider: str, token: str) -> Iterator[Dict[str, str]]:
-    """Provide Git credentials without putting the token in argv or git config."""
-    username = "x-access-token" if provider == "github" else "oauth2"
-    script_path = None
-    try:
-        with tempfile.NamedTemporaryFile("w", prefix="savant-askpass-", delete=False) as script:
-            script.write(
-                "#!/bin/sh\n"
-                "case \"$1\" in\n"
-                "  *[Uu]sername*) printf '%s\\n' \"$SAVANT_GIT_ASKPASS_USERNAME\" ;;\n"
-                "  *) printf '%s\\n' \"$SAVANT_GIT_ASKPASS_TOKEN\" ;;\n"
-                "esac\n"
+class RepositorySyncService:
+    """Maintain server-owned checkouts as exact mirrors of remote branches."""
+
+    def clone(
+        self,
+        target_path: Path,
+        safe_url: str,
+        provider: str,
+        token: str,
+        branch: Optional[str],
+    ) -> None:
+        with self._lock(target_path):
+            temporary_path = Path(
+                tempfile.mkdtemp(
+                    prefix=f".{target_path.name}.savant-clone-",
+                    dir=str(target_path.parent),
+                )
             )
-            script_path = Path(script.name)
-        script_path.chmod(script_path.stat().st_mode | stat.S_IXUSR)
-        yield {
-            **os.environ,
-            "GIT_ASKPASS": str(script_path),
-            "GIT_TERMINAL_PROMPT": "0",
-            "SAVANT_GIT_ASKPASS_USERNAME": username,
-            "SAVANT_GIT_ASKPASS_TOKEN": token,
-        }
-    finally:
-        if script_path:
-            script_path.unlink(missing_ok=True)
+            try:
+                porcelain.clone(
+                    safe_url,
+                    temporary_path,
+                    branch=branch,
+                    errstream=io.BytesIO(),
+                    **self._credentials(provider, token),
+                ).close()
+                temporary_path.replace(target_path)
+            except Exception as exc:
+                raise self._ingestion_error(exc, token) from exc
+            finally:
+                if temporary_path.exists():
+                    shutil.rmtree(temporary_path, ignore_errors=True)
+
+    def update(
+        self,
+        target_path: Path,
+        safe_url: str,
+        provider: str,
+        token: str,
+        branch: Optional[str],
+    ) -> None:
+        with self._lock(target_path):
+            repo = None
+            try:
+                repo = Repo(str(target_path))
+                self._set_origin_url(repo, safe_url)
+                fetch_result = porcelain.fetch(
+                    repo,
+                    "origin",
+                    prune=True,
+                    force=True,
+                    quiet=True,
+                    outstream=io.StringIO(),
+                    errstream=io.BytesIO(),
+                    **self._credentials(provider, token),
+                )
+                selected_branch = branch or self._default_branch(repo, fetch_result)
+                remote_ref = f"refs/remotes/origin/{selected_branch}".encode()
+                try:
+                    remote_commit = repo.refs[remote_ref]
+                except KeyError as exc:
+                    raise IngestionError(f"Branch not found: {selected_branch}") from exc
+
+                local_ref = f"refs/heads/{selected_branch}".encode()
+                repo.refs.set_symbolic_ref(b"HEAD", local_ref)
+                repo.refs[local_ref] = remote_commit
+                porcelain.reset(repo, "hard", remote_commit)
+                porcelain.clean(repo, target_dir=target_path)
+            except IngestionError:
+                raise
+            except Exception as exc:
+                raise self._ingestion_error(exc, token) from exc
+            finally:
+                if repo is not None:
+                    repo.close()
+
+    @staticmethod
+    def _credentials(provider: str, token: str) -> Dict[str, str]:
+        username = "x-access-token" if provider == "github" else "oauth2"
+        return {"username": username, "password": token}
+
+    @staticmethod
+    def _set_origin_url(repo: Repo, safe_url: str) -> None:
+        config = repo.get_config()
+        config.set((b"remote", b"origin"), b"url", safe_url.encode())
+        config.write_to_path()
+
+    @staticmethod
+    def _default_branch(repo: Repo, fetch_result) -> str:
+        remote_head = (fetch_result.symrefs or {}).get(b"HEAD", b"")
+        prefix = b"refs/heads/"
+        if remote_head.startswith(prefix):
+            return remote_head[len(prefix):].decode()
+
+        local_head = repo.refs.read_ref(b"HEAD") or b""
+        if local_head.startswith(prefix):
+            return local_head[len(prefix):].decode()
+        raise IngestionError("Unable to determine repository default branch")
+
+    @staticmethod
+    @contextmanager
+    def _lock(target_path: Path) -> Iterator[None]:
+        lock_path = target_path.parent / f".{target_path.name}.savant-sync.lock"
+        with lock_path.open("a+") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+    @staticmethod
+    def _ingestion_error(exc: Exception, token: str) -> IngestionError:
+        message = _sanitize_git_error(str(exc), token).strip()
+        return IngestionError(message or "Failed to synchronize repository")
 
 
-def _clone_checkout(target_path: Path, safe_url: str, provider: str, token: str, branch: Optional[str]) -> None:
-    cmd = ["git", "clone"]
-    if branch:
-        cmd.extend(["--branch", branch])
-    cmd.extend([safe_url, str(target_path)])
-    with _git_auth_environment(provider, token) as env:
-        _run_git(cmd, env=env)
-        _run_git(["git", "-C", str(target_path), "remote", "set-url", "origin", safe_url], env=env)
+_repository_sync_service = RepositorySyncService()
 
 
-def _update_checkout(target_path: Path, safe_url: str, provider: str, token: str, branch: Optional[str]) -> None:
-    lock_file = target_path / ".git" / "index.lock"
-    if lock_file.exists():
-        try:
-            lock_file.unlink()
-        except Exception:
-            pass
-    with _git_auth_environment(provider, token) as env:
-        _run_git(["git", "-C", str(target_path), "remote", "set-url", "origin", safe_url], env=env)
-        try:
-            _run_git(["git", "-C", str(target_path), "fetch", "origin", "--prune"], env=env)
-            if branch:
-                _ensure_branch_exists(target_path, branch, env=env)
-                _run_git(["git", "-C", str(target_path), "checkout", branch], env=env)
-                _run_git(["git", "-C", str(target_path), "pull", "origin", branch], env=env)
-            else:
-                default_branch = _default_remote_branch(target_path, env=env)
-                _run_git(["git", "-C", str(target_path), "checkout", default_branch], env=env)
-                _run_git(["git", "-C", str(target_path), "pull", "origin", default_branch], env=env)
-        finally:
-            _run_git(["git", "-C", str(target_path), "remote", "set-url", "origin", safe_url], env=env)
-
-
-def _ensure_branch_exists(target_path: Path, branch: str, env=None) -> None:
-    proc = _run_git(
-        ["git", "-C", str(target_path), "show-ref", "--verify", f"refs/remotes/origin/{branch}"],
-        raise_on_error=False, env=env,
-    )
-    if proc.returncode != 0:
-        raise IngestionError(f"Branch not found: {branch}")
-
-
-def _ensure_local_branch(target_path: Path, branch: str) -> None:
-    proc = _run_git(
-        ["git", "-C", str(target_path), "rev-parse", "--verify", branch],
-        raise_on_error=False,
-    )
-    if proc.returncode != 0:
-        _run_git(["git", "-C", str(target_path), "checkout", "-b", branch])
-
-
-def _default_remote_branch(target_path: Path, env=None) -> str:
-    proc = _run_git(
-        ["git", "-C", str(target_path), "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
-        raise_on_error=False, env=env,
-    )
-    if proc.returncode == 0 and proc.stdout.strip():
-        value = proc.stdout.strip()
-        if value.startswith("origin/"):
-            return value[len("origin/"):]
-    cur = _run_git(["git", "-C", str(target_path), "rev-parse", "--abbrev-ref", "HEAD"], env=env)
-    branch = cur.stdout.strip()
-    if branch and branch != "HEAD":
-        return branch
-    raise IngestionError("Unable to determine repository default branch")
-
-
-def _run_git(cmd, raise_on_error: bool = True, env=None) -> subprocess.CompletedProcess:
-    proc = subprocess.run(
-        cmd,
-        check=False,
-        capture_output=True,
-        text=True,
-        env={**os.environ, "GIT_TERMINAL_PROMPT": "0", **(env or {})},
-    )
-    if proc.returncode != 0 and raise_on_error:
-        message = _sanitize_git_error(proc.stderr or proc.stdout or "git command failed")
-        message = message.strip() or "Failed to prepare repository"
-        raise IngestionError(message)
-    return proc
-
-
-def _sanitize_git_error(message: str) -> str:
+def _sanitize_git_error(message: str, *extra_secrets: str) -> str:
     out = message
-    for key in ("GITHUB_TOKEN", "GITLAB_TOKEN"):
-        token = os.environ.get(key, "").strip()
+    secrets = [os.environ.get(key, "").strip() for key in ("GITHUB_TOKEN", "GITLAB_TOKEN")]
+    secrets.extend(secret.strip() for secret in extra_secrets)
+    for token in secrets:
         if token:
             out = out.replace(token, "[REDACTED]")
     return out
 
 
 def _git_remote_url(repo_path: Path) -> str:
-    proc = _run_git(
-        ["git", "-C", str(repo_path), "remote", "get-url", "origin"],
-        raise_on_error=False,
-    )
-    if proc.returncode != 0:
+    repo = None
+    try:
+        repo = Repo(str(repo_path))
+        remote_url = repo.get_config_stack().get(
+            (b"remote", b"origin"), b"url"
+        )
+        if isinstance(remote_url, bytes):
+            return remote_url.decode()
+        return str(remote_url)
+    except Exception:
         return ""
-    return (proc.stdout or "").strip()
+    finally:
+        if repo is not None:
+            repo.close()
+
+
+def _get_git_branch(repo_path: Path) -> str:
+    repo = None
+    try:
+        repo = Repo(str(repo_path))
+        head_ref = repo.refs.read_ref(b"HEAD") or b""
+        prefix = b"refs/heads/"
+        return head_ref[len(prefix):].decode() if head_ref.startswith(prefix) else ""
+    except Exception:
+        return ""
+    finally:
+        if repo is not None:
+            repo.close()
 
 
 def _detect_provider_from_remote(remote_url: str) -> str:

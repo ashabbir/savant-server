@@ -13,10 +13,6 @@ from context.ingestion import (
 from context.walker import FileWalker
 
 
-def _cp(args, returncode=0, stdout="", stderr=""):
-    return subprocess.CompletedProcess(args=args, returncode=returncode, stdout=stdout, stderr=stderr)
-
-
 def test_sources_endpoint_reflects_env(client, monkeypatch):
     from context import routes
     import context.ingestion as ingestion
@@ -103,31 +99,30 @@ def test_ssh_repo_url_is_normalized_to_credential_free_https():
     assert _normalize_remote_url(parsed) == "https://github.com/org/repo.git"
 
 
-def test_ssh_repo_clone_uses_askpass_environment_not_token_in_command(tmp_path, monkeypatch):
+def test_ssh_repo_clone_uses_library_credentials_and_safe_remote(tmp_path, monkeypatch):
     base = tmp_path / "repos"
     base.mkdir()
     monkeypatch.setenv("BASE_CODE_DIR", str(base))
     monkeypatch.setenv("GITHUB_TOKEN", "ghp_test_token")
 
-    commands = []
-    environments = []
+    calls = []
 
-    def fake_run_git(cmd, raise_on_error=True, env=None):
-        commands.append(cmd)
-        environments.append(env)
-        return _cp(cmd, returncode=0)
+    class FakeSyncService:
+        def clone(self, target_path, safe_url, provider, token, branch):
+            calls.append((target_path, safe_url, provider, token, branch))
 
-    monkeypatch.setattr("context.ingestion._run_git", fake_run_git)
+    monkeypatch.setattr("context.ingestion._repository_sync_service", FakeSyncService())
 
     out = ingest_repo("git@github.com:acme/repo.git")
 
     assert out.name == "repo"
-    assert any(cmd[:2] == ["git", "clone"] for cmd in commands)
-    assert all("ghp_test_token" not in " ".join(cmd) for cmd in commands)
-    auth_env = next(env for env in environments if env)
-    assert auth_env["GIT_ASKPASS"]
-    assert auth_env["SAVANT_GIT_ASKPASS_TOKEN"] == "ghp_test_token"
-    assert any("remote" in cmd and "set-url" in cmd and "origin" in cmd and "https://github.com/acme/repo.git" in cmd for cmd in commands)
+    assert calls == [(
+        (base / "repo").resolve(),
+        "https://github.com/acme/repo.git",
+        "github",
+        "ghp_test_token",
+        None,
+    )]
 
 
 def test_ingest_repo_rejects_missing_token(tmp_path, monkeypatch):
@@ -149,22 +144,25 @@ def test_ingest_repo_branch_success_for_existing_checkout(tmp_path, monkeypatch)
     monkeypatch.setenv("BASE_CODE_DIR", str(base))
     monkeypatch.setenv("GITHUB_TOKEN", "ghp_test_token")
 
-    commands = []
+    calls = []
 
-    def fake_run_git(cmd, raise_on_error=True, env=None):
-        commands.append(cmd)
-        if "show-ref" in cmd:
-            return _cp(cmd, returncode=0)
-        return _cp(cmd, returncode=0)
+    class FakeSyncService:
+        def update(self, target_path, safe_url, provider, token, branch):
+            calls.append((target_path, safe_url, provider, token, branch))
 
-    monkeypatch.setattr("context.ingestion._run_git", fake_run_git)
+    monkeypatch.setattr("context.ingestion._repository_sync_service", FakeSyncService())
 
     out = ingest_repo("https://github.com/acme/repo.git", branch="release")
 
     assert out.name == "repo"
     assert out.path == str(repo_dir.resolve())
-    assert any(cmd[-2:] == ["checkout", "release"] for cmd in commands)
-    assert any(cmd[-3:] == ["pull", "origin", "release"] for cmd in commands)
+    assert calls == [(
+        repo_dir.resolve(),
+        "https://github.com/acme/repo.git",
+        "github",
+        "ghp_test_token",
+        "release",
+    )]
 
 
 def test_ingest_repo_branch_failure_for_existing_checkout(tmp_path, monkeypatch):
@@ -175,15 +173,74 @@ def test_ingest_repo_branch_failure_for_existing_checkout(tmp_path, monkeypatch)
     monkeypatch.setenv("BASE_CODE_DIR", str(base))
     monkeypatch.setenv("GITHUB_TOKEN", "ghp_test_token")
 
-    def fake_run_git(cmd, raise_on_error=True, env=None):
-        if "show-ref" in cmd:
-            return _cp(cmd, returncode=1, stderr="fatal: bad ref")
-        return _cp(cmd, returncode=0)
+    class FakeSyncService:
+        def update(self, target_path, safe_url, provider, token, branch):
+            raise IngestionError(f"Branch not found: {branch}")
 
-    monkeypatch.setattr("context.ingestion._run_git", fake_run_git)
+    monkeypatch.setattr("context.ingestion._repository_sync_service", FakeSyncService())
 
     with pytest.raises(IngestionError, match="Branch not found: missing"):
         ingest_repo("https://github.com/acme/repo.git", branch="missing")
+
+
+def test_repository_sync_force_matches_latest_remote_and_removes_local_drift(tmp_path):
+    from context.ingestion import RepositorySyncService
+
+    remote = tmp_path / "remote.git"
+    author = tmp_path / "author"
+    checkout = tmp_path / "checkout"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    subprocess.run(["git", "clone", str(remote), str(author)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(author), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(author), "config", "user.name", "Test"], check=True)
+    (author / "tracked.txt").write_text("version one\n")
+    subprocess.run(["git", "-C", str(author), "add", "tracked.txt"], check=True)
+    subprocess.run(["git", "-C", str(author), "commit", "-m", "one"], check=True, capture_output=True)
+    branch = subprocess.run(
+        ["git", "-C", str(author), "branch", "--show-current"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    subprocess.run(["git", "-C", str(author), "push", "origin", branch], check=True, capture_output=True)
+
+    service = RepositorySyncService()
+    service.clone(checkout, remote.as_uri(), "github", "unused", branch)
+    (checkout / "tracked.txt").write_text("local modification\n")
+    (checkout / "untracked.txt").write_text("remove me\n")
+
+    (author / "tracked.txt").write_text("version two\n")
+    subprocess.run(["git", "-C", str(author), "commit", "-am", "two"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(author), "push", "origin", branch], check=True, capture_output=True)
+
+    service.update(checkout, remote.as_uri(), "github", "unused", None)
+
+    assert (checkout / "tracked.txt").read_text() == "version two\n"
+    assert not (checkout / "untracked.txt").exists()
+    local_head = subprocess.run(
+        ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    remote_head = subprocess.run(
+        ["git", "-C", str(author), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    assert local_head == remote_head
+
+
+def test_repository_sync_uses_provider_credentials_and_redacts_token():
+    from context.ingestion import RepositorySyncService
+
+    service = RepositorySyncService()
+
+    assert service._credentials("github", "secret") == {
+        "username": "x-access-token",
+        "password": "secret",
+    }
+    assert service._credentials("gitlab", "secret") == {
+        "username": "oauth2",
+        "password": "secret",
+    }
+    error = service._ingestion_error(RuntimeError("denied for secret"), "secret")
+    assert str(error) == "denied for [REDACTED]"
 
 
 def test_add_repo_route_updates_existing_repo_without_duplicate(client, monkeypatch):
@@ -193,7 +250,10 @@ def test_add_repo_route_updates_existing_repo_without_duplicate(client, monkeypa
     monkeypatch.setattr(routes, "_ensure_init", lambda: True)
     monkeypatch.setattr(
         "context.ingestion.ingest_repo",
-        lambda url, branch=None: IngestedProject(name="repo", path="/tmp/repos/repo"),
+        lambda url, branch=None: IngestedProject(
+            name="repo", path="/tmp/repos/repo", changed=True, provider="github",
+            branch="main", after_commit="abc123",
+        ),
     )
 
     calls = {"add": 0}
@@ -218,6 +278,10 @@ def test_add_repo_route_updates_existing_repo_without_duplicate(client, monkeypa
     assert resp.status_code == 201
     assert calls["add"] == 1
     assert resp.get_json()["name"] == "repo"
+    log = context_db.ContextDB.list_repo_sync_logs(repo_name="repo")[0]
+    assert log["operation"] == "clone"
+    assert log["trigger"] == "project_add"
+    assert log["after_commit"] == "abc123"
 
 
 def test_add_repo_route_rejects_source_url_mismatch(client, monkeypatch):
@@ -249,7 +313,8 @@ def test_refresh_repo_updates_existing_checkout(client, monkeypatch):
     monkeypatch.setattr(
         "context.ingestion.refresh_repo",
         lambda path, branch=None: refreshed.append((path, branch)) or IngestedProject(
-            name="repo", path="/tmp/repos/repo"
+            name="repo", path="/tmp/repos/repo", changed=True, provider="gitlab",
+            branch="main", before_commit="abc123", after_commit="def456",
         ),
     )
     monkeypatch.setattr(
@@ -264,6 +329,40 @@ def test_refresh_repo_updates_existing_checkout(client, monkeypatch):
     assert resp.status_code == 200
     assert refreshed == [("/tmp/repos/repo", None)]
     assert resp.get_json()["name"] == "repo"
+    log = context_db.ContextDB.list_repo_sync_logs(repo_name="repo")[0]
+    assert log["operation"] == "refresh"
+    assert log["trigger"] == "manual"
+    assert log["provider"] == "gitlab"
+    assert log["before_commit"] == "abc123"
+    assert log["after_commit"] == "def456"
+    assert log["actor_id"] == "ahmed"
+    assert log["source_app"] == "savant-olympus"
+
+
+def test_refresh_repo_failure_is_recorded(client, monkeypatch):
+    from context import routes
+    from context import db as context_db
+
+    monkeypatch.setattr(routes, "_ensure_init", lambda: True)
+    monkeypatch.setattr(routes, "_validate_repo_path", lambda _repo: (Path("/tmp/repos/repo"), None))
+    monkeypatch.setattr(
+        context_db.ContextDB,
+        "get_repo",
+        staticmethod(lambda _name: {"id": 4, "name": "repo", "path": "/tmp/repos/repo"}),
+    )
+
+    def fail_refresh(path, branch=None):
+        raise IngestionError("remote unavailable")
+
+    monkeypatch.setattr("context.ingestion.refresh_repo", fail_refresh)
+
+    resp = client.post("/api/context/repos/repo/refresh")
+
+    assert resp.status_code == 400
+    log = context_db.ContextDB.list_repo_sync_logs(repo_name="repo")[0]
+    assert log["status"] == "failed"
+    assert log["operation"] == "refresh"
+    assert log["error"] == "remote unavailable"
 
 
 def test_file_walker_respects_gitignore_and_node_modules(tmp_path):

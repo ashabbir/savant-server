@@ -8,14 +8,33 @@ import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+from time import perf_counter
 
 from concurrent.futures import ThreadPoolExecutor
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, g, jsonify, request
 from utils.auth import admin_required, ALLOWED_SAVANT_APPS
 
 logger = logging.getLogger(__name__)
 
 context_bp = Blueprint("context", __name__)
+
+
+def _record_repo_sync_activity(**fields):
+    """Write audit history without allowing telemetry failure to mask Git results."""
+    try:
+        from .db import ContextDB
+        fields.setdefault("actor_id", getattr(g, "user_id", "") or "")
+        fields.setdefault(
+            "source_app",
+            (request.headers.get("X-App-Name") or request.headers.get("X-Savant-App") or "").strip().lower(),
+        )
+        return ContextDB.record_repo_sync_log(**fields)
+    except Exception:
+        logger.exception(
+            "Failed to persist repository sync activity for %s",
+            fields.get("repo_name", "unknown"),
+        )
+        return {}
 
 # ---------------------------------------------------------------------------
 # Global Header Guard
@@ -497,6 +516,29 @@ def periodic_sync_logs():
     return jsonify({"count": len(logs), "logs": logs})
 
 
+@context_bp.route("/api/context/repos/sync-logs")
+def repo_sync_logs():
+    """Retrieve activity history for all repositories, optionally filtered by name."""
+    if not _ensure_init():
+        return jsonify({"error": "Context not initialized"}), 503
+    from .db import ContextDB
+    repo_name = request.args.get("repo_name") or request.args.get("repo")
+    limit = min(500, max(1, request.args.get("limit", type=int) or 50))
+    logs = ContextDB.list_repo_sync_logs(repo_name=repo_name, limit=limit)
+    return jsonify({"count": len(logs), "logs": logs})
+
+
+@context_bp.route("/api/context/repos/<name>/sync-logs")
+def repository_sync_logs(name):
+    """Retrieve activity history for one repository."""
+    if not _ensure_init():
+        return jsonify({"error": "Context not initialized"}), 503
+    from .db import ContextDB
+    limit = min(500, max(1, request.args.get("limit", type=int) or 50))
+    logs = ContextDB.list_repo_sync_logs(repo_name=name, limit=limit)
+    return jsonify({"count": len(logs), "logs": logs})
+
+
 @context_bp.route("/api/context/repos/periodic-sync/run", methods=["POST"])
 @admin_required
 def trigger_periodic_sync_all():
@@ -518,6 +560,8 @@ def add_repo():
     data = request.get_json(force=True) or {}
     source = (data.get("source") or "").strip().lower()
     branch = (data.get("branch") or "").strip() or None
+    started_at = perf_counter()
+    activity_repo_name = ""
 
     from .db import ContextDB
 
@@ -529,6 +573,7 @@ def add_repo():
             from .ingestion import IngestionError, detect_repo_provider, ingest_repo
 
             url = (data.get("url") or "").strip()
+            activity_repo_name = url.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git") or "unknown"
             provider = detect_repo_provider(url)
             if provider != source:
                 return jsonify({"error": f"URL does not match source '{source}'"}), 400
@@ -539,6 +584,13 @@ def add_repo():
             directory = (data.get("directory") or "").strip()
             ingested = ingest_directory(directory=directory)
     except IngestionError as e:
+        if source in {"github", "gitlab"}:
+            _record_repo_sync_activity(
+                repo_name=activity_repo_name or "unknown", operation="clone",
+                trigger="project_add", provider=source, branch=branch or "",
+                status="failed", duration_ms=int((perf_counter() - started_at) * 1000),
+                error=str(e), details="Repository clone failed",
+            )
         return jsonify({"error": str(e)}), 400
 
     existing = ContextDB.get_repo(ingested.name)
@@ -553,6 +605,17 @@ def add_repo():
     repo = ContextDB.add_repo(ingested.name, ingested.path)
     if source in {"github", "gitlab"}:
         ContextDB.mark_repo_fetched(ingested.name)
+        _record_repo_sync_activity(
+            repo_name=ingested.name, operation=ingested.operation or "clone", trigger="project_add",
+            provider=ingested.provider, branch=ingested.branch,
+            status="success", after_commit=ingested.after_commit,
+            fetched=True, code_changed=ingested.changed,
+            duration_ms=int((perf_counter() - started_at) * 1000),
+            details=(
+                "Repository refreshed during project add"
+                if ingested.operation == "refresh" else "Repository cloned"
+            ),
+        )
         repo = ContextDB.get_repo(ingested.name)
     return jsonify(repo), 201
 @context_bp.route("/api/context/repos/<name>/refresh", methods=["POST"])
@@ -572,14 +635,28 @@ def refresh_repo(name):
         return jsonify({"error": path_error}), 400
 
     from .ingestion import IngestionError, refresh_repo as update_repo
+    started_at = perf_counter()
 
     try:
         refreshed = update_repo(str(repo_path))
     except IngestionError as e:
+        _record_repo_sync_activity(
+            repo_name=name, operation="refresh", trigger="manual", status="failed",
+            duration_ms=int((perf_counter() - started_at) * 1000), error=str(e),
+            details="Repository refresh failed",
+        )
         return jsonify({"error": str(e)}), 400
 
     ContextDB.add_repo(refreshed.name, refreshed.path)
     ContextDB.mark_repo_fetched(refreshed.name)
+    _record_repo_sync_activity(
+        repo_name=refreshed.name, operation="refresh", trigger="manual",
+        provider=refreshed.provider, branch=refreshed.branch, status="success",
+        before_commit=refreshed.before_commit, after_commit=refreshed.after_commit,
+        fetched=True, code_changed=refreshed.changed,
+        duration_ms=int((perf_counter() - started_at) * 1000),
+        details="Repository refreshed",
+    )
 
     # Check for differential index & graph generation requirements:
     # 1. Provider is GitHub or GitLab

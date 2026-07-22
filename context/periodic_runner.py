@@ -5,7 +5,7 @@ For all registered projects:
 1. Fetches latest code from GitHub/GitLab (or origin remote).
 2. Runs differential semantic indexing if code changed or if project is un-indexed.
 3. Runs structural CodeGraph generation/sync if code changed or if graph is stale.
-4. Logs actions to logger and persists sync execution history in ctx_periodic_sync_logs.
+4. Logs actions to logger and persists sync execution history in ctx_repo_sync_logs.
 """
 
 import logging
@@ -14,8 +14,21 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from time import perf_counter
 
 logger = logging.getLogger(__name__)
+
+
+def _record_sync_activity(context_db, **fields):
+    """Keep scheduler progress independent from audit persistence availability."""
+    try:
+        return context_db.record_repo_sync_log(**fields)
+    except Exception:
+        logger.exception(
+            "Failed to persist scheduled repository sync activity for %s",
+            fields.get("repo_name", "unknown"),
+        )
+        return {}
 
 # Default 6-hour interval in seconds
 DEFAULT_SYNC_INTERVAL_SECONDS = 6 * 3600
@@ -112,6 +125,7 @@ def _execute_sync_pass_for_all_repos() -> dict:
     results = []
 
     for repo in repos:
+        sync_started_at = perf_counter()
         repo_name = repo.get("name")
         repo_id = repo.get("id")
         repo_path_str = repo.get("path", "")
@@ -126,6 +140,8 @@ def _execute_sync_pass_for_all_repos() -> dict:
         indexed = False
         graphed = False
         details = []
+        activity_errors = []
+        refreshed = None
 
         try:
             # 1. Fetch latest code if Git repo
@@ -138,6 +154,7 @@ def _execute_sync_pass_for_all_repos() -> dict:
                     ContextDB.mark_repo_fetched(repo_name)
                 except IngestionError as exc:
                     details.append(f"Fetch skipped/failed: {exc}")
+                    activity_errors.append(f"fetch: {exc}")
 
             # 2. Index if needed (code changed OR un-indexed)
             is_unindexed = (repo.get("status") in {"added", "error", None}) or (repo.get("file_count", 0) == 0)
@@ -174,18 +191,33 @@ def _execute_sync_pass_for_all_repos() -> dict:
                     )
                 except Exception as exc:
                     details.append(f"CodeGraph sync failed: {exc}")
+                    activity_errors.append(f"codegraph: {exc}")
 
-            summary_status = "success" if (fetched or indexed or graphed) else "skipped"
+            made_progress = fetched or indexed or graphed
+            if activity_errors:
+                summary_status = "partial" if made_progress else "failed"
+            else:
+                summary_status = "success" if made_progress else "skipped"
             log_detail_str = "; ".join(details) if details else "No updates needed"
             logger.info(f"Periodic sync [{repo_name}]: {summary_status} — {log_detail_str}")
 
-            ContextDB.record_periodic_sync_log(
+            _record_sync_activity(ContextDB,
                 repo_name=repo_name,
+                operation="periodic_refresh",
+                trigger="scheduled",
+                actor_id="system",
+                source_app="savant-server",
+                provider=getattr(refreshed, "provider", "") if refreshed else "",
+                branch=getattr(refreshed, "branch", "") if refreshed else "",
                 status=summary_status,
+                before_commit=getattr(refreshed, "before_commit", "") if refreshed else "",
+                after_commit=getattr(refreshed, "after_commit", "") if refreshed else "",
                 fetched=fetched,
                 code_changed=code_changed,
                 indexed=indexed,
                 graphed=graphed,
+                duration_ms=int((perf_counter() - sync_started_at) * 1000),
+                error="; ".join(activity_errors),
                 details=log_detail_str,
             )
 
@@ -202,9 +234,15 @@ def _execute_sync_pass_for_all_repos() -> dict:
         except Exception as exc:
             err_msg = f"Periodic sync error for {repo_name}: {exc}"
             logger.error(err_msg)
-            ContextDB.record_periodic_sync_log(
+            _record_sync_activity(ContextDB,
                 repo_name=repo_name,
+                operation="periodic_refresh",
+                trigger="scheduled",
+                actor_id="system",
+                source_app="savant-server",
                 status="failed",
+                duration_ms=int((perf_counter() - sync_started_at) * 1000),
+                error=str(exc),
                 details=str(exc),
             )
             results.append({"repo_name": repo_name, "status": "failed", "error": str(exc)})

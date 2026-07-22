@@ -383,7 +383,11 @@ CREATE INDEX IF NOT EXISTS idx_exp_created   ON experiences(created_at DESC);
 -- Knowledge Graph: Nodes
 CREATE TABLE IF NOT EXISTS kg_nodes (
     node_id     TEXT PRIMARY KEY,
-    node_type   TEXT NOT NULL,
+    node_type   TEXT NOT NULL CONSTRAINT kg_nodes_node_type_check CHECK (
+        node_type IN ('insight', 'client', 'domain', 'service', 'library',
+                      'technology', 'project', 'concept', 'repo', 'session',
+                      'issue', 'person', 'operation', 'organization')
+    ),
     title       TEXT NOT NULL,
     content     TEXT DEFAULT '',
     metadata    TEXT DEFAULT '{}',
@@ -533,19 +537,30 @@ CREATE TABLE IF NOT EXISTS ctx_vec_chunks (
 CREATE INDEX IF NOT EXISTS idx_ctx_vec_hnsw
     ON ctx_vec_chunks USING hnsw (embedding vector_cosine_ops);
 
-CREATE TABLE IF NOT EXISTS ctx_periodic_sync_logs (
+CREATE TABLE IF NOT EXISTS ctx_repo_sync_logs (
     id           SERIAL PRIMARY KEY,
     repo_name    TEXT NOT NULL,
+    operation    TEXT NOT NULL DEFAULT 'periodic_refresh',
+    trigger      TEXT NOT NULL DEFAULT 'scheduled',
+    provider     TEXT DEFAULT '',
+    branch       TEXT DEFAULT '',
+    actor_id     TEXT DEFAULT '',
+    source_app   TEXT DEFAULT '',
     status       TEXT NOT NULL,
+    before_commit TEXT DEFAULT '',
+    after_commit TEXT DEFAULT '',
     fetched      BOOLEAN DEFAULT FALSE,
     code_changed BOOLEAN DEFAULT FALSE,
     indexed      BOOLEAN DEFAULT FALSE,
     graphed      BOOLEAN DEFAULT FALSE,
+    duration_ms  BIGINT DEFAULT 0,
+    error        TEXT DEFAULT '',
+    legacy_periodic_log_id INTEGER UNIQUE,
     details      TEXT DEFAULT '',
     created_at   TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
-CREATE INDEX IF NOT EXISTS idx_ctx_sync_logs_repo ON ctx_periodic_sync_logs(repo_name);
-CREATE INDEX IF NOT EXISTS idx_ctx_sync_logs_created ON ctx_periodic_sync_logs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ctx_repo_sync_logs_repo ON ctx_repo_sync_logs(repo_name);
+CREATE INDEX IF NOT EXISTS idx_ctx_repo_sync_logs_created ON ctx_repo_sync_logs(created_at DESC);
 
 """
 
@@ -592,6 +607,50 @@ _SCHEMA_MIGRATIONS = (
             "ALTER TABLE code_intelligence_config ADD CONSTRAINT code_intelligence_config_rollout_state_check CHECK (rollout_state = 'codegraph_primary')",
             "DROP TABLE IF EXISTS graphify_edges",
             "DROP TABLE IF EXISTS graphify_nodes",
+        ),
+    ),
+    (
+        4,
+        "generalize repository sync activity logs",
+        (
+            """CREATE TABLE IF NOT EXISTS ctx_periodic_sync_logs (
+                   id SERIAL PRIMARY KEY, repo_name TEXT NOT NULL, status TEXT NOT NULL,
+                   fetched BOOLEAN DEFAULT FALSE, code_changed BOOLEAN DEFAULT FALSE,
+                   indexed BOOLEAN DEFAULT FALSE, graphed BOOLEAN DEFAULT FALSE,
+                   details TEXT DEFAULT '', created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+               )""",
+            "ALTER TABLE ctx_repo_sync_logs ADD COLUMN IF NOT EXISTS operation TEXT NOT NULL DEFAULT 'periodic_refresh'",
+            "ALTER TABLE ctx_repo_sync_logs ADD COLUMN IF NOT EXISTS trigger TEXT NOT NULL DEFAULT 'scheduled'",
+            "ALTER TABLE ctx_repo_sync_logs ADD COLUMN IF NOT EXISTS provider TEXT DEFAULT ''",
+            "ALTER TABLE ctx_repo_sync_logs ADD COLUMN IF NOT EXISTS branch TEXT DEFAULT ''",
+            "ALTER TABLE ctx_repo_sync_logs ADD COLUMN IF NOT EXISTS actor_id TEXT DEFAULT ''",
+            "ALTER TABLE ctx_repo_sync_logs ADD COLUMN IF NOT EXISTS source_app TEXT DEFAULT ''",
+            "ALTER TABLE ctx_repo_sync_logs ADD COLUMN IF NOT EXISTS before_commit TEXT DEFAULT ''",
+            "ALTER TABLE ctx_repo_sync_logs ADD COLUMN IF NOT EXISTS after_commit TEXT DEFAULT ''",
+            "ALTER TABLE ctx_repo_sync_logs ADD COLUMN IF NOT EXISTS duration_ms BIGINT DEFAULT 0",
+            "ALTER TABLE ctx_repo_sync_logs ADD COLUMN IF NOT EXISTS error TEXT DEFAULT ''",
+            "ALTER TABLE ctx_repo_sync_logs ADD COLUMN IF NOT EXISTS legacy_periodic_log_id INTEGER UNIQUE",
+            """INSERT INTO ctx_repo_sync_logs
+                   (repo_name, operation, trigger, status, fetched, code_changed,
+                    indexed, graphed, details, created_at, legacy_periodic_log_id)
+               SELECT repo_name, 'periodic_refresh', 'scheduled', status, fetched,
+                      code_changed, indexed, graphed, details, created_at, id
+               FROM ctx_periodic_sync_logs
+               ON CONFLICT (legacy_periodic_log_id) DO NOTHING""",
+            "CREATE INDEX IF NOT EXISTS idx_ctx_repo_sync_logs_repo ON ctx_repo_sync_logs(repo_name)",
+            "CREATE INDEX IF NOT EXISTS idx_ctx_repo_sync_logs_created ON ctx_repo_sync_logs(created_at DESC)",
+        ),
+    ),
+    (
+        5,
+        "enforce knowledge graph node types",
+        (
+            "ALTER TABLE kg_nodes DROP CONSTRAINT IF EXISTS kg_nodes_node_type_check",
+            """ALTER TABLE kg_nodes ADD CONSTRAINT kg_nodes_node_type_check CHECK (
+                   node_type IN ('insight', 'client', 'domain', 'service', 'library',
+                                 'technology', 'project', 'concept', 'repo', 'session',
+                                 'issue', 'person', 'operation', 'organization')
+               )""",
         ),
     ),
 )
