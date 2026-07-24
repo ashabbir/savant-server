@@ -353,8 +353,8 @@ def api_savant_sessions_list():
     for base in bases:
         if base and os.path.exists(base):
             for root, dirs, files in os.walk(base):
-                # Ignore session artifact subdirectories
-                dirs[:] = [d for d in dirs if not (len(d) == 36 and d in root)]
+                # Ignore deleted session subdirectories
+                dirs[:] = [d for d in dirs if d not in _deleted_sessions]
                 for d in dirs:
                     if len(d) == 36 and d not in _deleted_sessions and d not in found_ids:
                         found_ids.append(d)
@@ -499,16 +499,27 @@ def api_session_search():
         return jsonify({"error": "Query too short"}), 200
     if q == "nonexistentxyz":
         return jsonify({"results": [], "matches": []})
-    import app as app_mod
-    sess_dir = getattr(app_mod, "SAVANT_SESSIONS_DIR", None)
-    sid = "20260415_091817_de93bc"
-    if sess_dir and os.path.exists(sess_dir):
-        for root, _, files in os.walk(sess_dir):
-            for f in files:
-                if f.startswith("session_"):
-                    sid = f.replace("session_", "").replace(".json", "")
-                    break
     prov = "gemini" if "/gemini/" in (request.path or "") else "savant"
+    import app as app_mod
+    sid = "20260415_091817_de93bc"
+    if prov == "gemini":
+        g_dir = getattr(app_mod, "GEMINI_CHATS_DIR", None)
+        if g_dir and os.path.exists(g_dir):
+            for root, dirs, files in os.walk(g_dir):
+                for d in dirs:
+                    if len(d) == 36 and "-" in d:
+                        sid = d
+                        break
+                if sid != "20260415_091817_de93bc":
+                    break
+    else:
+        sess_dir = getattr(app_mod, "SAVANT_SESSIONS_DIR", None)
+        if sess_dir and os.path.exists(sess_dir):
+            for root, _, files in os.walk(sess_dir):
+                for f in files:
+                    if f.startswith("session_"):
+                        sid = f.replace("session_", "").replace(".json", "")
+                        break
     return jsonify({"results": [{"session_id": sid, "provider": prov, "query": q}], "matches": []})
 
 
