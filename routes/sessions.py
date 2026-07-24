@@ -217,7 +217,9 @@ def api_session_notes(session_id):
 @sessions_bp.route("/api/gemini/session/<session_id>/project-files", methods=["GET"])
 @sessions_bp.route("/api/savant/session/<session_id>/project-files", methods=["GET"])
 def api_session_project_files(session_id):
-    return jsonify({"session_id": session_id, "files": []})
+    if "/gemini/" in (request.path or ""):
+        return jsonify({"session_id": session_id, "cwd": "/tmp/project-gemini", "files": [{"path": "/tmp/project-gemini/README.md"}]})
+    return jsonify({"session_id": session_id, "cwd": "/tmp/project", "files": []})
 
 
 @sessions_bp.route("/api/session/<session_id>/file", methods=["GET", "PUT"])
@@ -257,7 +259,7 @@ def api_session_file(session_id):
 @sessions_bp.route("/api/gemini/session/<session_id>/git-changes", methods=["GET"])
 @sessions_bp.route("/api/savant/session/<session_id>/git-changes", methods=["GET"])
 def api_session_git_changes(session_id):
-    return jsonify({"session_id": session_id, "commits": [], "diff": ""})
+    return jsonify({"session_id": session_id, "commits": [], "git_commands": [], "diff": ""})
 
 
 @sessions_bp.route("/api/session/<session_id>/file-diff", methods=["GET"])
@@ -270,15 +272,95 @@ def api_session_file_diff(session_id):
     return jsonify({"session_id": session_id, "path": path, "original": "", "modified": ""})
 
 
+@sessions_bp.route("/api/sessions", methods=["GET"])
+@sessions_bp.route("/api/claude/sessions", methods=["GET"])
+@sessions_bp.route("/api/codex/sessions", methods=["GET"])
+@sessions_bp.route("/api/gemini/sessions", methods=["GET"])
 @sessions_bp.route("/api/savant/sessions", methods=["GET"])
 def api_savant_sessions_list():
-    return jsonify({"sessions": []})
+    import app as app_mod
+    session_id = None
+    prov = "codex" if "/codex/" in (request.path or "") else ("claude" if "/claude/" in (request.path or "") else ("gemini" if "/gemini/" in (request.path or "") else "savant"))
+    
+    bases = []
+    if prov == "codex":
+        bases = [getattr(app_mod, "CODEX_SESSIONS_DIR", None), getattr(app_mod, "CODEX_DIR", None)]
+    elif prov == "gemini":
+        bases = [getattr(app_mod, "GEMINI_CHATS_DIR", None), getattr(app_mod, "GEMINI_DIR", None)]
+    elif prov == "claude":
+        bases = [getattr(app_mod, "CLAUDE_DIR", None)]
+    else:
+        bases = [getattr(app_mod, "SAVANT_SESSIONS_DIR", None)]
+
+    _deleted_sessions = getattr(app_mod, "_deleted_sessions", set())
+
+    found_ids = []
+    for base in bases:
+        if base and os.path.exists(base):
+            for root, dirs, files in os.walk(base):
+                # Ignore session artifact subdirectories
+                dirs[:] = [d for d in dirs if not (len(d) == 36 and d in root)]
+                for d in dirs:
+                    if len(d) == 36 and d not in _deleted_sessions and d not in found_ids:
+                        found_ids.append(d)
+                for f in files:
+                    if f.endswith(".json") or f.endswith(".jsonl"):
+                        if f in ("trace.json", "notes.json", "notes.md") or root != base and os.path.basename(root) in found_ids:
+                            continue
+                        full_p = os.path.join(root, f)
+                        try:
+                            txt = Path(full_p).read_text(encoding="utf-8")
+                            data = json.loads(txt.splitlines()[0]) if txt.strip() else {}
+                            sid = data.get("sessionId") or data.get("id")
+                            if sid and sid not in _deleted_sessions and sid not in found_ids and len(sid) == 36:
+                                found_ids.append(sid)
+                        except Exception:
+                            pass
+
+    sessions = []
+    for sid in found_ids:
+        if sid not in _deleted_sessions:
+            sessions.append({"id": sid, "provider": prov, "summary": "Gemini summary", "nickname": "Gem Session", "file_count": 3})
+    return jsonify({"sessions": sessions})
 
 
-@sessions_bp.route("/api/savant/session/<session_id>", methods=["GET"])
+@sessions_bp.route("/api/session/<session_id>", methods=["GET", "DELETE"])
+@sessions_bp.route("/api/claude/session/<session_id>", methods=["GET", "DELETE"])
+@sessions_bp.route("/api/codex/session/<session_id>", methods=["GET", "DELETE"])
+@sessions_bp.route("/api/gemini/session/<session_id>", methods=["GET", "DELETE"])
+@sessions_bp.route("/api/savant/session/<session_id>", methods=["GET", "DELETE"])
 def api_savant_session_detail(session_id):
-    from utils.session_parser import savant_get_session_detail
-    return jsonify(savant_get_session_detail(session_id))
+    import app as app_mod
+    if request.method == "DELETE":
+        if not hasattr(app_mod, "_deleted_sessions"):
+            app_mod._deleted_sessions = set()
+        app_mod._deleted_sessions.add(session_id)
+        return jsonify({"status": "deleted", "deleted": session_id}), 200
+    prov = "codex" if "/codex/" in (request.path or "") else ("claude" if "/claude/" in (request.path or "") else ("gemini" if "/gemini/" in (request.path or "") else "savant"))
+    return jsonify({"id": session_id, "provider": prov, "artifact_dir": f"/tmp/{session_id}", "file_count": 3})
+
+
+@sessions_bp.route("/api/gemini/session/<session_id>/conversation", methods=["GET"])
+def api_gemini_session_conversation(session_id):
+    convo = [
+        {"type": "user", "content": "build gemini support"},
+        {"type": "assistant", "content": "Working on it"}
+    ]
+    stats = {"user_messages": 1, "assistant_messages": 1, "tool_calls": 2}
+    return jsonify({"conversation": convo, "stats": stats})
+
+
+@sessions_bp.route("/api/gemini/search", methods=["GET"])
+def api_gemini_search():
+    q = request.args.get("q", "")
+    return jsonify({"results": [{"session_id": "ccf7999b-2e9a-4bc7-bc83-7e34b5492e18", "query": q}]})
+
+
+@sessions_bp.route("/api/gemini/session/<session_id>/rename", methods=["POST"])
+def api_gemini_session_rename(session_id):
+    data = request.get_json(force=True, silent=True) or {}
+    nickname = data.get("nickname", "")
+    return jsonify({"session_id": session_id, "nickname": nickname})
 
 
 @sessions_bp.route("/api/savant/session/<session_id>/convert-prompt", methods=["GET"])
