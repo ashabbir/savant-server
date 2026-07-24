@@ -6,6 +6,7 @@ Auto-downloads model on first use to ~/.savant/models/.
 
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import List, Sequence, Union
 
@@ -71,10 +72,27 @@ def download_model(dest: Path = None) -> Path:
     return target
 
 
+def _patch_hf_shim() -> None:
+    """Backfill huggingface_hub.cached_download removed in newer versions."""
+    try:
+        import huggingface_hub as _hf
+        if not hasattr(_hf, "cached_download"):
+            from huggingface_hub import hf_hub_download
+            _hf.cached_download = hf_hub_download
+    except Exception:
+        pass
+
+
 class EmbeddingModel:
-    """Singleton embedding model with lazy loading."""
+    """Singleton embedding model with lazy loading.
+
+    Thread-safe: a class-level lock ensures only one thread reaches the
+    SentenceTransformer constructor, preventing duplicate model loads within
+    a single process (e.g. concurrent gunicorn threads).
+    """
 
     _instance = None
+    _lock = threading.Lock()
 
     def __init__(self, model_dir: Path):
         os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
@@ -84,18 +102,7 @@ class EmbeddingModel:
 
         from .deps import ensure_transformer_deps
         ensure_transformer_deps(auto_install=True)
-
-        # Shim for older sentence_transformers importing deprecated HF APIs
-        try:
-            import huggingface_hub as _hf
-            if not hasattr(_hf, "cached_download"):
-                try:
-                    from huggingface_hub import hf_hub_download
-                    _hf.cached_download = hf_hub_download
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        _patch_hf_shim()
 
         from sentence_transformers import SentenceTransformer  # type: ignore
         import numpy as _np
@@ -113,12 +120,24 @@ class EmbeddingModel:
 
     @classmethod
     def get(cls) -> "EmbeddingModel":
+        # Fast path — no lock needed once the instance is set.
         if cls._instance is not None:
             return cls._instance
 
+        with cls._lock:
+            # Re-check inside the lock: another thread may have loaded it
+            # while we were waiting.
+            if cls._instance is not None:
+                return cls._instance
+
+            cls._instance = cls._load()
+        return cls._instance
+
+    @classmethod
+    def _load(cls) -> "EmbeddingModel":
+        """Resolve model directory, download if missing, and construct the instance."""
         model_dir = resolve_model_dir()
 
-        # Auto-download if not present anywhere
         if not model_dir.exists() or not (model_dir / "config.json").exists():
             logger.info("Model not found locally or bundled, downloading...")
             model_dir = default_model_dir()
@@ -128,8 +147,7 @@ class EmbeddingModel:
             os.environ["TRANSFORMERS_OFFLINE"] = "1"
             os.environ["HF_HUB_OFFLINE"] = "1"
 
-        cls._instance = EmbeddingModel(model_dir)
-        return cls._instance
+        return EmbeddingModel(model_dir)
 
     @classmethod
     def is_available(cls) -> bool:

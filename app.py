@@ -1,8 +1,5 @@
 import os
-import json
 import logging
-import sys
-from pathlib import Path
 from flask import Flask, g, jsonify, request
 from flask_cors import CORS
 from postgres_client import init_schema
@@ -15,6 +12,7 @@ SAVANT_SESSIONS_DIR = os.path.join(SAVANT_DIR, "brain")
 SAVANT_META_DIR = os.path.join(SAVANT_DIR, ".savant-meta")
 SAVANT_STATE_DB = os.path.join(SAVANT_DIR, "state.db")
 _bg_cache = {}
+
 
 from abilities.routes import abilities_bp
 from context.routes import context_bp
