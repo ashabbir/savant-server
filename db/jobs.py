@@ -290,3 +290,23 @@ class JobDB:
             return _row_to_dict(row, _JSON_FIELDS)
         finally:
             release_connection(conn)
+
+    @staticmethod
+    def recover_interrupted() -> int:
+        """Finalize jobs left active after the dedicated worker was restarted."""
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE jobs
+                       SET status = 'cancelled', phase = 'Cancelled',
+                           message = 'Worker restarted before the job completed',
+                           finished_at = %s
+                       WHERE status IN ('running', 'cancelling')""",
+                    (_now(),),
+                )
+                count = cur.rowcount
+            conn.commit()
+            return int(count or 0)
+        finally:
+            release_connection(conn)

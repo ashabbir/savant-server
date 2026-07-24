@@ -44,6 +44,10 @@ def _worker_loop():
 def run_forever():
     """Run the persistent queue worker in a dedicated process."""
     logger.info("Dedicated job worker starting")
+    from db.jobs import JobDB
+    recovered = JobDB.recover_interrupted()
+    if recovered:
+        logger.warning("Marked %s interrupted job(s) as cancelled after worker restart", recovered)
     _worker_loop()
 
 

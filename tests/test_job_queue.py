@@ -156,6 +156,18 @@ class TestJobDB:
         j = JobDB.get_job(j["id"])
         assert j["status"] == "cancelled"
 
+    def test_recover_interrupted_jobs(self, _isolated_db):
+        from db.jobs import JobDB
+        running = JobDB.create_job("codegraph_sync", "repo-running")
+        JobDB.set_running(running["id"])
+        cancelling = JobDB.create_job("index", "repo-cancelling")
+        JobDB.set_running(cancelling["id"])
+        JobDB.request_cancel(cancelling["id"])
+
+        assert JobDB.recover_interrupted() >= 2
+        assert JobDB.get_job(running["id"])["status"] == "cancelled"
+        assert JobDB.get_job(cancelling["id"])["status"] == "cancelled"
+
     def test_list_jobs_no_filter(self, _isolated_db):
         from db.jobs import JobDB
         JobDB.create_job("index", "r1")
