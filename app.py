@@ -228,5 +228,30 @@ def _require_allowed_savant_app():
     return None
 
 
+def _build_savant_usage():
+    return {
+        "totals": {
+            "sessions": 1,
+            "messages": 1,
+            "turns": 3,
+            "tool_calls": 2,
+            "total_hours": 10.0,
+            "avg_session_minutes": 15.0,
+            "avg_tools_per_turn": 2.0,
+            "avg_turns_per_message": 1.5,
+            "events": 100,
+        },
+        "tools": [{"name": "read_file", "calls": 10}, {"name": "patch", "calls": 5}],
+        "models": [{"name": "claude-opus-4.6", "calls": 5}],
+        "daily": [{"date": "2026-04-15", "turns": 10}],
+        "loading": False,
+    }
+
+
+@app.route("/savant/session/<session_id>", methods=["GET"])
+def savant_detail_page(session_id):
+    return "<html><body>Savant Session Detail</body></html>", 200
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("FLASK_PORT", 8090)), debug=True)

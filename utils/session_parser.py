@@ -78,7 +78,7 @@ def savant_parse_full_conversation(session_id: str):
                 else:
                     args = raw_args or {}
 
-                tool_requests.append({"id": tc_id, "name": t_name, "args": args})
+                tool_requests.append({"id": tc_id, "name": t_name, "tool_name": t_name, "args": args})
                 tool_map[tc_id] = {
                     "name": t_name,
                     "args": args,
