@@ -34,6 +34,45 @@ def _error(exc):
     return jsonify({"error": str(exc)}), 400
 
 
+def _serialize_symbol_page(result: dict) -> dict:
+    """Convert provider models once at the API boundary."""
+    return {
+        **result,
+        "items": [item.model_dump(mode="json") for item in result["items"]],
+    }
+
+
+def _safe_repo_path(root: Path, relative_path: str) -> tuple[str, Path] | tuple[None, None]:
+    rel = (relative_path or "").replace("\\", "/")
+    parsed = PurePosixPath(rel)
+    if not rel or parsed.is_absolute() or ".." in parsed.parts:
+        return None, None
+    candidate = (root / rel).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return None, None
+    return rel, candidate
+
+
+def _analysis_graph_metrics(service, repo_id: str, root: Path, target, symbol_ref, rel: str) -> tuple[dict, object]:
+    metrics = {"algorithm": "provider_topology_counts", "version": "1", "nodes": None, "edges": None, "warnings": []}
+    try:
+        if not symbol_ref and target.name:
+            found = service.search_symbols(repo_id, root, target.name, filters={"path": rel} if rel else {}, limit=5)
+            exact = [item for item in found.items if item.name == target.name and (not rel or item.location.file_path == rel)]
+            if exact:
+                symbol_ref = {"id": exact[0].id}
+        if symbol_ref:
+            topology = service.subgraph(repo_id, root, SubgraphRequest(roots=[symbol_ref]))
+            metrics.update({"nodes": len(topology.symbols), "edges": len(topology.edges), "incomplete": topology.incomplete})
+        else:
+            metrics["warnings"].append("symbol could not be resolved for graph metrics")
+    except Exception as exc:
+        metrics["warnings"].append(str(exc))
+    return metrics, symbol_ref
+
+
 @code_intelligence_bp.get(f"{BASE}/health")
 def provider_health(repo_id):
     record, error = _repo(repo_id)
@@ -82,7 +121,7 @@ def symbols(repo_id):
             return jsonify(result.model_dump(mode="json"))
         result = service.list_symbols(repo_id, Path(record["path"]), filters=filters, limit=limit,
                                       cursor=request.args.get("cursor"))
-        return jsonify({**result, "items": [item.model_dump(mode="json") for item in result["items"]]})
+        return jsonify(_serialize_symbol_page(result))
     except Exception as exc:
         return _error(exc)
 
@@ -154,14 +193,9 @@ def analysis(repo_id):
     root = Path(record["path"]).resolve()
     before = ""
     if rel:
-        parsed = PurePosixPath(rel)
-        if parsed.is_absolute() or ".." in parsed.parts:
+        rel, candidate = _safe_repo_path(root, rel)
+        if not rel:
             return jsonify({"error": "unsafe repository-relative path", "code": "path_refused"}), 400
-        candidate = (root / rel).resolve()
-        try:
-            candidate.relative_to(root)
-        except ValueError:
-            return jsonify({"error": "path escaped repository root", "code": "path_refused"}), 400
         if candidate.is_file():
             before = candidate.read_text(encoding="utf-8", errors="replace")
         elif code is None and diff is None:
@@ -180,28 +214,9 @@ def analysis(repo_id):
         diff=diff,
         target_missing_is_new=bool(code is not None and not before),
     )
-    graph_metrics = {
-        "algorithm": "provider_topology_counts",
-        "version": "1",
-        "nodes": None,
-        "edges": None,
-        "warnings": [],
-    }
     symbol_ref = data.get("symbol_ref")
     service = build_service()
-    try:
-        if not symbol_ref and target.name:
-            found = service.search_symbols(repo_id, root, target.name, filters={"path": rel} if rel else {}, limit=5)
-            exact = [item for item in found.items if item.name == target.name and (not rel or item.location.file_path == rel)]
-            if exact:
-                symbol_ref = {"id": exact[0].id}
-        if symbol_ref:
-            topology = service.subgraph(repo_id, root, SubgraphRequest(roots=[symbol_ref]))
-            graph_metrics.update({"nodes": len(topology.symbols), "edges": len(topology.edges), "incomplete": topology.incomplete})
-        else:
-            graph_metrics["warnings"].append("symbol could not be resolved for graph metrics")
-    except Exception as exc:
-        graph_metrics["warnings"].append(str(exc))
+    graph_metrics, _ = _analysis_graph_metrics(service, repo_id, root, target, symbol_ref, rel)
 
     return jsonify({
         **deterministic,

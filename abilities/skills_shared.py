@@ -37,6 +37,19 @@ def _safe_rel_path(rel_path: str) -> bool:
     return not (rel_path.startswith("/") or ".." in Path(rel_path).parts)
 
 
+def _resolve_extraction_target(target_dir: Path, member_name: str) -> Path:
+    """Resolve an archive member and guarantee it stays inside target_dir."""
+    if not member_name or not _safe_rel_path(member_name):
+        raise ValueError(f"Unsafe archive member path: {member_name}")
+    root = target_dir.resolve()
+    candidate = (root / member_name).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"Archive extraction escaped target dir: {member_name}") from exc
+    return candidate
+
+
 def _validated_skill_files(raw_files) -> dict[str, str]:
     if isinstance(raw_files, dict):
         entries = [{"path": path, "content": content} for path, content in raw_files.items()]
@@ -120,11 +133,7 @@ def _safe_extract_zip(archive_path: Path, target_dir: Path) -> None:
             member_name = member.filename
             if not member_name or member_name.endswith("/"):
                 continue
-            if not _safe_rel_path(member_name):
-                raise ValueError(f"Unsafe zip member path: {member_name}")
-            out_path = (target_dir / member_name).resolve()
-            if not str(out_path).startswith(str(target_dir.resolve())):
-                raise ValueError(f"Zip extraction escaped target dir: {member_name}")
+            out_path = _resolve_extraction_target(target_dir, member_name)
             out_path.parent.mkdir(parents=True, exist_ok=True)
             with zip_ref.open(member, "r") as src, out_path.open("wb") as dst:
                 shutil.copyfileobj(src, dst)
@@ -133,14 +142,12 @@ def _safe_extract_zip(archive_path: Path, target_dir: Path) -> None:
 def _safe_extract_tar(archive_path: Path, target_dir: Path) -> None:
     with tarfile.open(archive_path, "r:*") as tar_ref:
         for member in tar_ref.getmembers():
+            if member.issym() or member.islnk():
+                raise ValueError(f"Links are not allowed in skill archives: {member.name}")
             if not member.isfile():
                 continue
             member_name = member.name
-            if not _safe_rel_path(member_name):
-                raise ValueError(f"Unsafe tar member path: {member_name}")
-            out_path = (target_dir / member_name).resolve()
-            if not str(out_path).startswith(str(target_dir.resolve())):
-                raise ValueError(f"Tar extraction escaped target dir: {member_name}")
+            out_path = _resolve_extraction_target(target_dir, member_name)
             out_path.parent.mkdir(parents=True, exist_ok=True)
             extracted = tar_ref.extractfile(member)
             if extracted is None:
