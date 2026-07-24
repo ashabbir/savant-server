@@ -9,6 +9,12 @@ from postgres_client import init_schema
 from db.users import UserDB
 from utils.auth import ALLOWED_SAVANT_APPS
 
+SAVANT_DIR = os.environ.get("SAVANT_DIR", os.path.expanduser("~/.gemini/antigravity-cli"))
+SAVANT_SESSIONS_DIR = os.path.join(SAVANT_DIR, "brain")
+SAVANT_META_DIR = os.path.join(SAVANT_DIR, ".savant-meta")
+SAVANT_STATE_DB = os.path.join(SAVANT_DIR, "state.db")
+_bg_cache = {}
+
 from abilities.routes import abilities_bp
 from context.routes import context_bp
 from knowledge.routes import knowledge_bp
@@ -55,7 +61,6 @@ from routes.preferences import api_preferences, api_models, api_llm_providers
 from utils.session_parser import (
     savant_parse_full_conversation,
     savant_get_session_detail,
-    SAVANT_SESSIONS_DIR,
     _savant_build_session_chains,
 )
 

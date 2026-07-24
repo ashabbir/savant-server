@@ -19,7 +19,7 @@ def _get_app_attr(name: str, default):
 def _savant_build_session_chains():
     """Stub or resolver for session chain resolution."""
     func = _get_app_attr("_savant_build_session_chains", None)
-    if func and callable(func):
+    if func and callable(func) and func.__module__ != __name__:
         return func()
     return {}
 
