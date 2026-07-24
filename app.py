@@ -11,6 +11,15 @@ SAVANT_DIR = os.environ.get("SAVANT_DIR", os.path.expanduser("~/.gemini/antigrav
 SAVANT_SESSIONS_DIR = os.path.join(SAVANT_DIR, "brain")
 SAVANT_META_DIR = os.path.join(SAVANT_DIR, ".savant-meta")
 SAVANT_STATE_DB = os.path.join(SAVANT_DIR, "state.db")
+
+CLAUDE_DIR = os.environ.get("CLAUDE_DIR", os.path.expanduser("~/.config/claude"))
+CODEX_DIR = os.environ.get("CODEX_DIR", os.path.expanduser("~/.codex"))
+CODEX_SESSIONS_DIR = os.path.join(CODEX_DIR, "sessions")
+GEMINI_DIR = os.environ.get("GEMINI_DIR", os.path.expanduser("~/.gemini"))
+GEMINI_CHATS_DIR = os.path.join(GEMINI_DIR, "chats")
+META_DIR = os.path.join(SAVANT_DIR, ".meta")
+SESSION_DIR = SAVANT_SESSIONS_DIR
+
 _bg_cache = {}
 
 

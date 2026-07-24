@@ -129,6 +129,56 @@ def api_session_unassign_jira(session_id):
     return jsonify(updated)
 
 
+@sessions_bp.route("/api/session/<session_id>/workspace", methods=["POST"])
+@sessions_bp.route("/api/claude/session/<session_id>/workspace", methods=["POST"])
+@sessions_bp.route("/api/codex/session/<session_id>/workspace", methods=["POST"])
+@sessions_bp.route("/api/gemini/session/<session_id>/workspace", methods=["POST"])
+@sessions_bp.route("/api/savant/session/<session_id>/workspace", methods=["POST"])
+def api_session_workspace_assign_handler(session_id):
+    user_id = getattr(g, "user_id", "")
+    data = request.get_json(force=True, silent=True) or {}
+    workspace_id = data.get("workspace_id")
+    
+    # Validation for provider-specific sessions if test directory configured
+    path = request.path or ""
+    if "/claude/" in path:
+        import app as app_mod
+        claude_dir = getattr(app_mod, "CLAUDE_DIR", None)
+        if claude_dir and os.path.exists(claude_dir):
+            # Check if session exists in projects
+            found = False
+            projects_dir = os.path.join(claude_dir, "projects")
+            if os.path.exists(projects_dir):
+                for root, _, files in os.walk(projects_dir):
+                    if f"{session_id}.jsonl" in files or os.path.basename(root) == session_id:
+                        found = True
+                        break
+            if not found:
+                return jsonify({"error": "Not a Claude session"}), 404
+
+    if "/codex/" in path:
+        import app as app_mod
+        codex_dir = getattr(app_mod, "CODEX_DIR", None)
+        if codex_dir and os.path.exists(codex_dir):
+            found = False
+            sess_dir = os.path.join(codex_dir, "sessions")
+            if os.path.exists(sess_dir):
+                for root, _, files in os.walk(sess_dir):
+                    if any(session_id in f for f in files):
+                        found = True
+                        break
+            if not found:
+                return jsonify({"error": "Not a Codex session"}), 404
+
+    provider = "claude" if "/claude/" in path else ("codex" if "/codex/" in path else ("gemini" if "/gemini/" in path else "savant"))
+    if workspace_id:
+        from db.workspace_session_links import WorkspaceSessionLinkDB
+        link = WorkspaceSessionLinkDB.upsert(workspace_id, provider, session_id)
+        return jsonify({"id": session_id, "workspace": workspace_id, "link": link}), 200
+    else:
+        return jsonify({"id": session_id, "workspace": None}), 200
+
+
 @sessions_bp.route("/api/session/<session_id>/notes", methods=["GET", "POST", "DELETE"])
 @sessions_bp.route("/api/claude/session/<session_id>/notes", methods=["GET", "POST", "DELETE"])
 @sessions_bp.route("/api/codex/session/<session_id>/notes", methods=["GET", "POST", "DELETE"])
@@ -182,7 +232,23 @@ def api_session_project_files(session_id):
 @sessions_bp.route("/api/savant/session/<session_id>/file/raw", methods=["GET"])
 def api_session_file(session_id):
     path = request.args.get("path", "")
-    return jsonify({"session_id": session_id, "path": path, "content": ""})
+    content = ""
+    if path:
+        import app as app_mod
+        for base in (
+            getattr(app_mod, "CODEX_SESSIONS_DIR", None),
+            getattr(app_mod, "CLAUDE_DIR", None),
+            getattr(app_mod, "SAVANT_SESSIONS_DIR", None),
+        ):
+            if base:
+                for root, _, files in os.walk(base):
+                    if path in files:
+                        try:
+                            content = Path(os.path.join(root, path)).read_text(encoding="utf-8")
+                            break
+                        except Exception:
+                            pass
+    return jsonify({"session_id": session_id, "path": path, "content": content})
 
 
 @sessions_bp.route("/api/session/<session_id>/git-changes", methods=["GET"])

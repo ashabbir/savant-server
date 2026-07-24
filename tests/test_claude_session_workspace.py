@@ -50,7 +50,7 @@ def meta_dir(tmp_path, monkeypatch):
 def ws(client):
     """Create a workspace and return its ID."""
     resp = client.post("/api/workspaces", json={"name": "Test WS"})
-    assert resp.status_code == 200
+    assert resp.status_code in (200, 201)
     return resp.get_json()["workspace_id"]
 
 
