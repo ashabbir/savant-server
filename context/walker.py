@@ -179,7 +179,7 @@ class FileWalker:
         candidate = Path(path)
         if candidate.is_absolute():
             try:
-                candidate = candidate.resolve().relative_to(self.repo_path)
+                candidate = candidate.resolve(strict=False).relative_to(self.repo_path.resolve(strict=False))
             except ValueError:
                 return False
         candidate_text = candidate.as_posix()

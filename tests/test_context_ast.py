@@ -241,40 +241,44 @@ def test_extract_ast_retries_transient_lock(tmp_path, monkeypatch):
 
 def test_insert_ast_node_legacy_schema_with_required_content(client):
     from context.db import ContextDB, init_context_schema
-    from sqlite_client import get_connection
+    from postgres_client import get_connection, release_connection
 
     assert init_context_schema()
 
     conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DROP TABLE IF EXISTS ctx_ast_nodes CASCADE")
+            cur.execute(
+                """
+                CREATE TABLE ctx_ast_nodes (
+                    id SERIAL PRIMARY KEY,
+                    file_id INTEGER NOT NULL,
+                    node_type TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    start_line INTEGER NOT NULL,
+                    end_line INTEGER NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        conn.commit()
 
-    # Simulate legacy schema drift: content column exists and is required.
-    conn.execute("DROP TABLE IF EXISTS ctx_ast_nodes")
-    conn.execute(
-        """
-        CREATE TABLE ctx_ast_nodes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            file_id INTEGER NOT NULL,
-            node_type TEXT NOT NULL,
-            name TEXT NOT NULL,
-            start_line INTEGER NOT NULL,
-            end_line INTEGER NOT NULL,
-            content TEXT NOT NULL,
-            created_at TEXT DEFAULT (datetime('now'))
-        )
-        """
-    )
-    conn.commit()
+        repo = ContextDB.add_repo("repo-legacy", "/tmp/repo-legacy")
+        file_id = ContextDB.insert_file(repo["id"], "legacy.py", "Python", False, 1, "now")
 
-    repo = ContextDB.add_repo("repo-legacy", "/tmp/repo-legacy")
-    file_id = ContextDB.insert_file(repo["id"], "legacy.py", "Python", False, 1, "now")
+        node_id = ContextDB.insert_ast_node(file_id, "function", "legacy_fn", 1, 2)
+        assert node_id > 0
 
-    node_id = ContextDB.insert_ast_node(file_id, "function", "legacy_fn", 1, 2)
-    assert node_id > 0
-
-    rows = conn.execute("SELECT name, content FROM ctx_ast_nodes").fetchall()
-    assert len(rows) == 1
-    assert rows[0]["name"] == "legacy_fn"
-    assert rows[0]["content"] == ""
+        with conn.cursor() as cur:
+            cur.execute("SELECT name, content FROM ctx_ast_nodes")
+            rows = cur.fetchall()
+        assert len(rows) == 1
+        assert rows[0]["name"] == "legacy_fn"
+        assert rows[0]["content"] == ""
+    finally:
+        release_connection(conn)
 
 
 def test_context_mcp_structure_search_accepts_q_alias(monkeypatch):

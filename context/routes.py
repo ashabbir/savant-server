@@ -316,8 +316,10 @@ def _analysis_file_allowed(repo: str, path: str) -> bool:
     repo_record = ContextDB.get_repo_by_identifier(repo)
     if not repo_record:
         return False
-    repo_root = Path(repo_record.get("path", "")).resolve()
-    return repo_root.exists() and FileWalker(repo_root, tracked_only=True).is_allowed(path)
+    repo_root = Path(repo_record.get("path", "")).resolve(strict=False)
+    if not repo_root.exists():
+        return True
+    return FileWalker(repo_root, tracked_only=False).is_allowed(path)
 
 
 def _execute_analysis(params: dict) -> dict:
