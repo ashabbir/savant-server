@@ -250,21 +250,24 @@ def ast_list():
         from db.code_intelligence import CodeIntelligenceConfigDB
         config = CodeIntelligenceConfigDB.get(str(record["id"]))
         if config and config.get("provider") == "codegraph":
-            from code_intelligence.runtime import build_service
-            service = build_service()
-            limit = max(1, min(request.args.get("limit", type=int) or 500, 1000))
-            listed = service.list_symbols(str(record["id"]), _resolve_repo_path(record["path"]),
-                                          limit=limit, cursor=request.args.get("cursor"))
-            health = service.health(str(record["id"]), _resolve_repo_path(record["path"]))
-            nodes = [{
-                "repo": record["name"], "path": item.location.file_path,
-                "node_type": item.kind, "name": item.name,
-                "start_line": item.location.start_line, "end_line": item.location.end_line,
-            } for item in listed["items"]]
-            return jsonify({"ast_count": len(nodes), "nodes": nodes, "provider": listed["provider"],
-                            "freshness": health.freshness.value, "graph_version": health.graph_version,
-                            "incomplete": listed["incomplete"], "cursor": listed["next_cursor"],
-                            "warnings": listed["warnings"], "deprecated": True})
+            try:
+                from code_intelligence.runtime import build_service
+                service = build_service()
+                limit = max(1, min(request.args.get("limit", type=int) or 500, 1000))
+                listed = service.list_symbols(str(record["id"]), _resolve_repo_path(record["path"]),
+                                              limit=limit, cursor=request.args.get("cursor"))
+                health = service.health(str(record["id"]), _resolve_repo_path(record["path"]))
+                nodes = [{
+                    "repo": record["name"], "path": item.location.file_path,
+                    "node_type": item.kind, "name": item.name,
+                    "start_line": item.location.start_line, "end_line": item.location.end_line,
+                } for item in listed["items"]]
+                return jsonify({"ast_count": len(nodes), "nodes": nodes, "provider": listed["provider"],
+                                "freshness": health.freshness.value, "graph_version": health.graph_version,
+                                "incomplete": listed["incomplete"], "cursor": listed["next_cursor"],
+                                "warnings": listed["warnings"], "deprecated": True})
+            except Exception:
+                pass
     repo_filter = repo.split(",") if repo and "," in repo else repo
     nodes = ContextDB.list_ast_nodes(repo_filter)
     return jsonify({"ast_count": len(nodes), "nodes": nodes})

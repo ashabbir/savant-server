@@ -22,7 +22,10 @@ def helper(x):
 """.strip()
     )
     subprocess.run(["git", "-C", str(repo_dir), "init"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_dir), "config", "user.name", "Test"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_dir), "config", "user.email", "test@test.com"], check=True, capture_output=True)
     subprocess.run(["git", "-C", str(repo_dir), "add", "sample.py"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_dir), "commit", "-m", "init"], check=True, capture_output=True)
     return repo_dir
 
 

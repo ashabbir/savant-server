@@ -190,7 +190,7 @@ class FileWalker:
         if not self.tracked_only:
             return True
         if not (self.repo_path / ".git").exists():
-            return False
+            return True
         if candidate_text not in self._get_tracked_paths():
             return False
         ignored = subprocess.run(

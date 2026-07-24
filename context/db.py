@@ -501,11 +501,22 @@ class ContextDB:
             local_conn = True
         try:
             with conn.cursor() as cur:
-                cur.execute(
-                    """INSERT INTO ctx_ast_nodes (file_id, node_type, name, start_line, end_line)
-                       VALUES (%s, %s, %s, %s, %s) RETURNING id""",
-                    (file_id, node_type, name, start_line, end_line),
-                )
+                try:
+                    cur.execute(
+                        """INSERT INTO ctx_ast_nodes (file_id, node_type, name, start_line, end_line)
+                           VALUES (%s, %s, %s, %s, %s) RETURNING id""",
+                        (file_id, node_type, name, start_line, end_line),
+                    )
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    cur.execute(
+                        """INSERT INTO ctx_ast_nodes (file_id, node_type, name, start_line, end_line, content)
+                           VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
+                        (file_id, node_type, name, start_line, end_line, ""),
+                    )
                 row = cur.fetchone()
             conn.commit()
             return row["id"] if row else 0

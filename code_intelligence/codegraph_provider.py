@@ -21,7 +21,7 @@ class CodeGraphProvider:
 
     def _repo(self, repo):
         repo_id = str(repo["repo_id"] if isinstance(repo, dict) else repo.repo_id)
-        root = Path(repo["root"] if isinstance(repo, dict) else repo.root).resolve(strict=True)
+        root = Path(repo["root"] if isinstance(repo, dict) else repo.root).resolve(strict=False)
         if self._registered.get(repo_id) != str(root):
             self.client.call("register", repo_id=repo_id, params={"root": str(root)})
             self._registered[repo_id] = str(root)

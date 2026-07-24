@@ -456,8 +456,12 @@ class Indexer:
             )
 
     def _safe_insert_ast_node(self, file_id, node_type, name, start_line, end_line, file_rel_path, conn=None):
-        try:
+        from hardening import retry_with_backoff
+        @retry_with_backoff(max_retries=3, initial_delay=0.01, max_delay=0.1)
+        def _do_insert():
             ContextDB.insert_ast_node(file_id, node_type, name, start_line, end_line, conn=conn)
+        try:
+            _do_insert()
         except Exception as e:
             logger.warning(f"AST insert failed for {file_rel_path}:{start_line} ({name}): {e}")
 
