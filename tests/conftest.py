@@ -27,15 +27,18 @@ def _isolated_db(tmp_path, monkeypatch, request):
     from sqlite_client import init_sqlite
     init_sqlite()
 
-    from postgres_client import init_schema
+    from postgres_client import get_connection, release_connection, init_schema
     try:
         init_schema()
-    except Exception:
-        pass
-
-    from db.tasks import TaskDB
-    try:
-        TaskDB.clear_all()
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("TRUNCATE experiences, kg_nodes, kg_edges, notes, tasks, workspaces RESTART IDENTITY CASCADE;")
+            conn.commit()
+        except Exception:
+            pass
+        finally:
+            release_connection(conn)
     except Exception:
         pass
 

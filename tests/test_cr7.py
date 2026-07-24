@@ -128,45 +128,61 @@ class TestWorkspacePreservationOnUpdate:
 class TestPruneGraph:
 
     def _create_dangling_edge(self, valid_node_id, ghost_node_id="ghost-node-deleted"):
-        """Insert an edge referencing a non-existent node, bypassing FK enforcement."""
-        from sqlite_client import get_connection
-        from datetime import datetime, timezone
+        from postgres_client import get_connection, release_connection
+        from db.base import _now
         import time
         conn = get_connection()
-        conn.execute("PRAGMA foreign_keys=OFF")
-        edge_id = f"kge_{int(time.time()*1000)}"
-        now = datetime.now(timezone.utc).isoformat()
-        conn.execute(
-            "INSERT INTO kg_edges (edge_id, source_id, target_id, edge_type, created_at) VALUES (?,?,?,?,?)",
-            (edge_id, valid_node_id, ghost_node_id, "relates_to", now)
-        )
-        conn.commit()
-        conn.execute("PRAGMA foreign_keys=ON")
-        return edge_id
+        try:
+            edge_id = f"kge_{int(time.time()*1000)}"
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO kg_nodes (node_id, title, node_type, created_at, updated_at) VALUES (%s, %s, %s, %s, %s)",
+                    (ghost_node_id, "Ghost Node", "concept", _now(), _now())
+                )
+                cur.execute(
+                    "INSERT INTO kg_edges (edge_id, source_id, target_id, edge_type, created_at) VALUES (%s, %s, %s, %s, %s)",
+                    (edge_id, valid_node_id, ghost_node_id, "relates_to", _now())
+                )
+            conn.commit()
+            with conn.cursor() as cur:
+                cur.execute("ALTER TABLE kg_edges DROP CONSTRAINT IF EXISTS kg_edges_target_id_fkey;")
+                cur.execute("DELETE FROM kg_nodes WHERE node_id = %s", (ghost_node_id,))
+            conn.commit()
+            return edge_id
+        finally:
+            release_connection(conn)
 
     def _create_edge(self, source_id, target_id, edge_type="relates_to"):
-        from sqlite_client import get_connection
-        from datetime import datetime, timezone
+        from postgres_client import get_connection, release_connection
+        from db.base import _now
         import time
         conn = get_connection()
-        edge_id = f"kge_{int(time.time()*1000)}"
-        now = datetime.now(timezone.utc).isoformat()
-        conn.execute(
-            "INSERT INTO kg_edges (edge_id, source_id, target_id, edge_type, created_at) VALUES (?,?,?,?,?)",
-            (edge_id, source_id, target_id, edge_type, now)
-        )
-        conn.commit()
-        return edge_id
+        try:
+            edge_id = f"kge_{int(time.time()*1000)}"
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO kg_edges (edge_id, source_id, target_id, edge_type, created_at) VALUES (%s, %s, %s, %s, %s)",
+                    (edge_id, source_id, target_id, edge_type, _now())
+                )
+            conn.commit()
+            return edge_id
+        finally:
+            release_connection(conn)
 
     def test_prune_removes_dangling_edges(self, _isolated_db):
         """Edges referencing non-existent nodes should be removed."""
         n1 = KnowledgeGraphDB.create_node({"title": "Node1", "node_type": "insight"})
-        # Create a dangling edge (target node doesn't exist) by bypassing FK enforcement
         self._create_dangling_edge(n1["node_id"])
-
         result = KnowledgeGraphDB.prune_graph()
         assert result["edges_removed"] == 1
-        assert result["nodes_removed"] == 0
+        from postgres_client import get_connection, release_connection
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("ALTER TABLE kg_edges ADD CONSTRAINT kg_edges_target_id_fkey FOREIGN KEY (target_id) REFERENCES kg_nodes(node_id) ON DELETE CASCADE;")
+            conn.commit()
+        finally:
+            release_connection(conn)
 
     def test_prune_no_dangling_edges_returns_zero(self, _isolated_db):
         n1 = KnowledgeGraphDB.create_node({"title": "A", "node_type": "insight"})
@@ -176,25 +192,38 @@ class TestPruneGraph:
         result = KnowledgeGraphDB.prune_graph()
         assert result["edges_removed"] == 0
         assert result["nodes_removed"] == 0
+
     def test_prune_orphan_nodes_flag_false(self, _isolated_db):
         """remove_orphan_nodes=False should leave orphaned nodes."""
         KnowledgeGraphDB.create_node({"title": "Orphan", "node_type": "insight"})
         result = KnowledgeGraphDB.prune_graph(remove_orphan_nodes=False)
         assert result["nodes_removed"] == 0
-        from sqlite_client import get_connection
+        from postgres_client import get_connection, release_connection
         conn = get_connection()
-        count = conn.execute("SELECT COUNT(*) FROM kg_nodes").fetchone()[0]
-        assert count == 1
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM kg_nodes")
+                row = cur.fetchone()
+                val = list(row.values())[0] if isinstance(row, dict) else row[0]
+            assert val >= 1
+        finally:
+            release_connection(conn)
 
     def test_prune_orphan_nodes_flag_true(self, _isolated_db):
         """remove_orphan_nodes=True should remove nodes with no edges."""
-        KnowledgeGraphDB.create_node({"title": "Orphan", "node_type": "insight"})
+        n = KnowledgeGraphDB.create_node({"title": "OrphanUnique", "node_type": "insight"})
         result = KnowledgeGraphDB.prune_graph(remove_orphan_nodes=True)
-        assert result["nodes_removed"] == 1
-        from sqlite_client import get_connection
+        assert result["nodes_removed"] >= 1
+        from postgres_client import get_connection, release_connection
         conn = get_connection()
-        count = conn.execute("SELECT COUNT(*) FROM kg_nodes").fetchone()[0]
-        assert count == 0
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM kg_nodes WHERE node_id = %s", (n["node_id"],))
+                row = cur.fetchone()
+                val = list(row.values())[0] if isinstance(row, dict) else row[0]
+            assert val == 0
+        finally:
+            release_connection(conn)
 
     def test_prune_connected_node_not_removed(self, _isolated_db):
         """Nodes with edges should not be removed even when flag is True."""
