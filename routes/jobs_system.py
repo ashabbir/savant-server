@@ -191,6 +191,26 @@ def api_mcp_list():
     return jsonify({"servers": tools})
 
 
+# MCP clients occasionally hit the Flask port (8090) with POST /mcp instead
+# of the dedicated MCP SSE ports.  Return a diagnostic instead of a bare 404.
+_MCP_PORT_MAP = {
+    "workspace": int(os.environ.get("SAVANT_MCP_WORKSPACE_PORT", 8091)),
+    "abilities": int(os.environ.get("SAVANT_MCP_ABILITIES_PORT", 8092)),
+    "context":   int(os.environ.get("SAVANT_MCP_CONTEXT_PORT", 8093)),
+    "knowledge": int(os.environ.get("SAVANT_MCP_KNOWLEDGE_PORT", 8094)),
+    "reminders": int(os.environ.get("SAVANT_MCP_REMINDERS_PORT", 8095)),
+}
+
+
+@jobs_system_bp.route("/mcp", methods=["POST", "GET"])
+def api_mcp_wrong_port():
+    return jsonify({
+        "error": "MCP transport endpoints are on dedicated ports, not the Flask API.",
+        "hint": "Update your MCP client config to use the correct port.",
+        "ports": _MCP_PORT_MAP,
+    }), 421
+
+
 @jobs_system_bp.route("/api/mcp/tools", methods=["GET"])
 def api_mcp_tools():
     server_name = request.args.get("server")

@@ -8,6 +8,7 @@ from flask_cors import CORS
 from postgres_client import init_schema
 from db.users import UserDB
 from utils.auth import ALLOWED_SAVANT_APPS
+from utils.request_logging import install_request_logging
 
 SAVANT_DIR = os.environ.get("SAVANT_DIR", os.path.expanduser("~/.gemini/antigravity-cli"))
 SAVANT_SESSIONS_DIR = os.path.join(SAVANT_DIR, "brain")
@@ -75,6 +76,10 @@ app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100 MB limit
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# ── Request lifecycle logging ─────────────────────────────────────────────────
+# Emits structured per-request log lines: method, path, status, user, app, ms.
+install_request_logging(app)
+
 # Initialize database on startup
 with app.app_context():
     try:
@@ -107,29 +112,6 @@ def handle_500(e):
     return jsonify({"error": "Internal server error"}), 500
 
 
-# ── Hardening helpers ─────────────────────────────────────────────────────────
-def _safe_json():
-    """Parse request JSON safely, returning ({}, error_response) on failure."""
-    try:
-        data = request.get_json(force=True, silent=True)
-        if data is None:
-            return {}, None
-        if not isinstance(data, dict):
-            return None, (jsonify({"error": "Request body must be a JSON object"}), 400)
-        return data, None
-    except Exception:
-        return None, (jsonify({"error": "Invalid JSON in request body"}), 400)
-
-def _str_field(data, key, max_len=2000, default=""):
-    """Safely extract a string field with length cap."""
-    val = data.get(key, default)
-    if val is None:
-        return default
-    if not isinstance(val, str):
-        val = str(val)
-    return val.strip()[:max_len]
-
-
 # ── Blueprint Registrations ───────────────────────────────────────────────────
 app.register_blueprint(abilities_bp)
 app.register_blueprint(context_bp)
@@ -159,40 +141,71 @@ _AUTH_SKIP_PREFIXES = (
     "/health/", "/static/",
 )
 
+
+def _is_auth_exempt(path: str) -> bool:
+    """Return True for paths that skip API key authentication."""
+    if not path.startswith("/api/"):
+        return True
+    return any(path.startswith(p) for p in _AUTH_SKIP_PREFIXES)
+
+
+def _resolve_api_key() -> str:
+    """Extract the API key from headers or query params."""
+    return (
+        request.headers.get("X-API-Key", "").strip()
+        or request.args.get("api_key", "").strip()
+    )
+
+
+def _use_test_fallback() -> bool:
+    """In TESTING mode, set a default user and return True."""
+    if app.config.get("TESTING"):
+        g.user_id = "ahmed"
+        return True
+    return False
+
+
+def _validate_api_key(api_key: str):
+    """Resolve API key to a user or return an error tuple."""
+    user = UserDB.get_by_api_key(api_key)
+    if not user:
+        return None, (jsonify({"error": "Invalid API key."}), 401)
+    if int(user.get("is_active", 1)) != 1:
+        return None, (jsonify({"error": "User account is inactive."}), 401)
+    return user, None
+
+
 @app.before_request
 def _authenticate():
     if request.method == "OPTIONS":
         return None
 
-    p = request.path or "/"
-    if not p.startswith("/api/"):
+    path = request.path or "/"
+    if _is_auth_exempt(path):
         g.user_id = ""
         return None
-    for prefix in _AUTH_SKIP_PREFIXES:
-        if p.startswith(prefix):
-            g.user_id = ""
-            return None
 
-    api_key = (
-        request.headers.get("X-API-Key", "").strip()
-        or request.args.get("api_key", "").strip()
-    )
+    api_key = _resolve_api_key()
     if not api_key:
-        if app.config.get("TESTING"):
-            g.user_id = "ahmed"
-            return None
-        return jsonify({"error": "API key required. Set X-API-Key header or api_key query param."}), 401
+        return None if _use_test_fallback() else (
+            jsonify({"error": "API key required. Set X-API-Key header or api_key query param."}), 401
+        )
 
-    user = UserDB.get_by_api_key(api_key)
-    if not user:
-        if app.config.get("TESTING"):
-            g.user_id = "ahmed"
-            return None
-        return jsonify({"error": "Invalid API key."}), 401
-    if int(user.get("is_active", 1)) != 1:
-        return jsonify({"error": "User account is inactive."}), 401
+    user, err = _validate_api_key(api_key)
+    if err:
+        return None if _use_test_fallback() else err
+
     g.user_id = user["user_id"]
     return None
+
+
+def _resolve_app_name() -> str:
+    """Extract the source application name from request headers."""
+    return (
+        request.headers.get("X-App-Name")
+        or request.headers.get("X-Savant-App")
+        or ""
+    ).strip().lower()
 
 
 @app.before_request
@@ -202,11 +215,7 @@ def _require_allowed_savant_app():
     if app.config.get("TESTING") or os.environ.get("SAVANT_DISABLE_APP_CHECK") == "1":
         return None
 
-    app_name = (
-        request.headers.get("X-App-Name")
-        or request.headers.get("X-Savant-App")
-        or ""
-    ).strip().lower()
+    app_name = _resolve_app_name()
     if not app_name or app_name not in ALLOWED_SAVANT_APPS:
         return jsonify({"error": "Access denied."}), 403
     return None
