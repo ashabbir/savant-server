@@ -430,6 +430,31 @@ class TestJobWorker:
         with pytest.raises(_CancelledError):
             cb(50, "Embedding")
 
+    def test_bridge_exception_after_cancel_is_terminal_cancelled(self, _isolated_db, monkeypatch):
+        from db.jobs import JobDB
+        import context.job_worker as worker
+
+        job = JobDB.create_job("codegraph_sync", "repo-cancelled-bridge")
+        JobDB.set_running(job["id"])
+        JobDB.request_cancel(job["id"])
+        monkeypatch.setattr(JobDB, "next_queued", lambda: job)
+        monkeypatch.setattr(worker, "_execute_job", lambda *_args: (_ for _ in ()).throw(RuntimeError("bridge cancelled")))
+
+        worker._process_next_job()
+
+        assert JobDB.get_job(job["id"])["status"] == "cancelled"
+
+    def test_codegraph_dispatch_passes_job_id(self, monkeypatch):
+        import context.job_worker as worker
+
+        calls = []
+        monkeypatch.setattr(worker, "_make_progress_callback", lambda job_id: (lambda *_args: None))
+        monkeypatch.setattr(worker, "_run_code_intelligence_sync", lambda *args: calls.append(args) or {"ok": True})
+
+        assert worker._execute_job("job-123", "codegraph_sync", "repo-25") == {"ok": True}
+        assert calls[0][:2] == ("job-123", "repo-25")
+        assert callable(calls[0][2])
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 4. Backward compatibility — indexing-status merges job data

@@ -75,6 +75,10 @@ def _process_next_job():
         JDB.set_cancelled(job_id)
         logger.info(f"Job {job_id} cancelled: {job_type} → {target}")
     except Exception as e:
+        if JobDB.is_cancel_requested(job_id):
+            JobDB.set_cancelled(job_id)
+            logger.info(f"Job {job_id} cancelled during {job_type}: {target}")
+            return
         logger.error(f"Job {job_id} failed: {e}")
         JobDB.set_failed(job_id, str(e)[:2000])
 
@@ -113,14 +117,14 @@ def _execute_job(job_id: str, job_type: str, target: str) -> dict:
     elif job_type == "ast-all":
         return _run_batch_ast(progress_cb)
     elif job_type in ("codegraph_index", "codegraph_sync"):
-        return _run_code_intelligence_sync(target, progress_cb)
+        return _run_code_intelligence_sync(job_id, target, progress_cb)
     elif job_type == "differential_sync":
-        return _run_differential_sync(target, progress_cb)
+        return _run_differential_sync(job_id, target, progress_cb)
     else:
         raise ValueError(f"Unknown job type: {job_type}")
 
 
-def _run_differential_sync(target: str, progress_cb) -> dict:
+def _run_differential_sync(job_id: str, target: str, progress_cb) -> dict:
     """Run differential semantic index update and structural graph sync for a single repo."""
     progress_cb(5, "Preparing", f"Starting differential sync for {target}")
 
@@ -134,7 +138,7 @@ def _run_differential_sync(target: str, progress_cb) -> dict:
     )
 
     progress_cb(60, "Differential Graph Sync", "Syncing structural code graph")
-    graph_res = _run_code_intelligence_sync(target, progress_cb)
+    graph_res = _run_code_intelligence_sync(job_id, target, progress_cb)
 
     progress_cb(100, "Complete", "Differential sync completed successfully")
     return {
@@ -145,7 +149,7 @@ def _run_differential_sync(target: str, progress_cb) -> dict:
     }
 
 
-def _run_code_intelligence_sync(target: str, progress_cb) -> dict:
+def _run_code_intelligence_sync(job_id: str, target: str, progress_cb) -> dict:
     """Run structural create/sync without changing semantic repository status."""
     from code_intelligence.runtime import build_service
     from db.code_intelligence import CodeIntelligenceConfigDB
