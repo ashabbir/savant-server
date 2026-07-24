@@ -41,7 +41,7 @@ def provider_health(repo_id):
         return error
     try:
         health = build_service().health(repo_id, Path(record["path"]))
-        active = JobDB.find_active("codegraph_sync", repo_id) or JobDB.find_active("codegraph_index", repo_id)
+        active = JobDB.find_active_types(["codegraph_sync", "codegraph_index"], repo_id)
         payload = health.model_dump(mode="json")
         payload.update({"capabilities": build_service().registry.get_provider(repo_id).capabilities.model_dump(), "current_job": active})
         return jsonify(payload)
@@ -54,13 +54,13 @@ def sync(repo_id):
     record, error = _repo(repo_id)
     if error:
         return error
-    active = JobDB.find_active("codegraph_sync", repo_id) or JobDB.find_active("codegraph_index", repo_id)
+    active = JobDB.find_active_types(["codegraph_sync", "codegraph_index"], repo_id)
     if active:
         return jsonify({"started": True, "reused": True, "repo_id": repo_id, "provider": "codegraph", "job_id": active["id"]})
     try:
         job = JobDB.create_job("codegraph_sync", repo_id)
     except Exception:
-        active = JobDB.find_active("codegraph_sync", repo_id) or JobDB.find_active("codegraph_index", repo_id)
+        active = JobDB.find_active_types(["codegraph_sync", "codegraph_index"], repo_id)
         if not active:
             raise
         job = active

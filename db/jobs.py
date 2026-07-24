@@ -69,6 +69,23 @@ class JobDB:
             release_connection(conn)
 
     @staticmethod
+    def find_active_types(job_types: list[str], target: str) -> dict | None:
+        """Find a queued or running job matching any of the specified types and target."""
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT * FROM jobs
+                       WHERE job_type = ANY(%s) AND target = %s AND status IN ('queued', 'running')
+                       ORDER BY created_at DESC LIMIT 1""",
+                    (list(job_types), target),
+                )
+                row = cur.fetchone()
+            return _row_to_dict(row, _JSON_FIELDS)
+        finally:
+            release_connection(conn)
+
+    @staticmethod
     def next_queued() -> dict | None:
         """Atomically claim and return the oldest queued job (FIFO).
 
