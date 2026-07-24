@@ -202,14 +202,17 @@ class JobDB:
 
     @staticmethod
     def request_cancel(job_id: str) -> bool:
-        """Mark a job for cancellation. Returns True if the job was running/queued."""
+        """Stop a queued job immediately or request cooperative running-job cancellation."""
         conn = get_connection()
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    """UPDATE jobs SET status = 'cancelling', phase = 'Cancelling'
+                    """UPDATE jobs
+                       SET status = CASE WHEN status = 'queued' THEN 'cancelled' ELSE 'cancelling' END,
+                           phase = CASE WHEN status = 'queued' THEN 'Cancelled' ELSE 'Cancelling' END,
+                           finished_at = CASE WHEN status = 'queued' THEN %s ELSE finished_at END
                        WHERE id = %s AND status IN ('queued', 'running')""",
-                    (job_id,),
+                    (_now(), job_id),
                 )
                 count = cur.rowcount
             conn.commit()

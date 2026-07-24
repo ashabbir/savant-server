@@ -375,8 +375,18 @@ class Indexer:
             return
 
         try:
-            language = tree_sitter_languages.get_language(lang_name)
-            parser = tree_sitter_languages.get_parser(lang_name)
+            # tree_sitter_languages still calls the legacy constructor internally.
+            # Keep its upstream compatibility warning out of every indexing job log.
+            import warnings
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"Language\(path, name\) is deprecated.*",
+                    category=FutureWarning,
+                    module=r"tree_sitter",
+                )
+                language = tree_sitter_languages.get_language(lang_name)
+                parser = tree_sitter_languages.get_parser(lang_name)
             content_bytes = content.encode("utf-8")
             tree = parser.parse(content_bytes)
 

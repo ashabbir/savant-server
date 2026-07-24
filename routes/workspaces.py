@@ -103,9 +103,8 @@ def api_workspace_detail(ws_id):
 
 @workspaces_bp.route("/api/workspaces/<ws_id>/session-links", methods=["GET"])
 def api_workspace_session_links_list(ws_id):
-    user_id = getattr(g, "user_id", "")
-    links = WorkspaceSessionLinkDB.list_by_workspace(ws_id, user_id=user_id)
-    return jsonify(links)
+    links = WorkspaceSessionLinkDB.list_by_workspace(ws_id)
+    return jsonify({"links": links})
 
 
 @workspaces_bp.route("/api/workspaces/<ws_id>/session-links", methods=["POST"])
@@ -117,13 +116,7 @@ def api_workspace_session_links_upsert(ws_id):
     if not session_id:
         return jsonify({"error": "session_id is required"}), 400
 
-    link = WorkspaceSessionLinkDB.upsert({
-        "workspace_id": ws_id,
-        "provider": provider,
-        "session_id": session_id,
-        "user_id": user_id,
-        "attached_at": data.get("attached_at"),
-    })
+    link = WorkspaceSessionLinkDB.upsert(ws_id, provider, session_id)
     return jsonify(link), 200
 
 
@@ -131,10 +124,10 @@ def api_workspace_session_links_upsert(ws_id):
 def api_workspace_session_links_delete(ws_id, provider, session_id):
     user_id = getattr(g, "user_id", "")
     norm_provider = _normalize_provider_name(provider)
-    deleted = WorkspaceSessionLinkDB.delete_link(ws_id, norm_provider, session_id, user_id=user_id)
+    deleted = WorkspaceSessionLinkDB.delete_from_workspace(ws_id, norm_provider, session_id)
     if not deleted:
         return jsonify({"error": "Session link not found"}), 404
-    return jsonify({"status": "unlinked"}), 200
+    return jsonify({"deleted": True}), 200
 
 
 @workspaces_bp.route("/api/session-links/resolve", methods=["GET"])
@@ -145,7 +138,7 @@ def api_session_links_resolve():
         return jsonify({"error": "session_id required"}), 400
 
     user_id = getattr(g, "user_id", "")
-    link = WorkspaceSessionLinkDB.find_by_session(session_id, provider=_normalize_provider_name(provider) if provider else None, user_id=user_id)
+    link = WorkspaceSessionLinkDB.resolve(_normalize_provider_name(provider), session_id)
     if not link:
         return jsonify({"workspace_id": None, "workspace": None}), 200
 

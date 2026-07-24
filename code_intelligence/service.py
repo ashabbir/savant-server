@@ -46,8 +46,11 @@ class CodeIntelligenceService:
         repo = {"repo_id": repo_id, "name": repo_id, "root": root}
         return provider, getattr(provider, operation)(repo, *args, **kwargs)
 
-    def ensure_index(self, repo_id, root, *, mode="create_or_sync"):
-        _provider, result = self._dispatch(repo_id, root, "ensure_index", mode=mode)
+    def ensure_index(self, repo_id, root, *, mode="create_or_sync", request_id=None):
+        kwargs = {"mode": mode}
+        if request_id is not None:
+            kwargs["request_id"] = request_id
+        _provider, result = self._dispatch(repo_id, root, "ensure_index", **kwargs)
         return result
 
     def health(self, repo_id, root):

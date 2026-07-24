@@ -16,6 +16,8 @@ mkdir -p "$DATA_DIR/hf" "$DATA_DIR/abilities/personas" "$DATA_DIR/abilities/rule
 
 export SAVANT_API_BASE="${SAVANT_API_BASE:-http://127.0.0.1:${FLASK_PORT:-8090}}"
 export SAVANT_APP_NAME="${SAVANT_APP_NAME:-savant-mcp}"
+export SAVANT_EXTERNAL_PERIODIC_RUNNER=1
+export NODE_OPTIONS="${NODE_OPTIONS:---disable-warning=ExperimentalWarning}"
 
 # Start the private CodeGraph bridge before API workers. Its Unix socket lives
 # only inside this container and is never exposed as a service or port.

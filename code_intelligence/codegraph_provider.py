@@ -27,11 +27,12 @@ class CodeGraphProvider:
             self._registered[repo_id] = str(root)
         return repo_id
 
-    def ensure_index(self, repo, mode="create_or_sync"):
+    def ensure_index(self, repo, mode="create_or_sync", request_id=None):
         repo_id = self._repo(repo)
         return IndexResult.model_validate(self.client.call(
             "ensure_index", repo_id=repo_id,
             params={"mode": mode, "watch": self.watch_enabled},
+            request_id=request_id,
             timeout=self.index_timeout,
         ))
 

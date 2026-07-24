@@ -154,7 +154,9 @@ def _run_code_intelligence_sync(target: str, progress_cb) -> dict:
     progress_cb(5, "Preparing", "Resolving structural provider")
     CodeIntelligenceConfigDB.upsert(provider_repo_id, freshness="pending_sync", last_error_code=None)
     try:
-        result = build_service().ensure_index(provider_repo_id, repo_path, mode="create_or_sync")
+        result = build_service().ensure_index(
+            provider_repo_id, repo_path, mode="create_or_sync", request_id=job_id
+        )
         progress_cb(95, "Finalizing", "Recording structural graph state")
         health = build_service().health(provider_repo_id, repo_path)
         CodeIntelligenceConfigDB.upsert(

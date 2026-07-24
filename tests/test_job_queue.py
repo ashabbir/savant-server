@@ -129,6 +129,19 @@ class TestJobDB:
         assert ok is True
         assert JobDB.is_cancel_requested(j["id"])
 
+    def test_cancel_queued_job_finishes_immediately(self, _isolated_db):
+        from db.jobs import JobDB
+        j = JobDB.create_job("codegraph_sync", "repo-a")
+
+        ok = JobDB.request_cancel(j["id"])
+
+        assert ok is True
+        cancelled = JobDB.get_job(j["id"])
+        assert cancelled["status"] == "cancelled"
+        assert cancelled["phase"] == "Cancelled"
+        assert cancelled["finished_at"] is not None
+        assert JobDB.find_active("codegraph_sync", "repo-a") is None
+
     def test_cancel_done_job_no_op(self, _isolated_db):
         from db.jobs import JobDB
         j = JobDB.create_job("index", "repo-a")
@@ -310,6 +323,39 @@ class TestJobRoutes:
         # Verify it's marked cancelling
         job = JobDB.get_job(job_id)
         assert job["status"] == "cancelling"
+
+    def test_cancel_queued_graph_job(self, client):
+        from db.jobs import JobDB
+        r = client.post("/api/jobs/submit",
+                        json={"job_type": "codegraph_sync", "target": "repo-graph"})
+        job_id = r.get_json()["job_id"]
+
+        resp = client.post("/api/jobs/cancel", json={"job_id": job_id})
+
+        assert resp.status_code == 200
+        assert resp.get_json()["cancelled"] is True
+        assert JobDB.get_job(job_id)["status"] == "cancelled"
+
+    def test_cancel_running_graph_job_stops_bridge_request(self, client, monkeypatch):
+        from db.jobs import JobDB
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+
+        job = JobDB.create_job("codegraph_sync", "repo-graph-running")
+        JobDB.set_running(job["id"])
+        bridge = SimpleNamespace(cancel=Mock(return_value={"cancelled": True}))
+        provider = SimpleNamespace(client=bridge)
+        service = SimpleNamespace(
+            registry=SimpleNamespace(get_provider=lambda _repo_id: provider)
+        )
+        monkeypatch.setattr("code_intelligence.runtime.build_service", lambda: service)
+
+        resp = client.post("/api/jobs/cancel", json={"job_id": job["id"]})
+
+        assert resp.status_code == 200
+        assert resp.get_json()["bridge_cancelled"] is True
+        bridge.cancel.assert_called_once_with(job["id"])
+        assert JobDB.get_job(job["id"])["status"] == "cancelling"
 
     def test_cancel_nonexistent(self, client):
         resp = client.post("/api/jobs/cancel", json={"job_id": "fake"})

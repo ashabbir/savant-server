@@ -3,7 +3,6 @@
 import os
 import sys
 import json
-import uuid
 import time
 from flask import Blueprint, g, jsonify, request
 from db.jobs import JobDB
@@ -64,26 +63,27 @@ def _list_mcp_tools(server_name=None):
 @jobs_system_bp.route("/api/jobs/submit", methods=["POST"])
 def api_jobs_submit():
     data = request.get_json(force=True, silent=True) or {}
-    job_type = (data.get("job_type") or data.get("type") or "indexing").strip()
-    user_id = getattr(g, "user_id", "")
-    
-    created = JobDB.create({
-        "job_id": f"job-{uuid.uuid4().hex[:8]}",
-        "job_type": job_type,
-        "status": "queued",
-        "user_id": user_id,
-        "payload": data.get("payload", {}),
-    })
-    return jsonify(created), 201
+    job_type = (data.get("job_type") or data.get("type") or "").strip()
+    target = (data.get("target") or "").strip()
+    allowed = {"index", "reindex", "ast", "index-all", "ast-all",
+               "codegraph_index", "codegraph_sync", "differential_sync"}
+    if not job_type or not target:
+        return jsonify({"error": "job_type and target are required"}), 400
+    if job_type not in allowed:
+        return jsonify({"error": f"Unsupported job type: {job_type}"}), 400
+    existing = JobDB.find_active(job_type, target)
+    if existing:
+        return jsonify({"job_id": existing["id"], "status": existing["status"], "reused": True})
+    created = JobDB.create_job(job_type, target)
+    return jsonify({"job_id": created["id"], "status": created["status"]})
 
 
 @jobs_system_bp.route("/api/jobs/status", methods=["GET"])
 def api_jobs_status():
-    job_id = request.args.get("job_id", "").strip()
+    job_id = (request.args.get("id") or request.args.get("job_id") or "").strip()
     if not job_id:
         return jsonify({"error": "job_id is required"}), 400
-    user_id = getattr(g, "user_id", "")
-    job = JobDB.get_by_id(job_id, user_id=user_id)
+    job = JobDB.get_job(job_id)
     if not job:
         return jsonify({"error": "Job not found"}), 404
     return jsonify(job)
@@ -91,10 +91,8 @@ def api_jobs_status():
 
 @jobs_system_bp.route("/api/jobs/list", methods=["GET"])
 def api_jobs_list():
-    user_id = getattr(g, "user_id", "")
     status = request.args.get("status")
-    jobs = JobDB.list_all(user_id=user_id, status=status)
-    return jsonify(jobs)
+    return jsonify({"jobs": JobDB.list_jobs(status=status)})
 
 
 @jobs_system_bp.route("/api/jobs/cancel", methods=["POST"])
@@ -103,20 +101,37 @@ def api_jobs_cancel():
     job_id = (data.get("job_id") or "").strip()
     if not job_id:
         return jsonify({"error": "job_id is required"}), 400
-    user_id = getattr(g, "user_id", "")
-    cancelled = JobDB.cancel(job_id, user_id=user_id)
-    if not cancelled:
-        return jsonify({"error": "Job not found or already completed"}), 404
-    return jsonify({"status": "cancelled", "job_id": job_id})
+    job = JobDB.get_job(job_id)
+    cancelled = JobDB.request_cancel(job_id)
+    bridge_cancelled = False
+    if cancelled and job and job.get("status") == "running" and job.get("job_type") in {
+        "codegraph_index", "codegraph_sync"
+    }:
+        try:
+            from code_intelligence.runtime import build_service
+            provider = build_service().registry.get_provider(str(job.get("target")))
+            provider.client.cancel(job_id)
+            bridge_cancelled = True
+        except Exception as exc:
+            # The persistent cancellation flag remains authoritative; the worker
+            # will observe it if the bridge operation completes concurrently.
+            return jsonify({
+                "cancelled": True,
+                "bridge_cancelled": False,
+                "job_id": job_id,
+                "warning": f"Cancellation requested, but graph bridge acknowledgement failed: {exc}",
+            })
+    return jsonify({
+        "cancelled": cancelled,
+        "bridge_cancelled": bridge_cancelled,
+        "job_id": job_id,
+    })
 
 
 @jobs_system_bp.route("/api/jobs/<job_id>", methods=["DELETE"])
 def api_jobs_delete(job_id):
-    user_id = getattr(g, "user_id", "")
-    deleted = JobDB.delete(job_id, user_id=user_id)
-    if not deleted:
-        return jsonify({"error": "Job not found"}), 404
-    return jsonify({"status": "deleted"}), 200
+    deleted = JobDB.delete_job(job_id)
+    return jsonify({"deleted": deleted, "job_id": job_id})
 
 
 @jobs_system_bp.route("/api/db/health", methods=["GET"])

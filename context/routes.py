@@ -1056,15 +1056,16 @@ def _merge_active_index_jobs(live: dict) -> None:
                 and finished_at is not None
                 and (datetime.now(timezone.utc) - finished_at).total_seconds() <= 600
             )
-            if job_status in {"queued", "running"} or is_recent_terminal:
+            if job_status in {"queued", "running", "cancelling"} or is_recent_terminal:
                 current["structural_job"] = job
             continue
-        if job.get("status") not in {"queued", "running"}:
+        if job.get("status") not in {"queued", "running", "cancelling"}:
             continue
         if live.get(target, {}).get("status") == "indexing":
             continue
         live[target] = _index_status_base(
-            status="indexing" if job.get("status") == "running" else "queued",
+            status=("cancelling" if job.get("status") == "cancelling"
+                    else "indexing" if job.get("status") == "running" else "queued"),
             phase=job.get("phase", ""), progress=job.get("progress", 0),
             current_file=job.get("message", ""), job_id=job.get("id"),
             job_type=job.get("job_type", ""),
