@@ -13,10 +13,14 @@ from .provider import CodeIntelligenceError, ErrorCategory
 _ERRORS = {category.name: category for category in ErrorCategory}
 
 
+DEFAULT_TIMEOUT = 15.0
+DEFAULT_MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+
+
 class CodeGraphBridgeClient:
     READ_CHUNK_SIZE = 65536
 
-    def __init__(self, socket_path: str | Path, *, timeout: float = 15.0, max_response_bytes: int = 2 * 1024 * 1024) -> None:
+    def __init__(self, socket_path: str | Path, *, timeout: float = DEFAULT_TIMEOUT, max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES) -> None:
         self.socket_path = str(socket_path)
         self.timeout = timeout
         self.max_response_bytes = max_response_bytes
@@ -25,11 +29,15 @@ class CodeGraphBridgeClient:
         request = {"id": request_id, "op": operation, "repo_id": repo_id, "params": params or {}}
         return json.dumps(request, separators=(",", ":")).encode() + b"\n"
 
+    def _create_connection(self, timeout: float | None) -> socket.socket:
+        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        connection.settimeout(self.timeout if timeout is None else timeout)
+        connection.connect(self.socket_path)
+        return connection
+
     def _call_bridge(self, payload: bytes, timeout: float | None) -> bytes:
         try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-                connection.settimeout(self.timeout if timeout is None else timeout)
-                connection.connect(self.socket_path)
+            with self._create_connection(timeout) as connection:
                 connection.sendall(payload)
                 return self._read_line(connection)
         except (TimeoutError, socket.timeout) as error:
@@ -64,16 +72,15 @@ class CodeGraphBridgeClient:
     def _read_line(self, connection: socket.socket) -> bytes:
         chunks = bytearray()
         while True:
-            chunk = connection.recv(min(self.READ_CHUNK_SIZE, self.max_response_bytes + 1 - len(chunks)))
+            max_read = self.max_response_bytes + 1 - len(chunks)
+            chunk = connection.recv(min(self.READ_CHUNK_SIZE, max_read))
             if not chunk:
                 raise CodeIntelligenceError(ErrorCategory.ENGINE_UNAVAILABLE, "CodeGraph bridge closed the connection", retryable=True)
             chunks.extend(chunk)
             newline = chunks.find(b"\n")
             if newline >= 0:
-                if newline > self.max_response_bytes:
-                    raise CodeIntelligenceError(ErrorCategory.INTERNAL, "CodeGraph bridge response exceeded size cap")
                 return bytes(chunks[:newline])
-            elif len(chunks) > self.max_response_bytes:
+            if len(chunks) > self.max_response_bytes:
                 raise CodeIntelligenceError(ErrorCategory.INTERNAL, "CodeGraph bridge response exceeded size cap")
 
 

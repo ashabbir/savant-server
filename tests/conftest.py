@@ -33,7 +33,7 @@ def _isolated_db(tmp_path, monkeypatch, request):
         conn = get_connection()
         try:
             with conn.cursor() as cur:
-                cur.execute("TRUNCATE experiences, kg_nodes, kg_edges, notes, tasks, workspaces RESTART IDENTITY CASCADE;")
+                cur.execute("TRUNCATE experiences, kg_nodes, kg_edges, notes, tasks, workspaces, jira_tickets, jira_notes, merge_requests, mr_notes RESTART IDENTITY CASCADE;")
             conn.commit()
         except Exception:
             pass

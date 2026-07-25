@@ -70,6 +70,9 @@ class JiraTicketDB:
         conn = get_connection()
         try:
             now = _now()
+            if not ticket.get("ticket_id"):
+                import uuid
+                ticket["ticket_id"] = f"jt_{uuid.uuid4().hex[:12]}"
             with conn.cursor() as cur:
                 cur.execute(
                     """INSERT INTO jira_tickets

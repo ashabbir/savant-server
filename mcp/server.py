@@ -216,13 +216,13 @@ def get_current_workspace(session_id: str = "") -> dict[str, Any]:
         }
 
     workspaces = _api("GET", "/api/workspaces")
-    ws = next((w for w in workspaces if w["id"] == ws_id), None)
+    ws = next((w for w in workspaces if (w.get("id") or w.get("workspace_id")) == ws_id), None)
     if not ws:
         return {"error": f"Workspace {ws_id} not found in dashboard.", "session_id": sid}
 
     return {
         "workspace": {
-            "id": ws["id"],
+            "id": ws.get("id") or ws.get("workspace_id"),
             "name": ws.get("name", ""),
             "description": ws.get("description", ""),
             "priority": ws.get("priority", "medium"),
@@ -245,7 +245,7 @@ def list_workspaces(status: str = "open") -> list[dict]:
         workspaces = [w for w in workspaces if w.get("status", "open") == status]
     return [
         {
-            "id": w["id"],
+            "id": w.get("id") or w.get("workspace_id"),
             "name": w.get("name", ""),
             "description": w.get("description", ""),
             "priority": w.get("priority", "medium"),
@@ -308,7 +308,7 @@ def get_workspace(workspace_id: str = "", name: str = "") -> dict:
     workspaces = _api("GET", "/api/workspaces")
 
     if workspace_id:
-        ws = next((w for w in workspaces if w["id"] == workspace_id), None)
+        ws = next((w for w in workspaces if (w.get("id") or w.get("workspace_id")) == workspace_id), None)
     elif name:
         name_lower = name.lower()
         ws = next((w for w in workspaces if name_lower in w.get("name", "").lower()), None)
@@ -319,7 +319,7 @@ def get_workspace(workspace_id: str = "", name: str = "") -> dict:
         return {"error": f"Workspace not found (id={workspace_id}, name={name})"}
 
     return {
-        "id": ws["id"],
+        "id": ws.get("id") or ws.get("workspace_id"),
         "name": ws.get("name", ""),
         "description": ws.get("description", ""),
         "priority": ws.get("priority", "medium"),

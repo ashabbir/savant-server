@@ -122,9 +122,8 @@ class AbilityMatcher:
     def _compact(s: str) -> str:
         return re.sub(r"[^a-z0-9]", "", s or "")
 
-    def _repo_keys(self, blk: Block) -> List[str]:
-        keys: List[str] = []
-        keys.append(blk.id)
+    def _extract_raw_keys(self, blk: Block) -> List[str]:
+        keys = [blk.id]
         if blk.id.startswith("repo."):
             keys.append(blk.id[len("repo."):])
         if blk.name:
@@ -132,18 +131,26 @@ class AbilityMatcher:
         for a in (blk.aliases or []):
             if a:
                 keys.append(a)
-        normed: List[str] = []
-        for k in list(keys):
+        return keys
+
+    def _add_normalized_keys(self, keys: List[str]) -> List[str]:
+        result = list(keys)
+        for k in keys:
             nk = self._norm_key(k)
-            if nk not in keys:
-                normed.append(nk)
-        keys.extend(normed)
-        compacted: List[str] = []
-        for k in list(keys):
+            if nk not in result:
+                result.append(nk)
+        return result
+
+    def _add_compacted_keys(self, keys: List[str]) -> List[str]:
+        result = list(keys)
+        for k in keys:
             ck = self._compact(self._norm_key(k))
-            if ck and ck not in keys:
-                compacted.append(ck)
-        keys.extend(compacted)
+            if ck and ck not in result:
+                result.append(ck)
+        return result
+
+    @staticmethod
+    def _filter_unique(keys: List[str]) -> List[str]:
         seen: Set[str] = set()
         ordered: List[str] = []
         for k in keys:
@@ -151,6 +158,12 @@ class AbilityMatcher:
                 ordered.append(k)
                 seen.add(k)
         return ordered
+
+    def _repo_keys(self, blk: Block) -> List[str]:
+        keys = self._extract_raw_keys(blk)
+        keys = self._add_normalized_keys(keys)
+        keys = self._add_compacted_keys(keys)
+        return self._filter_unique(keys)
 
     def _repo_key_match(
         self, query: str, query_norm: str, query_compact: str, key: str

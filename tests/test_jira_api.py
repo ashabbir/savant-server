@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 def _create_workspace(client, name="Jira Test WS"):
     resp = client.post("/api/workspaces", json={"name": name})
-    assert resp.status_code == 200, f"Workspace creation failed: {resp.data}"
+    assert resp.status_code in (200, 201), f"Workspace creation failed: {resp.data}"
     return resp.get_json()["workspace_id"]
 
 
