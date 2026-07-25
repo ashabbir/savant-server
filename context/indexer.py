@@ -69,6 +69,78 @@ def _schedule_status_cleanup(project: str):
     threading.Thread(target=cleanup, daemon=True).start()
 
 
+def get_git_diff_files(repo_path: Path, before_commit: Optional[str] = None, after_commit: Optional[str] = None):
+    import subprocess
+    added = []
+    modified = []
+    deleted = []
+
+    if not (repo_path / ".git").is_dir():
+        return added, modified, deleted
+
+    # If commits are specified, diff them
+    if before_commit and after_commit and before_commit != after_commit:
+        cmd = ["git", "diff", "--name-status", before_commit, after_commit]
+        res = subprocess.run(cmd, cwd=str(repo_path), capture_output=True, text=True)
+        if res.returncode == 0:
+            for line in res.stdout.splitlines():
+                parts = line.strip().split("\t")
+                if len(parts) < 2:
+                    continue
+                status = parts[0]
+                filepath = parts[1]
+                if status.startswith("A"):
+                    added.append(filepath)
+                elif status.startswith("M") or status.startswith("T"):
+                    modified.append(filepath)
+                elif status.startswith("D"):
+                    deleted.append(filepath)
+                elif status.startswith("R"):
+                    deleted.append(parts[1])
+                    if len(parts) > 2:
+                        added.append(parts[2])
+                    else:
+                        added.append(parts[1])
+                elif status.startswith("C"):
+                    if len(parts) > 2:
+                        added.append(parts[2])
+            return added, modified, deleted
+
+    # Otherwise, query status for working tree/staged changes
+    cmd = ["git", "status", "--porcelain", "-z"]
+    res = subprocess.run(cmd, cwd=str(repo_path), capture_output=True)
+    if res.returncode == 0:
+        out = res.stdout
+        idx = 0
+        while idx < len(out):
+            if idx + 2 >= len(out):
+                break
+            xy = out[idx:idx+2].decode("ascii", errors="ignore")
+            next_null = out.find(b"\0", idx + 3)
+            if next_null == -1:
+                break
+            path = out[idx+3:next_null].decode("utf-8", errors="ignore")
+            idx = next_null + 1
+
+            x, y = xy[0], xy[1]
+            if x == 'D' or y == 'D':
+                deleted.append(path)
+            elif x == 'A' or y == 'A' or x == '?' or y == '?':
+                added.append(path)
+            elif x == 'M' or y == 'M':
+                modified.append(path)
+            elif x == 'R' or y == 'R':
+                deleted.append(path)
+                next_null2 = out.find(b"\0", idx)
+                if next_null2 != -1:
+                    new_path = out[idx:next_null2].decode("utf-8", errors="ignore")
+                    added.append(new_path)
+                    idx = next_null2 + 1
+        return added, modified, deleted
+
+    return added, modified, deleted
+
+
 class Indexer:
     """Repository indexer with background threading and progress tracking."""
 
@@ -513,6 +585,7 @@ class Indexer:
 
     def index_repository(self, repo_path: Path, repo_name: Optional[str] = None,
                          clear: bool = True, differential: bool = False,
+                         before_commit: Optional[str] = None, after_commit: Optional[str] = None,
                          job_progress_cb: Optional[Callable] = None) -> Dict[str, Any]:
         repo_path = Path(repo_path).resolve()
         if not repo_path.exists():
@@ -540,20 +613,40 @@ class Indexer:
 
             if _is_cancelled(repo_name):
                 raise _CancelledError(repo_name)
-            _set_status(repo_name, phase="Scanning directory")
-            walker = FileWalker(repo_path, tracked_only=True)
-            files_to_index = list(walker.walk())
-            total_files = len(files_to_index)
 
             stored_files = {}
             files_removed = 0
-            if not clear:
-                stored_files = ContextDB.get_repo_files_mtime(repo_id, conn=conn)
-                files_to_index_set = {str(f) for f in files_to_index}
-                removed_ids = [info["id"] for rel_path, info in stored_files.items() if rel_path not in files_to_index_set]
-                if removed_ids:
-                    files_removed = ContextDB.delete_files_by_id(removed_ids, conn=conn)
-                    logger.info(f"Differential indexing removed {files_removed} deleted files for {repo_name}")
+
+            if differential:
+                import subprocess
+                has_commits = subprocess.run(["git", "rev-parse", "--verify", "HEAD"], cwd=str(repo_path), capture_output=True).returncode == 0
+                if has_commits:
+                    _set_status(repo_name, phase="Determining git diff")
+                    added_files, modified_files, deleted_files = get_git_diff_files(repo_path, before_commit, after_commit)
+                    stored_files = ContextDB.get_repo_files_mtime(repo_id, conn=conn)
+                    files_to_remove = set(deleted_files)
+                    removed_ids = [stored_files[rel_path]["id"] for rel_path in files_to_remove if rel_path in stored_files]
+                    if removed_ids:
+                        files_removed = ContextDB.delete_files_by_id(removed_ids, conn=conn)
+                        logger.info(f"Differential indexing removed {files_removed} deleted files for {repo_name}")
+                    files_to_index = [Path(f) for f in (set(added_files) | set(modified_files))]
+                    total_files = len(files_to_index)
+                else:
+                    differential = False
+
+            if not differential:
+                _set_status(repo_name, phase="Scanning directory")
+                walker = FileWalker(repo_path, tracked_only=True)
+                files_to_index = list(walker.walk())
+                total_files = len(files_to_index)
+
+                if not clear:
+                    stored_files = ContextDB.get_repo_files_mtime(repo_id, conn=conn)
+                    files_to_index_set = {str(f) for f in files_to_index}
+                    removed_ids = [info["id"] for rel_path, info in stored_files.items() if rel_path not in files_to_index_set]
+                    if removed_ids:
+                        files_removed = ContextDB.delete_files_by_id(removed_ids, conn=conn)
+                        logger.info(f"Differential indexing removed {files_removed} deleted files for {repo_name}")
 
             embedder = self._get_embedder()
 

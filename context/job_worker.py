@@ -129,15 +129,28 @@ def _run_differential_sync(job_id: str, target: str, progress_cb) -> dict:
     progress_cb(5, "Preparing", f"Starting differential sync for {target}")
 
     from context.indexer import Indexer
+    from context.db import ContextDB
     repo_path, repo_name = _resolve_repo(target)
     indexer = Indexer()
 
-    progress_cb(15, "Differential Indexing", "Updating semantic search index")
+    # Query the latest successful sync logs to find the before_commit and after_commit
+    logs = ContextDB.list_repo_sync_logs(repo_name, limit=5)
+    before_commit = None
+    after_commit = None
+    for log in logs:
+        if log.get("status") == "success" and log.get("operation") in ("refresh", "periodic_refresh"):
+            before_commit = log.get("before_commit")
+            after_commit = log.get("after_commit")
+            break
+
+    progress_cb(15, "Differential Indexing", "doing differential index")
     index_res = indexer.index_repository(
-        repo_path, repo_name=repo_name, clear=False, differential=True, job_progress_cb=progress_cb
+        repo_path, repo_name=repo_name, clear=False, differential=True,
+        before_commit=before_commit, after_commit=after_commit,
+        job_progress_cb=progress_cb
     )
 
-    progress_cb(60, "Differential Graph Sync", "Syncing structural code graph")
+    progress_cb(60, "Differential Graph Sync", "doing differential analysis")
     graph_res = _run_code_intelligence_sync(job_id, target, progress_cb)
 
     progress_cb(100, "Complete", "Differential sync completed successfully")

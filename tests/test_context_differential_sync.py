@@ -141,3 +141,56 @@ def test_trigger_differential_sync_endpoint(client, _isolated_db, monkeypatch):
     assert data["started"] is True
     assert data["name"] == "my-repo"
     assert "job_id" in data
+
+
+def test_differential_indexing_with_commits(tmp_path, _isolated_db, monkeypatch):
+    repo_dir = tmp_path / "diff-commit-repo"
+    repo_dir.mkdir()
+    subprocess.run(["git", "-C", str(repo_dir), "init"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_dir), "config", "user.name", "Test User"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_dir), "config", "user.email", "test@example.com"], check=True, capture_output=True)
+
+    file_a = repo_dir / "file_a.py"
+    file_b = repo_dir / "file_b.py"
+
+    file_a.write_text("def fn_a(): pass\n")
+    file_b.write_text("def fn_b(): pass\n")
+
+    subprocess.run(["git", "-C", str(repo_dir), "add", "."], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_dir), "commit", "-m", "initial commit"], check=True, capture_output=True)
+
+    res = subprocess.run(["git", "-C", str(repo_dir), "rev-parse", "HEAD"], check=True, capture_output=True, text=True)
+    commit_1 = res.stdout.strip()
+
+    # Mock embedder
+    mock_embedder = MagicMock()
+    mock_embedder.embed_one.return_value = [0.1] * 768
+    monkeypatch.setattr("context.embeddings.EmbeddingModel.get", lambda: mock_embedder)
+
+    # Initial full index
+    indexer = Indexer()
+    res1 = indexer.index_repository(repo_dir, repo_name="diff-commit-repo", clear=True)
+    assert res1["files_indexed"] == 2
+
+    # Now simulate changes and commit them
+    file_a.unlink()
+    file_b.write_text("def fn_b(): return 'updated'\n")
+    file_c = repo_dir / "file_c.py"
+    file_c.write_text("def fn_c(): pass\n")
+
+    subprocess.run(["git", "-C", str(repo_dir), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_dir), "commit", "-m", "second commit"], check=True, capture_output=True)
+
+    res = subprocess.run(["git", "-C", str(repo_dir), "rev-parse", "HEAD"], check=True, capture_output=True, text=True)
+    commit_2 = res.stdout.strip()
+
+    # Run differential index using commits
+    res2 = indexer.index_repository(
+        repo_dir, repo_name="diff-commit-repo", clear=False, differential=True,
+        before_commit=commit_1, after_commit=commit_2
+    )
+
+    assert res2["files_removed"] == 1  # file_a.py removed
+    assert res2["files_indexed"] == 2  # file_b.py updated, file_c.py added
+    assert res2["files_skipped"] == 0
+
