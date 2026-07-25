@@ -27,20 +27,16 @@ def _isolated_db(tmp_path, monkeypatch, request):
     from sqlite_client import init_sqlite
     init_sqlite()
 
+    monkeypatch.setenv("SAVANT_EXTERNAL_PERIODIC_RUNNER", "1")
     from postgres_client import get_connection, release_connection, init_schema
+    init_schema()
+    conn = get_connection()
     try:
-        init_schema()
-        conn = get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("TRUNCATE experiences, kg_nodes, kg_edges, notes, tasks, workspaces, jira_tickets, jira_notes, merge_requests, mr_notes RESTART IDENTITY CASCADE;")
-            conn.commit()
-        except Exception:
-            pass
-        finally:
-            release_connection(conn)
-    except Exception:
-        pass
+        with conn.cursor() as cur:
+            cur.execute("TRUNCATE experiences, kg_nodes, kg_edges, notes, tasks, workspaces, jira_tickets, jira_notes, merge_requests, mr_notes, jobs, ctx_repos, ctx_files, ctx_chunks, ctx_ast_nodes, ctx_vec_chunks, ctx_repo_sync_logs, ctx_periodic_sync_logs, workspace_session_links, reminders, notifications, code_intelligence_config RESTART IDENTITY CASCADE;")
+        conn.commit()
+    finally:
+        release_connection(conn)
 
     # Seed default users so auth works in tests
     from db.users import UserDB

@@ -459,3 +459,24 @@ def test_savant_detail_page_renders(savant_client, savant_dir):
     assert resp.status_code == 200
     # Should render the detail.html template
     assert b"html" in resp.data.lower() or resp.content_type.startswith("text/html")
+
+
+def test_agy_sessions_list(savant_client, tmp_path, monkeypatch):
+    import app as app_mod
+    import json
+    agy_dir = tmp_path / "agy"
+    agy_dir.mkdir()
+    
+    # Create an agy session file
+    session_file = agy_dir / "session-123.json"
+    session_file.write_text(json.dumps({"sessionId": "123", "provider": "agy", "model": "gemini"}), encoding="utf-8")
+    
+    monkeypatch.setattr(app_mod, "AGY_DIR", str(agy_dir))
+    
+    resp = savant_client.get("/api/agy/sessions")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert "sessions" in data
+    assert len(data["sessions"]) == 1
+    assert data["sessions"][0]["id"] == "123"
+    assert data["sessions"][0]["provider"] == "agy"

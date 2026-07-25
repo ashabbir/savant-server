@@ -292,6 +292,73 @@ class JobDB:
             release_connection(conn)
 
     @staticmethod
+    def get_job_summary() -> dict:
+        """Get summary of jobs grouped by phase and status."""
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) as count FROM jobs WHERE status = 'queued'")
+                row = cur.fetchone()
+                queued_count = row["count"] if row else 0
+
+                cur.execute("SELECT * FROM jobs WHERE status IN ('running', 'cancelling') ORDER BY started_at DESC")
+                running_rows = cur.fetchall()
+                running_jobs = _rows_to_dicts(running_rows, _JSON_FIELDS)
+
+                cur.execute(
+                    """SELECT job_type, status, COUNT(*) as cnt FROM jobs
+                       WHERE status IN ('queued', 'running', 'cancelling')
+                       GROUP BY job_type, status"""
+                )
+                group_rows = cur.fetchall()
+
+            indexing_queued = 0
+            indexing_running = 0
+            analysis_queued = 0
+            analysis_running = 0
+            other_queued = 0
+            other_running = 0
+
+            for row in group_rows:
+                jtype = row["job_type"]
+                status = row["status"]
+                count = row["cnt"]
+
+                is_index = jtype in {"index", "reindex", "index-all", "differential_sync", "codegraph_index"}
+                is_analysis = jtype in {"ast", "ast-all", "codegraph_sync"}
+
+                if status == "queued":
+                    if is_index:
+                        indexing_queued += count
+                    elif is_analysis:
+                        analysis_queued += count
+                    else:
+                        other_queued += count
+                else:  # running or cancelling
+                    if is_index:
+                        indexing_running += count
+                    elif is_analysis:
+                        analysis_running += count
+                    else:
+                        other_running += count
+
+            return {
+                "queued_total": queued_count,
+                "indexing_total": indexing_queued + indexing_running,
+                "indexing_queued": indexing_queued,
+                "indexing_running": indexing_running,
+                "analysis_total": analysis_queued + analysis_running,
+                "analysis_queued": analysis_queued,
+                "analysis_running": analysis_running,
+                "other_queued": other_queued,
+                "other_running": other_running,
+                "active_jobs": running_jobs,
+            }
+        finally:
+            release_connection(conn)
+
+    @staticmethod
+
     def recover_interrupted() -> int:
         """Finalize jobs left active after the dedicated worker was restarted."""
         conn = get_connection()

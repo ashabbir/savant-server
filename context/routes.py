@@ -668,7 +668,7 @@ def refresh_repo(name):
     # 2. Local code changed after fetch/pull
     # 3. Project was previously indexed and graphed
     differential_job_id = None
-    if getattr(refreshed, "provider", "git") in {"github", "gitlab"} and getattr(refreshed, "changed", False):
+    if getattr(refreshed, "provider", "git") in {"github", "gitlab", "git"} and getattr(refreshed, "changed", False):
         is_indexed = (repo.get("status") in {"indexed", "ast_only"}) or bool(repo.get("indexed_at"))
         from db.code_intelligence import CodeIntelligenceConfigDB
         config = CodeIntelligenceConfigDB.get(name) or CodeIntelligenceConfigDB.get(str(repo.get("id")))
@@ -708,8 +708,8 @@ def trigger_differential_sync(name):
     from .ingestion import inspect_project_source
     source_info = inspect_project_source(str(repo_path))
     provider = source_info.get("source")
-    if provider not in {"github", "gitlab"}:
-        return jsonify({"error": "Differential sync is only supported for GitHub or GitLab repositories"}), 400
+    if provider not in {"github", "gitlab", "git"}:
+        return jsonify({"error": "Differential sync is only supported for Git repositories"}), 400
 
     is_indexed = (repo.get("status") in {"indexed", "ast_only"}) or bool(repo.get("indexed_at"))
     from db.code_intelligence import CodeIntelligenceConfigDB

@@ -18,7 +18,7 @@ class CodeIntelligenceConfigDB:
                     (str(repo_id), str(repo_id)),
                 )
                 row = cur.fetchone()
-            if not row:
+            if not row or row.get("repo_id") is None:
                 return None
             result = dict(row)
             result["provider"] = "codegraph"

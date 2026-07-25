@@ -92,7 +92,13 @@ def api_jobs_status():
 @jobs_system_bp.route("/api/jobs/list", methods=["GET"])
 def api_jobs_list():
     status = request.args.get("status")
-    return jsonify({"jobs": JobDB.list_jobs(status=status)})
+    jobs = JobDB.list_jobs(status=status)
+    summary = JobDB.get_job_summary()
+    return jsonify({
+        "jobs": jobs,
+        "summary": summary
+    })
+
 
 
 @jobs_system_bp.route("/api/jobs/cancel", methods=["POST"])

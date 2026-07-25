@@ -17,6 +17,7 @@ CODEX_DIR = os.environ.get("CODEX_DIR", os.path.expanduser("~/.codex"))
 CODEX_SESSIONS_DIR = os.path.join(CODEX_DIR, "sessions")
 GEMINI_DIR = os.environ.get("GEMINI_DIR", os.path.expanduser("~/.gemini"))
 GEMINI_CHATS_DIR = os.path.join(GEMINI_DIR, "chats")
+AGY_DIR = os.environ.get("AGY_DIR", os.path.expanduser("~/.agy"))
 META_DIR = os.path.join(SAVANT_DIR, ".meta")
 SESSION_DIR = SAVANT_SESSIONS_DIR
 

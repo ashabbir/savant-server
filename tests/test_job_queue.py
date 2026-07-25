@@ -240,15 +240,42 @@ class TestJobDB:
         j = JobDB.create_job("index", "r1")
         JobDB.set_done(j["id"])
         # Manually backdate finished_at
-        from sqlite_client import get_connection
+        from postgres_client import get_connection, release_connection
         conn = get_connection()
-        conn.execute(
-            "UPDATE jobs SET finished_at = '2020-01-01T00:00:00+00:00' WHERE id = ?",
-            (j["id"],),
-        )
-        conn.commit()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE jobs SET finished_at = '2020-01-01T00:00:00+00:00' WHERE id = %s",
+                    (j["id"],),
+                )
+            conn.commit()
+        finally:
+            release_connection(conn)
         JobDB.cleanup_old(max_age_hours=1)
         assert JobDB.get_job(j["id"]) is None
+
+    def test_job_summary(self, _isolated_db):
+        from db.jobs import JobDB
+        # Create queued indexing job
+        JobDB.create_job("index", "r1")
+        # Create running indexing job
+        j_run_idx = JobDB.create_job("differential_sync", "r2")
+        JobDB.set_running(j_run_idx["id"])
+        # Create queued analysis job
+        JobDB.create_job("ast", "r3")
+        # Create running analysis job
+        j_run_ast = JobDB.create_job("codegraph_sync", "r4")
+        JobDB.set_running(j_run_ast["id"])
+
+        summary = JobDB.get_job_summary()
+        assert summary["queued_total"] == 2
+        assert summary["indexing_total"] == 2
+        assert summary["indexing_queued"] == 1
+        assert summary["indexing_running"] == 1
+        assert summary["analysis_total"] == 2
+        assert summary["analysis_queued"] == 1
+        assert summary["analysis_running"] == 1
+        assert len(summary["active_jobs"]) == 2
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -309,6 +336,11 @@ class TestJobRoutes:
         assert resp.status_code == 200
         data = resp.get_json()
         assert len(data["jobs"]) == 2
+        assert "summary" in data
+        assert data["summary"]["queued_total"] == 2
+        assert data["summary"]["indexing_queued"] == 1
+        assert data["summary"]["analysis_queued"] == 1
+
 
     def test_list_jobs_status_filter(self, client):
         r = client.post("/api/jobs/submit",

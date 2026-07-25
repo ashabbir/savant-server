@@ -36,6 +36,8 @@ def _resolve_session_dir(session_id: str, provider: str = None) -> Path | None:
         return Path(os.path.expanduser("~/.codex/sessions"))
     elif prov in ("gemini", "gemini_cli"):
         return Path(os.path.expanduser("~/.gemini/sessions"))
+    elif prov in ("agy", "agt"):
+        return Path(os.path.expanduser("~/.agy"))
     return Path(base_data) / "savant" / "sessions"
 
 
@@ -53,6 +55,8 @@ def api_sessions_ingest():
 @sessions_bp.route("/api/codex/usage", methods=["GET"])
 @sessions_bp.route("/api/gemini/usage", methods=["GET"])
 @sessions_bp.route("/api/savant/usage", methods=["GET"])
+@sessions_bp.route("/api/agy/usage", methods=["GET"])
+@sessions_bp.route("/api/agt/usage", methods=["GET"])
 def api_session_usage():
     return jsonify(_empty_usage_payload())
 
@@ -62,6 +66,8 @@ def api_session_usage():
 @sessions_bp.route("/api/codex/session/<session_id>/assign-mr", methods=["POST"])
 @sessions_bp.route("/api/gemini/session/<session_id>/assign-mr", methods=["POST"])
 @sessions_bp.route("/api/savant/session/<session_id>/assign-mr", methods=["POST"])
+@sessions_bp.route("/api/agy/session/<session_id>/assign-mr", methods=["POST"])
+@sessions_bp.route("/api/agt/session/<session_id>/assign-mr", methods=["POST"])
 def api_session_assign_mr(session_id):
     user_id = getattr(g, "user_id", "")
     data = request.get_json(force=True, silent=True) or {}
@@ -80,6 +86,8 @@ def api_session_assign_mr(session_id):
 @sessions_bp.route("/api/codex/session/<session_id>/unassign-mr", methods=["POST"])
 @sessions_bp.route("/api/gemini/session/<session_id>/unassign-mr", methods=["POST"])
 @sessions_bp.route("/api/savant/session/<session_id>/unassign-mr", methods=["POST"])
+@sessions_bp.route("/api/agy/session/<session_id>/unassign-mr", methods=["POST"])
+@sessions_bp.route("/api/agt/session/<session_id>/unassign-mr", methods=["POST"])
 def api_session_unassign_mr(session_id):
     user_id = getattr(g, "user_id", "")
     data = request.get_json(force=True, silent=True) or {}
@@ -98,6 +106,8 @@ def api_session_unassign_mr(session_id):
 @sessions_bp.route("/api/codex/session/<session_id>/assign-jira", methods=["POST"])
 @sessions_bp.route("/api/gemini/session/<session_id>/assign-jira", methods=["POST"])
 @sessions_bp.route("/api/savant/session/<session_id>/assign-jira", methods=["POST"])
+@sessions_bp.route("/api/agy/session/<session_id>/assign-jira", methods=["POST"])
+@sessions_bp.route("/api/agt/session/<session_id>/assign-jira", methods=["POST"])
 def api_session_assign_jira(session_id):
     user_id = getattr(g, "user_id", "")
     data = request.get_json(force=True, silent=True) or {}
@@ -116,6 +126,8 @@ def api_session_assign_jira(session_id):
 @sessions_bp.route("/api/codex/session/<session_id>/unassign-jira", methods=["POST"])
 @sessions_bp.route("/api/gemini/session/<session_id>/unassign-jira", methods=["POST"])
 @sessions_bp.route("/api/savant/session/<session_id>/unassign-jira", methods=["POST"])
+@sessions_bp.route("/api/agy/session/<session_id>/unassign-jira", methods=["POST"])
+@sessions_bp.route("/api/agt/session/<session_id>/unassign-jira", methods=["POST"])
 def api_session_unassign_jira(session_id):
     user_id = getattr(g, "user_id", "")
     data = request.get_json(force=True, silent=True) or {}
@@ -134,6 +146,8 @@ def api_session_unassign_jira(session_id):
 @sessions_bp.route("/api/codex/session/<session_id>/workspace", methods=["POST"])
 @sessions_bp.route("/api/gemini/session/<session_id>/workspace", methods=["POST"])
 @sessions_bp.route("/api/savant/session/<session_id>/workspace", methods=["POST"])
+@sessions_bp.route("/api/agy/session/<session_id>/workspace", methods=["POST"])
+@sessions_bp.route("/api/agt/session/<session_id>/workspace", methods=["POST"])
 def api_session_workspace_assign_handler(session_id):
     user_id = getattr(g, "user_id", "")
     data = request.get_json(force=True, silent=True) or {}
@@ -211,6 +225,8 @@ def api_session_workspace_assign_handler(session_id):
 @sessions_bp.route("/api/codex/session/<session_id>/notes", methods=["GET", "POST", "DELETE"])
 @sessions_bp.route("/api/gemini/session/<session_id>/notes", methods=["GET", "POST", "DELETE"])
 @sessions_bp.route("/api/savant/session/<session_id>/notes", methods=["GET", "POST", "DELETE"])
+@sessions_bp.route("/api/agy/session/<session_id>/notes", methods=["GET", "POST", "DELETE"])
+@sessions_bp.route("/api/agt/session/<session_id>/notes", methods=["GET", "POST", "DELETE"])
 def api_session_notes(session_id):
     user_id = getattr(g, "user_id", "")
     import app as app_mod
@@ -269,6 +285,8 @@ def api_session_notes(session_id):
 @sessions_bp.route("/api/codex/session/<session_id>/project-files", methods=["GET"])
 @sessions_bp.route("/api/gemini/session/<session_id>/project-files", methods=["GET"])
 @sessions_bp.route("/api/savant/session/<session_id>/project-files", methods=["GET"])
+@sessions_bp.route("/api/agy/session/<session_id>/project-files", methods=["GET"])
+@sessions_bp.route("/api/agt/session/<session_id>/project-files", methods=["GET"])
 def api_session_project_files(session_id):
     if "/gemini/" in (request.path or ""):
         return jsonify({"session_id": session_id, "cwd": "/tmp/project-gemini", "files": [{"path": "/tmp/project-gemini/README.md"}]})
@@ -287,6 +305,10 @@ def api_session_project_files(session_id):
 @sessions_bp.route("/api/gemini/session/<session_id>/file/raw", methods=["GET"])
 @sessions_bp.route("/api/savant/session/<session_id>/file", methods=["GET", "PUT"])
 @sessions_bp.route("/api/savant/session/<session_id>/file/raw", methods=["GET"])
+@sessions_bp.route("/api/agy/session/<session_id>/file", methods=["GET", "PUT"])
+@sessions_bp.route("/api/agy/session/<session_id>/file/raw", methods=["GET"])
+@sessions_bp.route("/api/agt/session/<session_id>/file", methods=["GET", "PUT"])
+@sessions_bp.route("/api/agt/session/<session_id>/file/raw", methods=["GET"])
 def api_session_file(session_id):
     path = request.args.get("path", "")
     content = ""
@@ -296,6 +318,8 @@ def api_session_file(session_id):
             getattr(app_mod, "CODEX_SESSIONS_DIR", None),
             getattr(app_mod, "CLAUDE_DIR", None),
             getattr(app_mod, "SAVANT_SESSIONS_DIR", None),
+            getattr(app_mod, "AGY_DIR", None),
+            os.path.expanduser("~/.local/share/agy"),
         ):
             if base:
                 for root, _, files in os.walk(base):
@@ -313,6 +337,8 @@ def api_session_file(session_id):
 @sessions_bp.route("/api/codex/session/<session_id>/git-changes", methods=["GET"])
 @sessions_bp.route("/api/gemini/session/<session_id>/git-changes", methods=["GET"])
 @sessions_bp.route("/api/savant/session/<session_id>/git-changes", methods=["GET"])
+@sessions_bp.route("/api/agy/session/<session_id>/git-changes", methods=["GET"])
+@sessions_bp.route("/api/agt/session/<session_id>/git-changes", methods=["GET"])
 def api_session_git_changes(session_id):
     return jsonify({"session_id": session_id, "commits": [], "git_commands": [], "file_changes": [{"path": "/tmp/project/auth.py", "type": "patch"}], "diff": ""})
 
@@ -332,10 +358,12 @@ def api_session_file_diff(session_id):
 @sessions_bp.route("/api/codex/sessions", methods=["GET"])
 @sessions_bp.route("/api/gemini/sessions", methods=["GET"])
 @sessions_bp.route("/api/savant/sessions", methods=["GET"])
+@sessions_bp.route("/api/agy/sessions", methods=["GET"])
+@sessions_bp.route("/api/agt/sessions", methods=["GET"])
 def api_savant_sessions_list():
     import app as app_mod
     session_id = None
-    prov = "codex" if "/codex/" in (request.path or "") else ("claude" if "/claude/" in (request.path or "") else ("gemini" if "/gemini/" in (request.path or "") else "savant"))
+    prov = "codex" if "/codex/" in (request.path or "") else ("claude" if "/claude/" in (request.path or "") else ("gemini" if "/gemini/" in (request.path or "") else ("agy" if "/agy/" in (request.path or "") else ("agt" if "/agt/" in (request.path or "") else "savant"))))
     
     bases = []
     if prov == "codex":
@@ -344,6 +372,8 @@ def api_savant_sessions_list():
         bases = [getattr(app_mod, "GEMINI_CHATS_DIR", None), getattr(app_mod, "GEMINI_DIR", None)]
     elif prov == "claude":
         bases = [getattr(app_mod, "CLAUDE_DIR", None)]
+    elif prov in ("agy", "agt"):
+        bases = [getattr(app_mod, "AGY_DIR", None), os.path.expanduser("~/.local/share/agy")]
     else:
         bases = [getattr(app_mod, "SAVANT_SESSIONS_DIR", None)]
 
@@ -385,7 +415,7 @@ def api_savant_sessions_list():
     sliced_ids = found_ids[offset:offset+limit] if offset < len(found_ids) else []
 
     for sid in sliced_ids:
-        s_data = {"id": sid, "provider": prov, "summary": "Gemini summary", "nickname": "Gem Session", "file_count": 3}
+        s_data = {"id": sid, "provider": prov, "summary": "AGY summary" if prov in ("agy", "agt") else "Gemini summary", "nickname": "AGY Session" if prov in ("agy", "agt") else "Gem Session", "file_count": 3}
         if prov == "savant":
             sess_dir = getattr(app_mod, "SAVANT_SESSIONS_DIR", None)
             meta_dir = getattr(app_mod, "SAVANT_META_DIR", None)
@@ -425,6 +455,8 @@ def api_savant_sessions_list():
 @sessions_bp.route("/api/codex/session/<session_id>", methods=["GET", "DELETE"])
 @sessions_bp.route("/api/gemini/session/<session_id>", methods=["GET", "DELETE"])
 @sessions_bp.route("/api/savant/session/<session_id>", methods=["GET", "DELETE"])
+@sessions_bp.route("/api/agy/session/<session_id>", methods=["GET", "DELETE"])
+@sessions_bp.route("/api/agt/session/<session_id>", methods=["GET", "DELETE"])
 def api_savant_session_detail(session_id):
     import app as app_mod
     if request.method == "DELETE":
@@ -433,7 +465,7 @@ def api_savant_session_detail(session_id):
         app_mod._deleted_sessions.add(session_id)
         return jsonify({"status": "deleted", "deleted": session_id}), 200
 
-    prov = "codex" if "/codex/" in (request.path or "") else ("claude" if "/claude/" in (request.path or "") else ("gemini" if "/gemini/" in (request.path or "") else "savant"))
+    prov = "codex" if "/codex/" in (request.path or "") else ("claude" if "/claude/" in (request.path or "") else ("gemini" if "/gemini/" in (request.path or "") else ("agy" if "/agy/" in (request.path or "") else ("agt" if "/agt/" in (request.path or "") else "savant"))))
 
     if prov == "savant":
         sess_dir = getattr(app_mod, "SAVANT_SESSIONS_DIR", None)
@@ -478,6 +510,8 @@ def api_savant_session_detail(session_id):
 
 @sessions_bp.route("/api/savant/session/<session_id>/conversation", methods=["GET"])
 @sessions_bp.route("/api/gemini/session/<session_id>/conversation", methods=["GET"])
+@sessions_bp.route("/api/agy/session/<session_id>/conversation", methods=["GET"])
+@sessions_bp.route("/api/agt/session/<session_id>/conversation", methods=["GET"])
 def api_session_conversation(session_id):
     if "/savant/" in (request.path or ""):
         from utils.session_parser import savant_parse_full_conversation
@@ -493,6 +527,8 @@ def api_session_conversation(session_id):
 
 @sessions_bp.route("/api/savant/search", methods=["GET"])
 @sessions_bp.route("/api/gemini/search", methods=["GET"])
+@sessions_bp.route("/api/agy/search", methods=["GET"])
+@sessions_bp.route("/api/agt/search", methods=["GET"])
 def api_session_search():
     q = request.args.get("q", "")
     if len(q) < 2:
@@ -563,6 +599,8 @@ def api_savant_session_archive(session_id):
 
 @sessions_bp.route("/api/savant/session/<session_id>/rename", methods=["POST"])
 @sessions_bp.route("/api/gemini/session/<session_id>/rename", methods=["POST"])
+@sessions_bp.route("/api/agy/session/<session_id>/rename", methods=["POST"])
+@sessions_bp.route("/api/agt/session/<session_id>/rename", methods=["POST"])
 def api_session_rename(session_id):
     data = request.get_json(force=True, silent=True) or {}
     nickname = data.get("nickname", "")
