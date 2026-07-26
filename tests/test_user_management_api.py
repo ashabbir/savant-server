@@ -68,6 +68,21 @@ class TestUserManagementAPI:
         assert body["name"] == "U New"
         assert body["role"] == "admin"
 
+    def test_admin_can_update_user_with_boolean_active_status(self, client):
+        UserDB.create({
+            "user_id": "u-active",
+            "name": "Active User",
+            "email": "active@example.com",
+            "api_key": "sk-u-active",
+            "role": "user",
+        })
+        resp = client.put(
+            "/api/users/u-active",
+            json={"is_active": False},
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["is_active"] == 0
+
     def test_admin_can_deactivate_user(self, client):
         UserDB.create({
             "user_id": "u-deact",
@@ -134,4 +149,3 @@ class TestUserManagementAPI:
     def test_create_user_missing_required_fields(self, client):
         resp = client.post("/api/users", json={"name": "Missing ID"})
         assert resp.status_code == 400
-

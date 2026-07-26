@@ -107,6 +107,8 @@ class UserDB:
     def update(user_id: str, updates: dict) -> dict | None:
         conn = get_connection()
         try:
+            if isinstance(updates.get("is_active"), bool):
+                updates["is_active"] = int(updates["is_active"])
             updates["updated_at"] = _now()
             valid_cols = {"name", "email", "role", "is_active", "updated_at"}
             filtered = {k: v for k, v in updates.items() if k in valid_cols}
