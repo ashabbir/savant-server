@@ -504,14 +504,14 @@ def repo_sources():
 
 @context_bp.route("/api/context/repos/periodic-sync/status")
 def periodic_sync_status():
-    """Get status of the 6-hour periodic repository sync runner."""
+    """Get status of the 2-hour periodic repository sync runner."""
     from .periodic_runner import get_runner_status
     return jsonify(get_runner_status())
 
 
 @context_bp.route("/api/context/repos/periodic-sync/logs")
 def periodic_sync_logs():
-    """Retrieve execution log history of periodic 6-hour sync runs."""
+    """Retrieve execution log history of periodic 2-hour sync runs."""
     if not _ensure_init():
         return jsonify({"error": "Context not initialized"}), 503
     from .db import ContextDB

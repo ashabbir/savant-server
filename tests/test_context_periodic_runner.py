@@ -1,4 +1,4 @@
-"""Tests for the 6-hour periodic repository sync runner and logging."""
+"""Tests for the 2-hour periodic repository sync runner and logging."""
 
 import subprocess
 from pathlib import Path
@@ -8,11 +8,20 @@ from context.db import ContextDB
 from context.ingestion import IngestedProject
 from context.periodic_runner import (
     _execute_sync_pass_for_all_repos,
+    get_sync_interval_seconds,
     get_runner_status,
     start_periodic_runner,
     stop_periodic_runner,
 )
 from db.code_intelligence import CodeIntelligenceConfigDB
+
+
+def test_periodic_sync_defaults_to_two_hours_and_allows_override(monkeypatch):
+    monkeypatch.delenv("PERIODIC_SYNC_INTERVAL_HOURS", raising=False)
+    assert get_sync_interval_seconds() == 2 * 3600
+
+    monkeypatch.setenv("PERIODIC_SYNC_INTERVAL_HOURS", "3.5")
+    assert get_sync_interval_seconds() == 3.5 * 3600
 
 
 def test_periodic_sync_pass_runs_for_all_projects(tmp_path, _isolated_db, monkeypatch):

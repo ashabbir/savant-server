@@ -1,5 +1,5 @@
 """
-Periodic Repository Sync Runner — Runs every 6 hours in the background.
+Periodic Repository Sync Runner — Runs every 2 hours in the background.
 
 For all registered projects:
 1. Fetches latest code from GitHub/GitLab (or origin remote).
@@ -30,8 +30,8 @@ def _record_sync_activity(context_db, **fields):
         )
         return {}
 
-# Default 6-hour interval in seconds
-DEFAULT_SYNC_INTERVAL_SECONDS = 6 * 3600
+# Default 2-hour interval in seconds
+DEFAULT_SYNC_INTERVAL_SECONDS = 2 * 3600
 
 _runner_thread: threading.Thread | None = None
 _runner_lock = threading.Lock()
@@ -49,8 +49,18 @@ def get_runner_status() -> dict:
         return dict(_runner_status)
 
 
+def get_sync_interval_seconds() -> float:
+    interval_hours = float(
+        os.environ.get(
+            "PERIODIC_SYNC_INTERVAL_HOURS",
+            str(DEFAULT_SYNC_INTERVAL_SECONDS / 3600),
+        )
+    )
+    return max(60.0, interval_hours * 3600.0)
+
+
 def start_periodic_runner():
-    """Start the 6-hour periodic sync runner thread."""
+    """Start the 2-hour periodic sync runner thread."""
     global _runner_thread
     with _runner_lock:
         if _runner_status["running"]:
@@ -61,7 +71,7 @@ def start_periodic_runner():
             target=_periodic_sync_loop, daemon=True, name="periodic-sync-runner"
         )
         _runner_thread.start()
-        logger.info("Periodic 6-hour repo sync runner started")
+        logger.info("Periodic 2-hour repo sync runner started")
 
 
 def stop_periodic_runner():
@@ -75,17 +85,16 @@ def stop_periodic_runner():
 
 def run_periodic_sync_now() -> dict:
     """Manually trigger a sync pass for all projects immediately."""
-    logger.info("Manual trigger of periodic 6-hour sync runner for all projects")
+    logger.info("Manual trigger of periodic 2-hour sync runner for all projects")
     return _execute_sync_pass_for_all_repos()
 
 
 def _periodic_sync_loop():
-    """Background loop running every 6 hours (configurable via PERIODIC_SYNC_INTERVAL_HOURS)."""
+    """Background loop running every 2 hours (configurable via PERIODIC_SYNC_INTERVAL_HOURS)."""
     # Warm-up delay on startup so Flask DB init finishes
     time.sleep(15)
 
-    interval_hours = float(os.environ.get("PERIODIC_SYNC_INTERVAL_HOURS", "6"))
-    interval_seconds = max(60.0, interval_hours * 3600.0)
+    interval_seconds = get_sync_interval_seconds()
 
     while not _stop_event.is_set():
         now = datetime.now(timezone.utc)
@@ -99,7 +108,7 @@ def _periodic_sync_loop():
             with _runner_lock:
                 _runner_status["last_run_summary"] = summary
         except Exception as exc:
-            logger.error(f"Error during periodic 6-hour repo sync pass: {exc}")
+            logger.error(f"Error during periodic 2-hour repo sync pass: {exc}")
 
         # Sleep in 5-second intervals to allow responsive shutdown
         elapsed = 0.0
@@ -121,7 +130,7 @@ def _execute_sync_pass_for_all_repos() -> dict:
         logger.error(f"Failed to list repos for periodic sync: {exc}")
         return {"error": str(exc), "count": 0}
 
-    logger.info(f"Starting 6-hour periodic sync pass for {len(repos)} registered projects")
+    logger.info(f"Starting 2-hour periodic sync pass for {len(repos)} registered projects")
     results = []
 
     for repo in repos:

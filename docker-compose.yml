@@ -59,6 +59,7 @@ services:
       SAVANT_CODEGRAPH_SOCKET: /run/savant/codegraph.sock
       SAVANT_API_ONLY: "1"
       SAVANT_API_KEY: "sk-ahmed-savant-001"
+      PERIODIC_SYNC_INTERVAL_HOURS: "2"
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       GITLAB_TOKEN: ${GITLAB_TOKEN:-}
     volumes:
