@@ -83,10 +83,12 @@ def stop_periodic_runner():
         logger.info("Stopping periodic sync runner")
 
 
-def run_periodic_sync_now() -> dict:
+def run_periodic_sync_now(actor_id: str = "user", source_app: str = "savant-olympus") -> dict:
     """Manually trigger a sync pass for all projects immediately."""
     logger.info("Manual trigger of periodic 2-hour sync runner for all projects")
-    return _execute_sync_pass_for_all_repos()
+    return _execute_sync_pass_for_all_repos(
+        trigger="manual", actor_id=actor_id, source_app=source_app
+    )
 
 
 def _periodic_sync_loop():
@@ -117,7 +119,10 @@ def _periodic_sync_loop():
             elapsed += 5.0
 
 
-def _execute_sync_pass_for_all_repos() -> dict:
+def _execute_sync_pass_for_all_repos(
+    trigger: str = "scheduled", actor_id: str = "system",
+    source_app: str = "savant-server",
+) -> dict:
     """Iterate over all registered projects and perform sync (fetch + index + graph)."""
     from context.db import ContextDB
     from context.ingestion import IngestionError, refresh_repo, inspect_project_source
@@ -209,13 +214,19 @@ def _execute_sync_pass_for_all_repos() -> dict:
                 summary_status = "success" if made_progress else "skipped"
             log_detail_str = "; ".join(details) if details else "No updates needed"
             logger.info(f"Periodic sync [{repo_name}]: {summary_status} — {log_detail_str}")
+            from context.activity import collect_git_change_details
+            git_details = collect_git_change_details(
+                repo_path,
+                getattr(refreshed, "before_commit", "") if refreshed else "",
+                getattr(refreshed, "after_commit", "") if refreshed else "",
+            )
 
             _record_sync_activity(ContextDB,
                 repo_name=repo_name,
                 operation="periodic_refresh",
-                trigger="scheduled",
-                actor_id="system",
-                source_app="savant-server",
+                trigger=trigger,
+                actor_id=actor_id,
+                source_app=source_app,
                 provider=getattr(refreshed, "provider", "") if refreshed else "",
                 branch=getattr(refreshed, "branch", "") if refreshed else "",
                 status=summary_status,
@@ -228,6 +239,7 @@ def _execute_sync_pass_for_all_repos() -> dict:
                 duration_ms=int((perf_counter() - sync_started_at) * 1000),
                 error="; ".join(activity_errors),
                 details=log_detail_str,
+                **git_details,
             )
 
             results.append({
@@ -246,9 +258,9 @@ def _execute_sync_pass_for_all_repos() -> dict:
             _record_sync_activity(ContextDB,
                 repo_name=repo_name,
                 operation="periodic_refresh",
-                trigger="scheduled",
-                actor_id="system",
-                source_app="savant-server",
+                trigger=trigger,
+                actor_id=actor_id,
+                source_app=source_app,
                 status="failed",
                 duration_ms=int((perf_counter() - sync_started_at) * 1000),
                 error=str(exc),

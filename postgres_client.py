@@ -555,6 +555,9 @@ CREATE TABLE IF NOT EXISTS ctx_repo_sync_logs (
     graphed      BOOLEAN DEFAULT FALSE,
     duration_ms  BIGINT DEFAULT 0,
     error        TEXT DEFAULT '',
+    commit_subject TEXT DEFAULT '',
+    files_changed JSONB NOT NULL DEFAULT '{"added":[],"modified":[],"deleted":[]}'::jsonb,
+    change_stats JSONB NOT NULL DEFAULT '{}'::jsonb,
     legacy_periodic_log_id INTEGER UNIQUE,
     details      TEXT DEFAULT '',
     created_at   TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
@@ -651,6 +654,19 @@ _SCHEMA_MIGRATIONS = (
                                  'technology', 'project', 'concept', 'repo', 'session',
                                  'issue', 'person', 'operation', 'organization')
                )""",
+        ),
+    ),
+    (
+        6,
+        "add repository activity change details",
+        (
+            "ALTER TABLE ctx_repo_sync_logs ADD COLUMN IF NOT EXISTS commit_subject TEXT DEFAULT ''",
+            """ALTER TABLE ctx_repo_sync_logs ADD COLUMN IF NOT EXISTS files_changed
+               JSONB NOT NULL DEFAULT '{"added":[],"modified":[],"deleted":[]}'::jsonb""",
+            """ALTER TABLE ctx_repo_sync_logs ADD COLUMN IF NOT EXISTS change_stats
+               JSONB NOT NULL DEFAULT '{}'::jsonb""",
+            "CREATE INDEX IF NOT EXISTS idx_ctx_repo_sync_logs_operation ON ctx_repo_sync_logs(operation)",
+            "CREATE INDEX IF NOT EXISTS idx_ctx_repo_sync_logs_trigger ON ctx_repo_sync_logs(trigger)",
         ),
     ),
 )

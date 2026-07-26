@@ -6,10 +6,12 @@ Only one job runs at a time. Progress is written to the DB so it survives restar
 """
 
 import logging
+import json
 import threading
 import time
 import traceback
 from pathlib import Path
+from time import perf_counter
 
 logger = logging.getLogger(__name__)
 
@@ -66,13 +68,16 @@ def _process_next_job():
     logger.info(f"Processing job {job_id}: {job_type} → {target}")
     # next_queued() already claimed this row atomically.
 
+    started_at = perf_counter()
     try:
         result = _execute_job(job_id, job_type, target)
         JobDB.set_done(job_id, result)
+        _record_job_activity(job_type, target, "success", result, started_at)
         logger.info(f"Job {job_id} completed: {job_type} → {target}")
     except _CancelledError:
         from db.jobs import JobDB as JDB
         JDB.set_cancelled(job_id)
+        _record_job_activity(job_type, target, "cancelled", {}, started_at)
         logger.info(f"Job {job_id} cancelled: {job_type} → {target}")
     except Exception as e:
         if JobDB.is_cancel_requested(job_id):
@@ -81,6 +86,38 @@ def _process_next_job():
             return
         logger.error(f"Job {job_id} failed: {e}")
         JobDB.set_failed(job_id, str(e)[:2000])
+        _record_job_activity(job_type, target, "failed", {}, started_at, str(e))
+
+
+def _record_job_activity(
+    job_type: str, target: str, status: str, result: dict,
+    started_at: float, error: str = "",
+) -> None:
+    """Persist user-triggered indexing and structural-analysis job outcomes."""
+    if job_type not in {
+        "index", "reindex", "ast", "index-all", "ast-all",
+        "codegraph_index", "codegraph_sync", "differential_sync",
+    }:
+        return
+    try:
+        from context.db import ContextDB
+        repo_name = target
+        if target != "__all__":
+            repo = ContextDB.get_repo_by_identifier(target)
+            repo_name = (repo or {}).get("name") or target
+        ContextDB.record_repo_sync_log(
+            repo_name=repo_name, operation=job_type, trigger="user",
+            actor_id="user", source_app="savant-olympus", status=status,
+            indexed=job_type in {"index", "reindex", "index-all", "differential_sync"} and status == "success",
+            graphed=job_type in {
+                "ast", "ast-all", "codegraph_index", "codegraph_sync", "differential_sync"
+            } and status == "success",
+            duration_ms=int((perf_counter() - started_at) * 1000),
+            error=error, details=json.dumps(result, default=str)[:10000],
+            change_stats={"job_type": job_type},
+        )
+    except Exception:
+        logger.exception("Failed to persist job activity for %s → %s", job_type, target)
 
 
 class _CancelledError(Exception):

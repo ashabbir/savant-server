@@ -285,7 +285,29 @@ def analyze():
         return jsonify({"error": "path, uri, code, or diff required"}), 400
     if params["repo"] and params["path"] and not _analysis_file_allowed(params["repo"], params["path"]):
         return jsonify({"error": "Analysis is limited to tracked, non-ignored repository source files"}), 404
-    return jsonify(_execute_analysis(params))
+    started_at = perf_counter()
+    try:
+        result = _execute_analysis(params)
+        if params["repo"]:
+            _record_repo_sync_activity(
+                repo_name=params["repo"], operation="analysis", trigger="user",
+                status="success", duration_ms=int((perf_counter() - started_at) * 1000),
+                files_changed={
+                    "added": [], "modified": [params["path"]] if params["path"] else [],
+                    "deleted": [],
+                },
+                change_stats={"targets_analyzed": 1},
+                details=f"Analyzed {params['path'] or params['uri'] or params['name'] or 'submitted code'}",
+            )
+        return jsonify(result)
+    except Exception as exc:
+        if params["repo"]:
+            _record_repo_sync_activity(
+                repo_name=params["repo"], operation="analysis", trigger="user",
+                status="failed", duration_ms=int((perf_counter() - started_at) * 1000),
+                error=str(exc), details="Repository analysis failed",
+            )
+        raise
 
 
 def _request_text(value) -> str:
@@ -510,6 +532,7 @@ def periodic_sync_status():
 
 
 @context_bp.route("/api/context/repos/periodic-sync/logs")
+@admin_required
 def periodic_sync_logs():
     """Retrieve execution log history of periodic 2-hour sync runs."""
     if not _ensure_init():
@@ -522,6 +545,7 @@ def periodic_sync_logs():
 
 
 @context_bp.route("/api/context/repos/sync-logs")
+@admin_required
 def repo_sync_logs():
     """Retrieve activity history for all repositories, optionally filtered by name."""
     if not _ensure_init():
@@ -529,11 +553,13 @@ def repo_sync_logs():
     from .db import ContextDB
     repo_name = request.args.get("repo_name") or request.args.get("repo")
     limit = min(500, max(1, request.args.get("limit", type=int) or 50))
-    logs = ContextDB.list_repo_sync_logs(repo_name=repo_name, limit=limit)
+    since = request.args.get("since")
+    logs = ContextDB.list_repo_sync_logs(repo_name=repo_name, limit=limit, since=since)
     return jsonify({"count": len(logs), "logs": logs})
 
 
 @context_bp.route("/api/context/repos/<name>/sync-logs")
+@admin_required
 def repository_sync_logs(name):
     """Retrieve activity history for one repository."""
     if not _ensure_init():
@@ -551,7 +577,12 @@ def trigger_periodic_sync_all():
     if not _ensure_init():
         return jsonify({"error": "Context not initialized"}), 503
     from .periodic_runner import run_periodic_sync_now
-    res = run_periodic_sync_now()
+    source_app = (
+        request.headers.get("X-App-Name") or request.headers.get("X-Savant-App") or "savant-olympus"
+    ).strip().lower()
+    res = run_periodic_sync_now(
+        actor_id=getattr(g, "user_id", "") or "user", source_app=source_app
+    )
     return jsonify(res)
 
 
@@ -654,6 +685,10 @@ def refresh_repo(name):
 
     ContextDB.add_repo(refreshed.name, refreshed.path)
     ContextDB.mark_repo_fetched(refreshed.name)
+    from .activity import collect_git_change_details
+    git_details = collect_git_change_details(
+        repo_path, refreshed.before_commit, refreshed.after_commit
+    )
     _record_repo_sync_activity(
         repo_name=refreshed.name, operation="refresh", trigger="manual",
         provider=refreshed.provider, branch=refreshed.branch, status="success",
@@ -661,6 +696,7 @@ def refresh_repo(name):
         fetched=True, code_changed=refreshed.changed,
         duration_ms=int((perf_counter() - started_at) * 1000),
         details="Repository refreshed",
+        **git_details,
     )
 
     # Check for differential index & graph generation requirements:

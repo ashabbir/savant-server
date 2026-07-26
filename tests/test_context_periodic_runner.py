@@ -158,7 +158,10 @@ def test_periodic_sync_api_endpoints(client, _isolated_db, monkeypatch):
     assert resp.get_json()["logs"][0]["trigger"] == "scheduled"
 
     # Manual run route
-    monkeypatch.setattr("context.periodic_runner.run_periodic_sync_now", lambda: {"count": 1, "results": []})
+    monkeypatch.setattr(
+        "context.periodic_runner.run_periodic_sync_now",
+        lambda **_kwargs: {"count": 1, "results": []},
+    )
     resp = client.post("/api/context/repos/periodic-sync/run")
     assert resp.status_code == 200
     assert resp.get_json()["count"] == 1
