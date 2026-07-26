@@ -228,20 +228,23 @@ def _execute_sync_pass_for_all_repos(
                 getattr(refreshed, "before_commit", "") if refreshed else "",
                 getattr(refreshed, "after_commit", "") if refreshed else "",
             )
-            git_details["change_stats"].update({
-                "files_indexed": int(idx_res.get("files_indexed", 0)),
-                "files_skipped": int(idx_res.get("files_skipped", 0)),
-                "files_removed_from_index": int(idx_res.get("files_removed", 0)),
-                "chunks_indexed": int(idx_res.get("chunks_indexed", 0)),
-                "index_errors": int(idx_res.get("errors", 0)),
-                "codegraph_accepted": bool(getattr(ci_res, "accepted", False)) if graphed else False,
-                "codegraph_result": getattr(ci_res, "result", {}) if graphed else {},
-            })
+            if indexed:
+                git_details["change_stats"].update({
+                    "files_indexed": int(idx_res.get("files_indexed", 0)),
+                    "files_skipped": int(idx_res.get("files_skipped", 0)),
+                    "files_removed_from_index": int(idx_res.get("files_removed", 0)),
+                    "chunks_indexed": int(idx_res.get("chunks_indexed", 0)),
+                    "index_errors": int(idx_res.get("errors", 0)),
+                })
             changed_files = git_details["files_changed"]
-            git_details["change_stats"]["codegraph_changed_files"] = (
-                changed_files["added"] + changed_files["modified"] + changed_files["deleted"]
-                if graphed else []
-            )
+            if graphed:
+                git_details["change_stats"].update({
+                    "codegraph_accepted": bool(getattr(ci_res, "accepted", False)),
+                    "codegraph_result": getattr(ci_res, "result", {}),
+                    "codegraph_changed_files": (
+                        changed_files["added"] + changed_files["modified"] + changed_files["deleted"]
+                    ),
+                })
 
             _record_sync_activity(ContextDB,
                 repo_name=repo_name,
