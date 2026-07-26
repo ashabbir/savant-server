@@ -114,10 +114,39 @@ def _record_job_activity(
             } and status == "success",
             duration_ms=int((perf_counter() - started_at) * 1000),
             error=error, details=json.dumps(result, default=str)[:10000],
-            change_stats={"job_type": job_type},
+            change_stats={"job_type": job_type, **_extract_index_metrics(result)},
         )
     except Exception:
         logger.exception("Failed to persist job activity for %s → %s", job_type, target)
+
+
+def _extract_index_metrics(result: object) -> dict:
+    """Extract and aggregate indexing counters from direct, differential, or batch results."""
+    metric_names = {
+        "files_indexed", "files_skipped", "files_removed", "chunks_indexed",
+        "errors", "files_processed",
+    }
+    if not isinstance(result, dict):
+        return {}
+    direct = {
+        name: int(result.get(name, 0))
+        for name in metric_names
+        if isinstance(result.get(name), (int, float))
+    }
+    if direct:
+        return {
+            **direct,
+            "files_removed_from_index": direct.get("files_removed", 0),
+            "index_errors": direct.get("errors", 0),
+        }
+    totals = {}
+    for value in result.values():
+        children = value if isinstance(value, list) else [value]
+        for child in children:
+            for name, count in _extract_index_metrics(child).items():
+                if name not in {"files_removed", "errors"}:
+                    totals[name] = totals.get(name, 0) + count
+    return totals
 
 
 class _CancelledError(Exception):
@@ -283,7 +312,7 @@ def _run_batch_index(progress_cb) -> dict:
                      f"Indexing {repo['name']} ({i+1}/{total})")
         try:
             r = indexer.index_repository(Path(repo["path"]), repo_name=repo["name"])
-            results.append({"name": repo["name"], "status": "done"})
+            results.append({"name": repo["name"], "status": "done", "result": r})
         except Exception as e:
             logger.error(f"Batch index failed for {repo['name']}: {e}")
             results.append({"name": repo["name"], "status": "failed", "error": str(e)[:200]})
@@ -306,7 +335,7 @@ def _run_batch_ast(progress_cb) -> dict:
                      f"AST for {repo['name']} ({i+1}/{total})")
         try:
             r = indexer.generate_ast_for_repository(Path(repo["path"]), repo_name=repo["name"])
-            results.append({"name": repo["name"], "status": "done"})
+            results.append({"name": repo["name"], "status": "done", "result": r})
         except Exception as e:
             logger.error(f"Batch AST failed for {repo['name']}: {e}")
             results.append({"name": repo["name"], "status": "failed", "error": str(e)[:200]})

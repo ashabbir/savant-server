@@ -156,6 +156,7 @@ def _execute_sync_pass_for_all_repos(
         details = []
         activity_errors = []
         refreshed = None
+        idx_res = {}
 
         try:
             # 1. Fetch latest code if Git repo
@@ -220,6 +221,13 @@ def _execute_sync_pass_for_all_repos(
                 getattr(refreshed, "before_commit", "") if refreshed else "",
                 getattr(refreshed, "after_commit", "") if refreshed else "",
             )
+            git_details["change_stats"].update({
+                "files_indexed": int(idx_res.get("files_indexed", 0)),
+                "files_skipped": int(idx_res.get("files_skipped", 0)),
+                "files_removed_from_index": int(idx_res.get("files_removed", 0)),
+                "chunks_indexed": int(idx_res.get("chunks_indexed", 0)),
+                "index_errors": int(idx_res.get("errors", 0)),
+            })
 
             _record_sync_activity(ContextDB,
                 repo_name=repo_name,
