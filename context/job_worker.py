@@ -105,6 +105,18 @@ def _record_job_activity(
         if target != "__all__":
             repo = ContextDB.get_repo_by_identifier(target)
             repo_name = (repo or {}).get("name") or target
+        change_stats = {"job_type": job_type, **_extract_index_metrics(result)}
+        graph_result = result.get("graph_result") if isinstance(result, dict) else None
+        if isinstance(graph_result, dict):
+            change_stats["codegraph_accepted"] = bool(graph_result.get("accepted", False))
+            change_stats["codegraph_result"] = graph_result.get("result", {})
+        files_changed = result.get("files_changed") if isinstance(result, dict) else None
+        if isinstance(files_changed, dict):
+            change_stats["codegraph_changed_files"] = [
+                *files_changed.get("added", []),
+                *files_changed.get("modified", []),
+                *files_changed.get("deleted", []),
+            ]
         ContextDB.record_repo_sync_log(
             repo_name=repo_name, operation=job_type, trigger="user",
             actor_id="user", source_app="savant-olympus", status=status,
@@ -117,7 +129,7 @@ def _record_job_activity(
             } and status == "success",
             duration_ms=int((perf_counter() - started_at) * 1000),
             error=error, details=json.dumps(result, default=str)[:10000],
-            change_stats={"job_type": job_type, **_extract_index_metrics(result)},
+            change_stats=change_stats,
         )
     except Exception:
         logger.exception("Failed to persist job activity for %s → %s", job_type, target)
