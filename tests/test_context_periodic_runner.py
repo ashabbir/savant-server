@@ -64,6 +64,8 @@ def test_periodic_sync_pass_runs_for_all_projects(tmp_path, _isolated_db, monkey
     # Mock CodeGraph build service
     mock_ci_res = MagicMock()
     mock_ci_res.freshness = "fresh"
+    mock_ci_res.accepted = True
+    mock_ci_res.result = {}
     mock_health = MagicMock()
     mock_health.provider = "codegraph"
     mock_health.graph_version = "1.4.1:unknown"
@@ -165,3 +167,61 @@ def test_periodic_sync_api_endpoints(client, _isolated_db, monkeypatch):
     resp = client.post("/api/context/repos/periodic-sync/run")
     assert resp.status_code == 200
     assert resp.get_json()["count"] == 1
+
+
+def test_periodic_sync_passes_fetched_commit_range_to_differential_index(tmp_path, monkeypatch):
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    subprocess.run(["git", "init"], cwd=repo_dir, check=True, capture_output=True)
+    captured = {}
+
+    monkeypatch.setattr(ContextDB, "list_repos", staticmethod(lambda: [{
+        "id": 9, "name": "repo", "path": str(repo_dir), "status": "indexed",
+        "file_count": 10, "indexed_at": "2026-07-26T00:00:00Z",
+    }]))
+    monkeypatch.setattr(ContextDB, "mark_repo_fetched", staticmethod(lambda _name: None))
+    monkeypatch.setattr(ContextDB, "record_repo_sync_log", staticmethod(lambda **kwargs: kwargs))
+    monkeypatch.setattr(
+        "context.ingestion.refresh_repo",
+        lambda path: IngestedProject(
+            name="repo", path=path, changed=True, provider="github",
+            before_commit="before123", after_commit="after456",
+        ),
+    )
+
+    def fake_index(_self, _path, **kwargs):
+        captured.update(kwargs)
+        return {
+            "files_indexed": 4, "files_skipped": 0, "files_removed": 0,
+            "chunks_indexed": 8, "errors": 0,
+        }
+
+    monkeypatch.setattr("context.indexer.Indexer.index_repository", fake_index)
+    monkeypatch.setattr(CodeIntelligenceConfigDB, "get", staticmethod(lambda _key: {"freshness": "fresh"}))
+    graph_result = MagicMock(accepted=True, result={"files_updated": 4})
+    graph_result.freshness = "ok"
+    health = MagicMock()
+    health.provider = "codegraph"
+    health.graph_version = "1"
+    health.indexed_at = "2026-07-26T00:00:00Z"
+    health.freshness.value = "fresh"
+    service = MagicMock()
+    service.ensure_index.return_value = graph_result
+    service.health.return_value = health
+    monkeypatch.setattr("code_intelligence.runtime.build_service", lambda: service)
+    monkeypatch.setattr(CodeIntelligenceConfigDB, "upsert", staticmethod(lambda *_args, **_kwargs: None))
+    monkeypatch.setattr(
+        "context.activity.collect_git_change_details",
+        lambda *_args: {
+            "commit_subject": "update", "files_changed": {
+                "added": [], "modified": ["a.ts", "b.ts", "c.ts", "d.ts"], "deleted": [],
+            }, "change_stats": {},
+        },
+    )
+
+    summary = _execute_sync_pass_for_all_repos()
+
+    assert summary["results"][0]["status"] == "success"
+    assert captured["differential"] is True
+    assert captured["before_commit"] == "before123"
+    assert captured["after_commit"] == "after456"

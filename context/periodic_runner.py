@@ -178,7 +178,14 @@ def _execute_sync_pass_for_all_repos(
             if should_index:
                 indexer = Indexer()
                 clear_flag = is_unindexed
-                idx_res = indexer.index_repository(repo_path, repo_name=repo_name, clear=clear_flag, differential=not clear_flag)
+                idx_res = indexer.index_repository(
+                    repo_path,
+                    repo_name=repo_name,
+                    clear=clear_flag,
+                    differential=not clear_flag,
+                    before_commit=getattr(refreshed, "before_commit", "") if refreshed else "",
+                    after_commit=getattr(refreshed, "after_commit", "") if refreshed else "",
+                )
                 indexed = True
                 details.append(f"Indexed (clear={clear_flag}, indexed={idx_res.get('files_indexed',0)}, skipped={idx_res.get('files_skipped',0)}, removed={idx_res.get('files_removed',0)})")
 
@@ -227,7 +234,14 @@ def _execute_sync_pass_for_all_repos(
                 "files_removed_from_index": int(idx_res.get("files_removed", 0)),
                 "chunks_indexed": int(idx_res.get("chunks_indexed", 0)),
                 "index_errors": int(idx_res.get("errors", 0)),
+                "codegraph_accepted": bool(getattr(ci_res, "accepted", False)) if graphed else False,
+                "codegraph_result": getattr(ci_res, "result", {}) if graphed else {},
             })
+            changed_files = git_details["files_changed"]
+            git_details["change_stats"]["codegraph_changed_files"] = (
+                changed_files["added"] + changed_files["modified"] + changed_files["deleted"]
+                if graphed else []
+            )
 
             _record_sync_activity(ContextDB,
                 repo_name=repo_name,

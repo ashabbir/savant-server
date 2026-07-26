@@ -108,6 +108,9 @@ def _record_job_activity(
         ContextDB.record_repo_sync_log(
             repo_name=repo_name, operation=job_type, trigger="user",
             actor_id="user", source_app="savant-olympus", status=status,
+            before_commit=result.get("before_commit"),
+            after_commit=result.get("after_commit"),
+            files_changed=result.get("files_changed"),
             indexed=job_type in {"index", "reindex", "index-all", "differential_sync"} and status == "success",
             graphed=job_type in {
                 "ast", "ast-all", "codegraph_index", "codegraph_sync", "differential_sync"
@@ -199,15 +202,28 @@ def _run_differential_sync(job_id: str, target: str, progress_cb) -> dict:
     repo_path, repo_name = _resolve_repo(target)
     indexer = Indexer()
 
-    # Query the latest successful sync logs to find the before_commit and after_commit
-    logs = ContextDB.list_repo_sync_logs(repo_name, limit=5)
+    # Use the latest real Git transition. A later no-change refresh must not
+    # hide the commit range that still needs differential repair.
+    logs = ContextDB.list_repo_sync_logs(repo_name, limit=100)
     before_commit = None
     after_commit = None
     for log in logs:
-        if log.get("status") == "success" and log.get("operation") in ("refresh", "periodic_refresh"):
-            before_commit = log.get("before_commit")
-            after_commit = log.get("after_commit")
+        candidate_before = log.get("before_commit")
+        candidate_after = log.get("after_commit")
+        if (
+            log.get("status") == "success"
+            and log.get("operation") in ("refresh", "periodic_refresh")
+            and candidate_before
+            and candidate_after
+            and candidate_before != candidate_after
+        ):
+            before_commit = candidate_before
+            after_commit = candidate_after
             break
+    if not before_commit or not after_commit:
+        raise RuntimeError(
+            f"No successful changed Git commit range is available for {repo_name}"
+        )
 
     progress_cb(15, "Differential Indexing", "doing differential index")
     index_res = indexer.index_repository(
@@ -218,10 +234,15 @@ def _run_differential_sync(job_id: str, target: str, progress_cb) -> dict:
 
     progress_cb(60, "Differential Graph Sync", "doing differential analysis")
     graph_res = _run_code_intelligence_sync(job_id, target, progress_cb)
+    from context.activity import collect_git_change_details
+    git_details = collect_git_change_details(repo_path, before_commit, after_commit)
 
     progress_cb(100, "Complete", "Differential sync completed successfully")
     return {
         "repo_name": repo_name,
+        "before_commit": before_commit,
+        "after_commit": after_commit,
+        "files_changed": git_details.get("files_changed", {}),
         "index_result": index_res,
         "graph_result": graph_res,
         "mode": "differential",

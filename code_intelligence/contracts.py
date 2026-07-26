@@ -86,6 +86,7 @@ class IndexResult(BaseModel):
     provider: str
     accepted: bool = True
     warnings: list[str] = Field(default_factory=list)
+    result: Any = Field(default_factory=dict)
 
 
 class SearchResult(BaseModel):
