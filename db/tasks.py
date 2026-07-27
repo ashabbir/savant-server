@@ -43,6 +43,7 @@ class TaskDB:
         try:
             with conn.cursor() as cur:
                 cur.execute("DELETE FROM task_deps")
+                cur.execute("DELETE FROM colosseum_tasks")
                 cur.execute("DELETE FROM tasks")
                 cur.execute("DELETE FROM task_ended_days")
             conn.commit()
@@ -64,7 +65,8 @@ class TaskDB:
             row = cur.fetchone()
         if row is None:
             return None
-        return TaskDB._enrich_with_deps(_row_to_dict(row), conn=conn)
+        task = TaskDB._enrich_with_deps(_row_to_dict(row), conn=conn)
+        return TaskDB._enrich_with_colosseum(task, conn=conn)
 
     @staticmethod
     def _next_seq(conn=None) -> int:
@@ -129,6 +131,32 @@ class TaskDB:
                 deps_map.setdefault(r["task_id"], []).append(r["depends_on"])
             for t in tasks:
                 t["depends_on"] = deps_map.get(t["task_id"], [])
+            return TaskDB._enrich_list_with_colosseum(tasks, conn=conn)
+        finally:
+            if local_conn:
+                release_connection(conn)
+
+    @staticmethod
+    def _enrich_with_colosseum(task: dict, conn=None) -> dict:
+        return TaskDB._enrich_list_with_colosseum([task], conn=conn)[0]
+
+    @staticmethod
+    def _enrich_list_with_colosseum(tasks: list[dict], conn=None) -> list[dict]:
+        if not tasks:
+            return tasks
+        local_conn = False
+        if conn is None:
+            conn = get_connection()
+            local_conn = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT task_id, ready, config FROM colosseum_tasks WHERE task_id = ANY(%s)", ([task["task_id"] for task in tasks],))
+                rows = cur.fetchall()
+            by_task = {row["task_id"]: row for row in rows}
+            for task in tasks:
+                execution = by_task.get(task["task_id"])
+                task["colosseum_ready"] = bool(execution and execution["ready"])
+                task["colosseum_config"] = execution["config"] if execution else {}
             return tasks
         finally:
             if local_conn:
@@ -375,7 +403,7 @@ class TaskDB:
         try:
             updates["updated_at"] = _now()
             valid_cols = {
-                "title", "description", "status", "priority", "colosseum_ready", "colosseum_config",
+                "title", "description", "status", "priority",
                 "date", "order", "updated_at", "workspace_id", "created_session_id",
             }
             filtered = {k: v for k, v in updates.items() if k in valid_cols}
@@ -404,7 +432,24 @@ class TaskDB:
 
     @staticmethod
     def set_colosseum_ready(task_id: str, config: dict, user_id: str = "") -> dict | None:
-        return TaskDB.update(task_id, {"colosseum_ready": True, "colosseum_config": json.dumps(config), "status": "todo"}, user_id=user_id)
+        conn = get_connection()
+        try:
+            task = TaskDB._get_by_id_with_conn(task_id, conn, user_id=user_id)
+            if not task:
+                return None
+            now = _now()
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO colosseum_tasks (task_id, ready, config, updated_at)
+                       VALUES (%s, TRUE, %s::jsonb, %s)
+                       ON CONFLICT (task_id) DO UPDATE SET ready = TRUE, config = EXCLUDED.config, updated_at = EXCLUDED.updated_at""",
+                    (task_id, json.dumps(config), now),
+                )
+                cur.execute("UPDATE tasks SET status = 'todo', updated_at = %s WHERE task_id = %s", (now, task_id))
+            conn.commit()
+            return TaskDB._get_by_id_with_conn(task_id, conn, user_id=user_id)
+        finally:
+            release_connection(conn)
 
     @staticmethod
     def claim_todo(task_id: str, user_id: str = "") -> dict | None:
@@ -415,7 +460,8 @@ class TaskDB:
         """
         conn = get_connection()
         try:
-            where = "WHERE task_id = %s AND status = 'todo' AND colosseum_ready = TRUE"
+            where = """WHERE task_id = %s AND status = 'todo'
+                AND EXISTS (SELECT 1 FROM colosseum_tasks WHERE colosseum_tasks.task_id = tasks.task_id AND ready = TRUE)"""
             values = [_now(), task_id]
             if user_id:
                 where += " AND user_id = %s"

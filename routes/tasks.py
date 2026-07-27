@@ -11,23 +11,23 @@ from routes.preferences import get_user_preference
 
 tasks_bp = Blueprint("tasks", __name__)
 
+COLOSSEUM_PROVIDERS = {"hermes", "codex", "claude", "copilot", "agy"}
+
 
 def _validate_colosseum_config(data):
     config = data.get("config") if isinstance(data, dict) else None
     if not isinstance(config, dict):
         return None, "config must be an object"
     repository = str(config.get("repository") or "").strip()
-    agent = config.get("agent")
+    provider = str(config.get("provider") or "").strip().lower()
     if not repository or not os.path.isabs(repository):
         return None, "config.repository must be an absolute repository path"
-    if not isinstance(agent, dict) or not str(agent.get("program") or "").strip():
-        return None, "config.agent.program is required"
-    if "args" in agent and not isinstance(agent["args"], list):
-        return None, "config.agent.args must be an array"
+    if provider not in COLOSSEUM_PROVIDERS:
+        return None, "config.provider must be an installed Colosseum provider"
     timeout = config.get("timeout_seconds", 3600)
     if not isinstance(timeout, int) or not 0 < timeout <= 86400:
         return None, "config.timeout_seconds must be between 1 and 86400"
-    return {**config, "repository": repository, "agent": {**agent, "program": str(agent["program"]).strip()}}, None
+    return {**config, "repository": repository, "provider": provider}, None
 
 
 def _next_available_workday(start_date_str: str, ended_days=None, work_week=None) -> str:

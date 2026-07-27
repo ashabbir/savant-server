@@ -151,7 +151,7 @@ class TestTaskApiUpdate:
         task = _create_task(client, ws, title="Claim me").get_json()
         tid = task["task_id"]
         ready = client.post(f"/api/tasks/{tid}/colosseum-ready", json={
-            "config": {"repository": "/tmp/repo", "agent": {"program": "codex", "args": ["exec"]}},
+            "config": {"repository": "/tmp/repo", "provider": "codex"},
         })
         assert ready.status_code == 200
         claimed = client.post(f"/api/tasks/{tid}/claim")

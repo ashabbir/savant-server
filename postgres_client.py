@@ -211,6 +211,16 @@ CREATE INDEX IF NOT EXISTS idx_tasks_date_order ON tasks(date, "order");
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at);
 
+-- Colosseum execution settings are intentionally kept separate from task data.
+CREATE TABLE IF NOT EXISTS colosseum_tasks (
+    task_id     TEXT PRIMARY KEY REFERENCES tasks(task_id) ON DELETE CASCADE,
+    ready       BOOLEAN NOT NULL DEFAULT TRUE,
+    config      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_colosseum_tasks_ready ON colosseum_tasks(ready, task_id);
+
 -- Task dependencies
 CREATE TABLE IF NOT EXISTS task_deps (
     task_id     TEXT NOT NULL,
@@ -672,6 +682,24 @@ _SCHEMA_MIGRATIONS = (
                JSONB NOT NULL DEFAULT '{}'::jsonb""",
             "CREATE INDEX IF NOT EXISTS idx_ctx_repo_sync_logs_operation ON ctx_repo_sync_logs(operation)",
             "CREATE INDEX IF NOT EXISTS idx_ctx_repo_sync_logs_trigger ON ctx_repo_sync_logs(trigger)",
+        ),
+    ),
+    (
+        2,
+        "move colosseum execution metadata into its own table",
+        (
+            """CREATE TABLE IF NOT EXISTS colosseum_tasks (
+                task_id TEXT PRIMARY KEY REFERENCES tasks(task_id) ON DELETE CASCADE,
+                ready BOOLEAN NOT NULL DEFAULT TRUE,
+                config JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )""",
+            "CREATE INDEX IF NOT EXISTS idx_colosseum_tasks_ready ON colosseum_tasks(ready, task_id)",
+            """INSERT INTO colosseum_tasks (task_id, ready, config)
+               SELECT task_id, TRUE, colosseum_config FROM tasks
+               WHERE colosseum_ready = TRUE
+               ON CONFLICT (task_id) DO NOTHING""",
         ),
     ),
 )

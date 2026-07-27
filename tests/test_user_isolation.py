@@ -262,6 +262,15 @@ class TestUserIsolation:
         task_ids = [t["task_id"] for t in resp.get_json()]
         assert "t-a" not in task_ids
 
+        # Colosseum discovery and claim are bound to the same API-key owner.
+        ready = client.post("/api/tasks/t-a/colosseum-ready", json={
+            "config": {"repository": "/tmp/repo", "provider": "codex"},
+        }, headers={"X-API-Key": "sk-ahmed-savant-001"})
+        assert ready.status_code == 200
+        next_for_lex = client.get(f"/api/tasks/colosseum/next?workspace_id={ws_id}", headers={"X-API-Key": "sk-lex-savant-001"})
+        assert next_for_lex.get_json()["message"] == "No ready Colosseum task"
+        assert client.post("/api/tasks/t-a/claim", headers={"X-API-Key": "sk-lex-savant-001"}).status_code == 409
+
     def test_reminder_isolation(self, client, _isolated_db):
         self._seed(_isolated_db)
         # Ahmed creates reminder
