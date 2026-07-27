@@ -12,7 +12,8 @@ Tool groups:
   Workspaces    — get_current_workspace, list_workspaces, create_workspace,
                   get_workspace, close_workspace, assign_session_to_workspace
   Tasks         — list_tasks, create_task, update_task, complete_task,
-                  get_next_task, add_task_dependency, remove_task_dependency
+                  get_next_task, ready_for_colosseum, get_next_colosseum_task,
+                  claim_colosseum_task, add_task_dependency, remove_task_dependency
   Session Notes — list_session_notes, create_session_note, delete_session_note
   Merge Reqs    — create_merge_request, update_merge_request, list_merge_requests,
                   get_merge_request, assign_mr_to_session, unassign_mr_from_session,
@@ -458,6 +459,30 @@ def get_next_task(workspace_id: str = "") -> dict:
         "date": task.get("date", ""),
         "workspace_id": task.get("workspace_id", ""),
     }
+
+
+@mcp.tool()
+def ready_for_colosseum(task_id: str, config: dict) -> dict:
+    """Validate and mark a Workspace task ready for the headless Colosseum worker.
+
+    Required config: repository (absolute path) and agent.program. Optional:
+    agent.args, revision, setup, validate, timeout_seconds. A ready task is
+    returned by get_next_colosseum_task and can be claimed by Colosseum.
+    """
+    return _api("POST", f"/api/tasks/{task_id}/colosseum-ready", json={"config": config})
+
+
+@mcp.tool()
+def get_next_colosseum_task(workspace_id: str = "") -> dict:
+    """Get the highest-priority ready Colosseum task from a workspace."""
+    ws_id = _resolve_workspace_id(workspace_id or None)
+    return _api("GET", "/api/tasks/colosseum/next", params={"workspace_id": ws_id})
+
+
+@mcp.tool()
+def claim_colosseum_task(task_id: str) -> dict:
+    """Atomically claim a ready Colosseum task, moving it to in-progress."""
+    return _api("POST", f"/api/tasks/{task_id}/claim")
 
 
 # ---------------------------------------------------------------------------

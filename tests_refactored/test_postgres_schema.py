@@ -28,7 +28,7 @@ def test_pending_migrations_apply_and_record_versions():
 
 
 def test_applied_migrations_are_skipped():
-    cursor = FakeCursor(applied_versions=(1, 2, 3, 4, 5))
+    cursor = FakeCursor(applied_versions=(1, 2, 3, 4, 5, 6))
 
     applied = _run_pending_migrations(cursor)
 
@@ -37,7 +37,7 @@ def test_applied_migrations_are_skipped():
 
 
 def test_existing_deployments_receive_node_type_constraint_migration():
-    cursor = FakeCursor(applied_versions=(1, 2, 3, 4))
+    cursor = FakeCursor(applied_versions=(1, 2, 3, 4, 6))
 
     applied = _run_pending_migrations(cursor)
 

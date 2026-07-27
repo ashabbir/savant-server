@@ -10,6 +10,7 @@ replacing sqlite-vec's vec0 virtual table.
 from __future__ import annotations
 
 import logging
+import json
 from typing import Any, Dict, List, Optional, Union
 
 from postgres_client import get_connection, release_connection
@@ -342,6 +343,8 @@ class ContextDB:
                              fetched: bool = False, code_changed: bool = False,
                              indexed: bool = False, graphed: bool = False,
                              duration_ms: int = 0, error: str = "", details: str = "",
+                             commit_subject: str = "", files_changed: Optional[Dict[str, Any]] = None,
+                             change_stats: Optional[Dict[str, Any]] = None,
                              conn=None) -> Dict[str, Any]:
         """Persist one durable repository synchronization activity entry."""
         local_conn = False
@@ -354,12 +357,14 @@ class ContextDB:
                     """INSERT INTO ctx_repo_sync_logs
                        (repo_name, operation, trigger, provider, branch, actor_id, source_app, status,
                         before_commit, after_commit, fetched, code_changed, indexed,
-                        graphed, duration_ms, error, details)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        graphed, duration_ms, error, details, commit_subject, files_changed, change_stats)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb)
                        RETURNING *""",
                     (repo_name, operation, trigger, provider, branch, actor_id, source_app, status,
                      before_commit, after_commit, fetched, code_changed, indexed,
-                     graphed, max(0, int(duration_ms)), error, details),
+                     graphed, max(0, int(duration_ms)), error, details, commit_subject,
+                     json.dumps(files_changed or {"added": [], "modified": [], "deleted": []}),
+                     json.dumps(change_stats or {})),
                 )
                 row = cur.fetchone()
             conn.commit()
@@ -377,36 +382,27 @@ class ContextDB:
 
     @staticmethod
     def list_repo_sync_logs(repo_name: Optional[str] = None, limit: int = 50,
-                            operation: Optional[str] = None) -> List[Dict[str, Any]]:
+                            operation: Optional[str] = None, since=None) -> List[Dict[str, Any]]:
         """Retrieve recent repository synchronization activity entries."""
         conn = get_connection()
         try:
             with conn.cursor() as cur:
-                if repo_name and operation:
-                    cur.execute(
-                        """SELECT * FROM ctx_repo_sync_logs
-                           WHERE repo_name = %s AND operation = %s
-                           ORDER BY created_at DESC LIMIT %s""",
-                        (repo_name, operation, limit),
-                    )
-                elif repo_name:
-                    cur.execute(
-                        """SELECT * FROM ctx_repo_sync_logs
-                           WHERE repo_name = %s ORDER BY created_at DESC LIMIT %s""",
-                        (repo_name, limit),
-                    )
-                elif operation:
-                    cur.execute(
-                        """SELECT * FROM ctx_repo_sync_logs
-                           WHERE operation = %s ORDER BY created_at DESC LIMIT %s""",
-                        (operation, limit),
-                    )
-                else:
-                    cur.execute(
-                        """SELECT * FROM ctx_repo_sync_logs
-                           ORDER BY created_at DESC LIMIT %s""",
-                        (limit,),
-                    )
+                clauses, params = [], []
+                if repo_name:
+                    clauses.append("repo_name = %s")
+                    params.append(repo_name)
+                if operation:
+                    clauses.append("operation = %s")
+                    params.append(operation)
+                if since:
+                    clauses.append("created_at >= %s")
+                    params.append(since)
+                where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+                cur.execute(
+                    f"""SELECT * FROM ctx_repo_sync_logs{where}
+                        ORDER BY created_at DESC, id DESC LIMIT %s""",
+                    (*params, limit),
+                )
                 rows = cur.fetchall()
             return [dict(r) for r in rows]
         finally:

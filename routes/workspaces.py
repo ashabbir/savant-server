@@ -103,7 +103,7 @@ def api_workspace_detail(ws_id):
 
 @workspaces_bp.route("/api/workspaces/<ws_id>/session-links", methods=["GET"])
 def api_workspace_session_links_list(ws_id):
-    links = WorkspaceSessionLinkDB.list_by_workspace(ws_id)
+    links = WorkspaceSessionLinkDB.list_by_workspace(ws_id, user_id=getattr(g, "user_id", ""))
     return jsonify({"links": links})
 
 

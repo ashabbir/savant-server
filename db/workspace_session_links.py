@@ -30,28 +30,48 @@ class WorkspaceSessionLinkDB:
         conn = get_connection()
         try:
             with conn.cursor() as cur:
-                cur.execute(
-                    """SELECT workspace_id, provider, session_id, attached_at
-                       FROM workspace_session_links
-                       ORDER BY attached_at DESC"""
-                )
+                if user_id:
+                    cur.execute(
+                        """SELECT links.workspace_id, links.provider, links.session_id, links.attached_at
+                           FROM workspace_session_links AS links
+                           JOIN workspaces ON workspaces.workspace_id = links.workspace_id
+                           WHERE workspaces.user_id = %s
+                           ORDER BY links.attached_at DESC""",
+                        (user_id,),
+                    )
+                else:
+                    cur.execute(
+                        """SELECT workspace_id, provider, session_id, attached_at
+                           FROM workspace_session_links
+                           ORDER BY attached_at DESC"""
+                    )
                 rows = cur.fetchall()
             return [_row_to_dict(r) for r in rows]
         finally:
             release_connection(conn)
 
     @staticmethod
-    def list_by_workspace(workspace_id: str) -> list[dict]:
+    def list_by_workspace(workspace_id: str, user_id: str = "") -> list[dict]:
         conn = get_connection()
         try:
             with conn.cursor() as cur:
-                cur.execute(
-                    """SELECT workspace_id, provider, session_id, attached_at
-                       FROM workspace_session_links
-                       WHERE workspace_id = %s
-                       ORDER BY attached_at DESC""",
-                    (workspace_id,),
-                )
+                if user_id:
+                    cur.execute(
+                        """SELECT links.workspace_id, links.provider, links.session_id, links.attached_at
+                           FROM workspace_session_links AS links
+                           JOIN workspaces ON workspaces.workspace_id = links.workspace_id
+                           WHERE links.workspace_id = %s AND workspaces.user_id = %s
+                           ORDER BY links.attached_at DESC""",
+                        (workspace_id, user_id),
+                    )
+                else:
+                    cur.execute(
+                        """SELECT workspace_id, provider, session_id, attached_at
+                           FROM workspace_session_links
+                           WHERE workspace_id = %s
+                           ORDER BY attached_at DESC""",
+                        (workspace_id,),
+                    )
                 rows = cur.fetchall()
             return [_row_to_dict(r) for r in rows]
         finally:

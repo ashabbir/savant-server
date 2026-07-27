@@ -170,6 +170,8 @@ CREATE TABLE IF NOT EXISTS workspaces (
     updated_at          TIMESTAMPTZ NOT NULL,
     created_session_id  TEXT,
     user_id             TEXT DEFAULT '',
+    colosseum_ready     BOOLEAN NOT NULL DEFAULT FALSE,
+    colosseum_config    JSONB NOT NULL DEFAULT '{}'::jsonb,
     color               TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_ws_status ON workspaces(status);
@@ -208,6 +210,16 @@ CREATE INDEX IF NOT EXISTS idx_tasks_ws_status ON tasks(workspace_id, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_date_order ON tasks(date, "order");
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at);
+
+-- Colosseum execution settings are intentionally kept separate from task data.
+CREATE TABLE IF NOT EXISTS colosseum_tasks (
+    task_id     TEXT PRIMARY KEY REFERENCES tasks(task_id) ON DELETE CASCADE,
+    ready       BOOLEAN NOT NULL DEFAULT TRUE,
+    config      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_colosseum_tasks_ready ON colosseum_tasks(ready, task_id);
 
 -- Task dependencies
 CREATE TABLE IF NOT EXISTS task_deps (
@@ -555,6 +567,9 @@ CREATE TABLE IF NOT EXISTS ctx_repo_sync_logs (
     graphed      BOOLEAN DEFAULT FALSE,
     duration_ms  BIGINT DEFAULT 0,
     error        TEXT DEFAULT '',
+    commit_subject TEXT DEFAULT '',
+    files_changed JSONB NOT NULL DEFAULT '{"added":[],"modified":[],"deleted":[]}'::jsonb,
+    change_stats JSONB NOT NULL DEFAULT '{}'::jsonb,
     legacy_periodic_log_id INTEGER UNIQUE,
     details      TEXT DEFAULT '',
     created_at   TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
@@ -573,6 +588,9 @@ _SCHEMA_MIGRATIONS = (
             "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS user_id TEXT DEFAULT ''",
             "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS color TEXT DEFAULT ''",
             "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS user_id TEXT DEFAULT ''",
+            "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS colosseum_ready BOOLEAN NOT NULL DEFAULT FALSE",
+            "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS colosseum_config JSONB NOT NULL DEFAULT '{}'::jsonb",
+            "CREATE INDEX IF NOT EXISTS idx_tasks_colosseum_ready ON tasks(workspace_id, colosseum_ready, status)",
             "ALTER TABLE notes ADD COLUMN IF NOT EXISTS user_id TEXT DEFAULT ''",
             "ALTER TABLE merge_requests ADD COLUMN IF NOT EXISTS user_id TEXT DEFAULT ''",
             "ALTER TABLE jira_tickets ADD COLUMN IF NOT EXISTS user_id TEXT DEFAULT ''",
@@ -651,6 +669,37 @@ _SCHEMA_MIGRATIONS = (
                                  'technology', 'project', 'concept', 'repo', 'session',
                                  'issue', 'person', 'operation', 'organization')
                )""",
+        ),
+    ),
+    (
+        6,
+        "add repository activity change details",
+        (
+            "ALTER TABLE ctx_repo_sync_logs ADD COLUMN IF NOT EXISTS commit_subject TEXT DEFAULT ''",
+            """ALTER TABLE ctx_repo_sync_logs ADD COLUMN IF NOT EXISTS files_changed
+               JSONB NOT NULL DEFAULT '{"added":[],"modified":[],"deleted":[]}'::jsonb""",
+            """ALTER TABLE ctx_repo_sync_logs ADD COLUMN IF NOT EXISTS change_stats
+               JSONB NOT NULL DEFAULT '{}'::jsonb""",
+            "CREATE INDEX IF NOT EXISTS idx_ctx_repo_sync_logs_operation ON ctx_repo_sync_logs(operation)",
+            "CREATE INDEX IF NOT EXISTS idx_ctx_repo_sync_logs_trigger ON ctx_repo_sync_logs(trigger)",
+        ),
+    ),
+    (
+        2,
+        "move colosseum execution metadata into its own table",
+        (
+            """CREATE TABLE IF NOT EXISTS colosseum_tasks (
+                task_id TEXT PRIMARY KEY REFERENCES tasks(task_id) ON DELETE CASCADE,
+                ready BOOLEAN NOT NULL DEFAULT TRUE,
+                config JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )""",
+            "CREATE INDEX IF NOT EXISTS idx_colosseum_tasks_ready ON colosseum_tasks(ready, task_id)",
+            """INSERT INTO colosseum_tasks (task_id, ready, config)
+               SELECT task_id, TRUE, colosseum_config FROM tasks
+               WHERE colosseum_ready = TRUE
+               ON CONFLICT (task_id) DO NOTHING""",
         ),
     ),
 )
