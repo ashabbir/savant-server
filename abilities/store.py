@@ -101,6 +101,32 @@ class AbilityStore:
     def get_asset_dict(self, block_id: str) -> Optional[Dict[str, Any]]:
         return self.assets.get_asset_dict(block_id)
 
+    def find_assets(
+        self, query: str, asset_type: Optional[str] = None
+    ) -> List[Tuple[Block, Dict[str, Any]]]:
+        """Find directly readable assets by ID, tag, or repository alias."""
+        needle = (query or "").strip()
+        if not needle:
+            return []
+
+        allowed_types = {asset_type} if asset_type else None
+        exact = next(
+            (
+                block for block in self.blocks_by_id.values()
+                if block.id.lower() == needle.lower()
+                and (not allowed_types or block.type in allowed_types)
+            ),
+            None,
+        )
+        if exact:
+            return [(exact, {"match_type": "id", "score": 1.0})]
+
+        if asset_type == "repo":
+            block, detail = self.find_repo_fuzzy(needle)
+            return [(block, detail)] if block else []
+
+        return self.blocks_with_tags(needle, allowed_types=allowed_types)
+
     def list_assets_grouped(self) -> Dict[str, List[Dict[str, Any]]]:
         return self.assets.list_assets_grouped()
 

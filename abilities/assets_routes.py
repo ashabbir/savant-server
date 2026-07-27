@@ -5,6 +5,8 @@ from .shared import abilities_bp, _get_store
 
 logger = logging.getLogger(__name__)
 
+_ASSET_TYPES = {"persona", "rule", "policy", "style", "repo"}
+
 
 # ── GET /api/abilities/assets — list all assets grouped by type ───────────────
 
@@ -15,6 +17,30 @@ def list_assets():
         return jsonify(store.list_assets_grouped())
     except Exception as e:
         logger.error(f"list_assets failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@abilities_bp.route("/api/abilities/assets/search", methods=["GET"])
+def search_assets():
+    """Find fully readable assets by exact ID, tag, or repository alias."""
+    query = (request.args.get("query") or "").strip()
+    asset_type = (request.args.get("type") or "").strip().lower() or None
+    if not query:
+        return jsonify({"error": "query is required"}), 400
+    if asset_type and asset_type not in _ASSET_TYPES:
+        return jsonify({"error": f"type must be one of: {', '.join(sorted(_ASSET_TYPES))}"}), 400
+
+    try:
+        store = _get_store()
+        items = []
+        for block, match in store.find_assets(query, asset_type):
+            asset = store.get_asset_dict(block.id)
+            if asset:
+                asset["match"] = match
+                items.append(asset)
+        return jsonify({"query": query, "type": asset_type, "items": items})
+    except Exception as e:
+        logger.error(f"search_assets failed: {e}")
         return jsonify({"error": str(e)}), 500
 
 

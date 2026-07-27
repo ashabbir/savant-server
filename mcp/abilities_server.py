@@ -15,6 +15,7 @@ Asset types managed:
 Tool groups:
   Resolution  — resolve_abilities (persona + tags + optional repo → prompt), validate_store
   Listing     — list_personas, list_rules, list_policies, list_repos
+  Reading     — find_assets (by rule tag/repository alias), read_asset (by exact ID)
   CRUD        — read_asset, create_asset, update_asset
   Learning    — learn (append to an asset's ## Learned section)
 """
@@ -60,6 +61,8 @@ mcp = FastMCP(
         "style (output/code style), repo (repo-specific overrides). "
         "Resolution: resolve_abilities(persona, tags, repo_id) → compiled prompt; validate_store() checks schema. "
         "Listing: list_personas, list_rules, list_policies, list_repos. "
+        "Direct reading: find_assets(query, type) retrieves full assets by ID, rule tag, or repo alias; use "
+        "find_assets('backend', 'rule') for backend rules and find_assets('ICN', 'repo') for ICN repo rules. "
         "CRUD: read_asset(asset_id), create_asset(...), update_asset(asset_id, ...). "
         "Learning: learn(asset_id, content) appends knowledge to an asset's ## Learned section. "
         "Migration: export_abilities() returns a base64 zip of the whole store; import_abilities(content_b64) installs it on another instance (overwrite on conflict)."
@@ -162,6 +165,15 @@ def learn(asset_id: str, content: str) -> dict[str, Any]:
 def read_asset(asset_id: str) -> dict[str, Any]:
     """Read a specific asset by ID (returns frontmatter + body)"""
     return _api("GET", f"/api/abilities/assets/{asset_id}")
+
+
+@mcp.tool()
+def find_assets(query: str, type: str | None = None) -> dict[str, Any]:
+    """Pull full ability assets without a persona. Use query='backend', type='rule' for backend rules; query='ICN', type='repo' for ICN repository rules; or an exact asset ID to retrieve one asset."""
+    params: dict[str, str] = {"query": query}
+    if type:
+        params["type"] = type
+    return _api("GET", "/api/abilities/assets/search", params=params)
 
 
 @mcp.tool()

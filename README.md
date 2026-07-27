@@ -1,4 +1,4 @@
-# Savant Server (Version 13.0.1 - Patch Release)
+# Savant Server (Version 14.2.10 - Patch Release)
 
 License Owned by Project X. This repository is private and proprietary.
 

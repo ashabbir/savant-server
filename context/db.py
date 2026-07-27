@@ -27,6 +27,12 @@ def _coerce_vec(vec: List[float]) -> list:
     return [float(v) for v in vec]
 
 
+def _normalized_repo_names(repo_filter: Union[str, List[str]]) -> list[str]:
+    """Normalize repository filters without changing the stored display name."""
+    names = repo_filter if isinstance(repo_filter, list) else [repo_filter]
+    return [str(name).lower() for name in names]
+
+
 def vec_version() -> Optional[str]:
     """Return pgvector version string, or None."""
     conn = get_connection()
@@ -73,7 +79,7 @@ class ContextDB:
                     (name, path),
                 )
                 conn.commit()
-                cur.execute("SELECT * FROM ctx_repos WHERE name = %s", (name,))
+                cur.execute("SELECT * FROM ctx_repos WHERE LOWER(name) = LOWER(%s)", (name,))
                 row = cur.fetchone()
             return dict(row) if row else {}
         finally:
@@ -88,7 +94,7 @@ class ContextDB:
             local_conn = True
         try:
             with conn.cursor() as cur:
-                cur.execute("SELECT * FROM ctx_repos WHERE name = %s", (name,))
+                cur.execute("SELECT * FROM ctx_repos WHERE LOWER(name) = LOWER(%s)", (name,))
                 row = cur.fetchone()
             return dict(row) if row else None
         finally:
@@ -105,7 +111,7 @@ class ContextDB:
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT * FROM ctx_repos WHERE id::text = %s OR name = %s",
+                    "SELECT * FROM ctx_repos WHERE id::text = %s OR LOWER(name) = LOWER(%s)",
                     (str(repo_id), str(repo_id)),
                 )
                 row = cur.fetchone()
@@ -549,8 +555,8 @@ class ContextDB:
 
             if repo_filter:
                 repo_list = repo_filter if isinstance(repo_filter, list) else [repo_filter]
-                sql += " AND r.name = ANY(%s)"
-                params.append(repo_list)
+                sql += " AND LOWER(r.name) = ANY(%s)"
+                params.append(_normalized_repo_names(repo_list))
 
             if memory_bank_only:
                 sql += " AND f.is_memory_bank = 1"
@@ -589,8 +595,8 @@ class ContextDB:
 
             if repo_filter:
                 repo_list = repo_filter if isinstance(repo_filter, list) else [repo_filter]
-                sql += " AND r.name = ANY(%s)"
-                params.append(repo_list)
+                sql += " AND LOWER(r.name) = ANY(%s)"
+                params.append(_normalized_repo_names(repo_list))
 
             sql += " LIMIT 50"
 
@@ -618,8 +624,8 @@ class ContextDB:
             params: list = []
             if repo_filter:
                 repo_list = repo_filter if isinstance(repo_filter, list) else [repo_filter]
-                sql += " WHERE r.name = ANY(%s)"
-                params.append(repo_list)
+                sql += " WHERE LOWER(r.name) = ANY(%s)"
+                params.append(_normalized_repo_names(repo_list))
             sql += " ORDER BY r.name, f.rel_path, a.start_line"
             with conn.cursor() as cur:
                 cur.execute(sql, params)
@@ -643,8 +649,8 @@ class ContextDB:
             params: list = []
             if repo_filter:
                 repo_list = repo_filter if isinstance(repo_filter, list) else [repo_filter]
-                sql += " AND r.name = ANY(%s)"
-                params.append(repo_list)
+                sql += " AND LOWER(r.name) = ANY(%s)"
+                params.append(_normalized_repo_names(repo_list))
             sql += " ORDER BY r.name, f.rel_path"
             with conn.cursor() as cur:
                 cur.execute(sql, params)
@@ -673,8 +679,8 @@ class ContextDB:
             params: list = []
             if repo_filter:
                 repo_list = repo_filter if isinstance(repo_filter, list) else [repo_filter]
-                sql += " AND r.name = ANY(%s)"
-                params.append(repo_list)
+                sql += " AND LOWER(r.name) = ANY(%s)"
+                params.append(_normalized_repo_names(repo_list))
             sql += " ORDER BY r.name, f.rel_path"
             with conn.cursor() as cur:
                 cur.execute(sql, params)
@@ -703,7 +709,7 @@ class ContextDB:
                     cur.execute(
                         """SELECT f.id, f.rel_path, f.language, f.is_memory_bank, f.created_at, r.name AS repo
                            FROM ctx_files f JOIN ctx_repos r ON f.repo_id = r.id
-                           WHERE f.rel_path = %s AND r.name = %s AND f.is_memory_bank = 0""",
+                           WHERE f.rel_path = %s AND LOWER(r.name) = LOWER(%s) AND f.is_memory_bank = 0""",
                         (rel_path, repo_name),
                     )
                 else:
@@ -753,7 +759,7 @@ class ContextDB:
                     cur.execute(
                         """SELECT f.id, f.rel_path, f.language, f.is_memory_bank, f.created_at, r.name AS repo
                            FROM ctx_files f JOIN ctx_repos r ON f.repo_id = r.id
-                           WHERE f.rel_path = %s AND r.name = %s AND f.is_memory_bank = 1""",
+                           WHERE f.rel_path = %s AND LOWER(r.name) = LOWER(%s) AND f.is_memory_bank = 1""",
                         (rel_path, repo_name),
                     )
                 else:

@@ -70,7 +70,7 @@ utils/                  auth.py (admin_required decorator)
 | Server             | Port | File                      | Tool count | Manages                                      |
 |--------------------|------|---------------------------|------------|----------------------------------------------|
 | savant-workspace   | 8091 | mcp/server.py             | 32         | workspaces, tasks, notes, MRs, Jira tickets  |
-| savant-abilities   | 8092 | mcp/abilities_server.py   | 12         | prompt assets (personas, rules, policies)    |
+| savant-abilities   | 8092 | mcp/abilities_server.py   | 13         | prompt assets (personas, rules, policies)    |
 | savant-context     | 8093 | mcp/context_server.py     | 6          | code search, AST, memory bank, code graph    |
 | savant-knowledge   | 8094 | mcp/knowledge_server.py   | 16         | KG nodes, edges, staging, search             |
 | savant-reminders   | 8095 | mcp/reminders_server.py   | 9          | personal reminders                           |
@@ -91,6 +91,18 @@ The context MCP allowlist intentionally exposes only agent-facing code intellige
 | `code_graph_search` | Search imports, callers, dependencies, inheritance, and other CodeGraph relationships. |
 
 Administrative/index diagnostics and low-level memory-resource operations remain available through REST where needed, but are not exposed as agent MCP tools.
+
+### savant-abilities agent tools
+
+Use `find_assets` when a task needs rules or a repository overlay without building a full persona prompt. It returns each matching asset's frontmatter and complete body:
+
+| Request | MCP call |
+|---------|----------|
+| Backend coding rules | `find_assets(query="backend", type="rule")` |
+| ICN repository rules | `find_assets(query="ICN", type="repo")` |
+| One known asset | `find_assets(query="rules.backend.base")` or `read_asset(asset_id="rules.backend.base")` |
+
+Use `resolve_abilities` only when a persona plus its applicable rules/policies must be compiled into one deterministic prompt.
 
 ## Key rules
 

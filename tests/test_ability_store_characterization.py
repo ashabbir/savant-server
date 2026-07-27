@@ -153,6 +153,16 @@ def test_abilities_routes_api(client, tmp_path, monkeypatch):
         "---\nid: persona.dev\ntype: persona\ntags: [dev]\npriority: 10\n---\nDeveloper.\n",
         encoding="utf-8",
     )
+    (abilities_dir / "rules").mkdir(parents=True, exist_ok=True)
+    (abilities_dir / "rules" / "backend.md").write_text(
+        "---\nid: rules.backend.base\ntype: rule\ntags: [backend]\npriority: 10\n---\nBackend rules.\n",
+        encoding="utf-8",
+    )
+    (abilities_dir / "repos").mkdir(parents=True, exist_ok=True)
+    (abilities_dir / "repos" / "icn.md").write_text(
+        "---\nid: repo.icn\ntype: repo\ntags: [typescript]\npriority: 10\naliases: [ICN]\n---\nICN repository rules.\n",
+        encoding="utf-8",
+    )
 
     # 1. GET /api/abilities/stats
     res = client.get("/api/abilities/stats")
@@ -169,6 +179,17 @@ def test_abilities_routes_api(client, tmp_path, monkeypatch):
     assert res.status_code == 200
     payload = res.get_json()
     assert "prompt" in payload
+
+    # 4. Pull directly readable rule/repository assets without a persona.
+    backend = client.get("/api/abilities/assets/search?query=backend&type=rule")
+    assert backend.status_code == 200
+    assert [asset["id"] for asset in backend.get_json()["items"]] == ["rules.backend.base"]
+    assert backend.get_json()["items"][0]["body"] == "Backend rules."
+
+    icn = client.get("/api/abilities/assets/search?query=icn&type=repo")
+    assert icn.status_code == 200
+    assert [asset["id"] for asset in icn.get_json()["items"]] == ["repo.icn"]
+    assert icn.get_json()["items"][0]["body"] == "ICN repository rules."
 
     # Clean up singletons
     _r._store = None

@@ -80,6 +80,33 @@ def test_js_ast_generation(client, tmp_path, monkeypatch):
     assert ("function", "connect") in names
 
 
+def test_repository_filters_ignore_case(client, tmp_path, monkeypatch):
+    from context.db import ContextDB, init_context_schema
+    from context.indexer import Indexer
+
+    assert init_context_schema()
+
+    class _FakeEmbedder:
+        def embed_one(self, _text):
+            return [0.0] * 768
+
+    monkeypatch.setattr(Indexer, "_get_embedder", lambda self: _FakeEmbedder())
+
+    repo_dir = _seed_python_repo(tmp_path, "icn")
+    ContextDB.add_repo("icn", str(repo_dir))
+    Indexer().index_repository(repo_dir, repo_name="icn")
+    Indexer().generate_ast_for_repository(repo_dir, repo_name="icn")
+
+    assert ContextDB.get_repo("ICN")["name"] == "icn"
+    assert ContextDB.get_repo_by_identifier("ICN")["name"] == "icn"
+
+    response = client.get("/api/context/ast/list?repo=ICN")
+
+    assert response.status_code == 200
+    assert response.get_json()["ast_count"] >= 2
+    assert {node["repo"] for node in response.get_json()["nodes"]} == {"icn"}
+
+
 def test_ast_support_matrix_covers_framework_aliases_and_generic_grammars(monkeypatch):
     from context.indexer import Indexer
 
