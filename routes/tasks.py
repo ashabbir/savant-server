@@ -145,15 +145,14 @@ def api_task_colosseum_ready(task_id):
 @tasks_bp.route("/api/tasks/colosseum/next", methods=["GET"])
 def api_next_colosseum_task():
     user_id = getattr(g, "user_id", "")
-    workspace_id = request.args.get("workspace_id")
-    if not workspace_id:
-        return jsonify({"error": "workspace_id parameter is required"}), 400
+    workspace_id = request.args.get("workspace_id") or None
     rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}
     ready = [task for task in TaskDB.list_all(workspace_id=workspace_id, user_id=user_id, status="todo") if task.get("colosseum_ready")]
     if not ready:
         return jsonify({"message": "No ready Colosseum task", "workspace_id": workspace_id}), 200
     ready.sort(key=lambda task: rank.get(task.get("priority"), 2))
     return jsonify(ready[0]), 200
+
 
 
 @tasks_bp.route("/api/tasks/<task_id>/deps", methods=["POST"])

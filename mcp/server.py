@@ -474,9 +474,11 @@ def ready_for_colosseum(task_id: str, config: dict) -> dict:
 
 @mcp.tool()
 def get_next_colosseum_task(workspace_id: str = "") -> dict:
-    """Get the highest-priority ready Colosseum task from a workspace."""
-    ws_id = _resolve_workspace_id(workspace_id or None)
-    return _api("GET", "/api/tasks/colosseum/next", params={"workspace_id": ws_id})
+    """Get the highest-priority ready Colosseum task. Optionally filter by workspace."""
+    params = {}
+    if workspace_id:
+        params["workspace_id"] = workspace_id
+    return _api("GET", "/api/tasks/colosseum/next", params=params)
 
 
 @mcp.tool()
