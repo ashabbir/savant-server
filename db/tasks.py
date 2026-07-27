@@ -1,5 +1,6 @@
 """TaskDB — PostgreSQL backend."""
 
+import json
 from datetime import datetime, timedelta
 from db.base import _now, _row_to_dict
 from postgres_client import get_connection, release_connection
@@ -374,7 +375,7 @@ class TaskDB:
         try:
             updates["updated_at"] = _now()
             valid_cols = {
-                "title", "description", "status", "priority",
+                "title", "description", "status", "priority", "colosseum_ready", "colosseum_config",
                 "date", "order", "updated_at", "workspace_id", "created_session_id",
             }
             filtered = {k: v for k, v in updates.items() if k in valid_cols}
@@ -400,6 +401,37 @@ class TaskDB:
     @staticmethod
     def update_status(task_id: str, status: str, user_id: str = "") -> dict | None:
         return TaskDB.update(task_id, {"status": status}, user_id=user_id)
+
+    @staticmethod
+    def set_colosseum_ready(task_id: str, config: dict, user_id: str = "") -> dict | None:
+        return TaskDB.update(task_id, {"colosseum_ready": True, "colosseum_config": json.dumps(config), "status": "todo"}, user_id=user_id)
+
+    @staticmethod
+    def claim_todo(task_id: str, user_id: str = "") -> dict | None:
+        """Atomically move a todo task into active execution.
+
+        The status predicate is the claim guard: competing workers can list the
+        same task, but only one UPDATE succeeds.
+        """
+        conn = get_connection()
+        try:
+            where = "WHERE task_id = %s AND status = 'todo' AND colosseum_ready = TRUE"
+            values = [_now(), task_id]
+            if user_id:
+                where += " AND user_id = %s"
+                values.append(user_id)
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"UPDATE tasks SET status = 'in-progress', updated_at = %s {where}",
+                    values,
+                )
+                claimed = cur.rowcount == 1
+            conn.commit()
+            if not claimed:
+                return None
+            return TaskDB._get_by_id_with_conn(task_id, conn, user_id=user_id)
+        finally:
+            release_connection(conn)
 
     @staticmethod
     def delete(task_id: str, user_id: str = "") -> bool:

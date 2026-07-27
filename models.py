@@ -64,7 +64,7 @@ class Task(BaseModel):
     workspace_id: str = Field(..., description="Parent workspace ID")
     title: str = Field(..., description="Task title")
     description: Optional[str] = Field(default="", description="Task description")
-    status: str = Field(default="todo", description="Status: todo, in_progress, done, blocked")
+    status: str = Field(default="todo", description="Status: todo, in-progress, done, blocked")
     priority: str = Field(default="medium", description="Priority: critical, high, medium, low")
     date: Optional[datetime] = Field(default=None, description="Target date for task")
     created_at: datetime = Field(default_factory=datetime.utcnow)

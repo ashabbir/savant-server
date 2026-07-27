@@ -1,5 +1,6 @@
 """Task Management Routes Blueprint for Savant Server."""
 
+import os
 import uuid
 from datetime import datetime, timedelta
 from flask import Blueprint, g, jsonify, request
@@ -9,6 +10,24 @@ from db.jira_tickets import JiraTicketDB
 from routes.preferences import get_user_preference
 
 tasks_bp = Blueprint("tasks", __name__)
+
+
+def _validate_colosseum_config(data):
+    config = data.get("config") if isinstance(data, dict) else None
+    if not isinstance(config, dict):
+        return None, "config must be an object"
+    repository = str(config.get("repository") or "").strip()
+    agent = config.get("agent")
+    if not repository or not os.path.isabs(repository):
+        return None, "config.repository must be an absolute repository path"
+    if not isinstance(agent, dict) or not str(agent.get("program") or "").strip():
+        return None, "config.agent.program is required"
+    if "args" in agent and not isinstance(agent["args"], list):
+        return None, "config.agent.args must be an array"
+    timeout = config.get("timeout_seconds", 3600)
+    if not isinstance(timeout, int) or not 0 < timeout <= 86400:
+        return None, "config.timeout_seconds must be between 1 and 86400"
+    return {**config, "repository": repository, "agent": {**agent, "program": str(agent["program"]).strip()}}, None
 
 
 def _next_available_workday(start_date_str: str, ended_days=None, work_week=None) -> str:
@@ -93,6 +112,48 @@ def api_task_detail(task_id):
     data = request.get_json(force=True, silent=True) or {}
     updated = TaskDB.update(task_id, data, user_id=user_id)
     return jsonify(updated)
+
+
+@tasks_bp.route("/api/tasks/<task_id>/claim", methods=["POST"])
+def api_task_claim(task_id):
+    """Claim a todo task for a single execution worker.
+
+    Returning 409 rather than silently updating an already-active task keeps
+    multiple runners from executing the same development task.
+    """
+    user_id = getattr(g, "user_id", "")
+    claimed = TaskDB.claim_todo(task_id, user_id=user_id)
+    if not claimed:
+        return jsonify({"error": "Task is not available to claim"}), 409
+    return jsonify(claimed), 200
+
+
+@tasks_bp.route("/api/tasks/<task_id>/colosseum-ready", methods=["POST"])
+def api_task_colosseum_ready(task_id):
+    user_id = getattr(g, "user_id", "")
+    task = TaskDB.get_by_id(task_id, user_id=user_id)
+    if not task:
+        return jsonify({"error": "Task not found"}), 404
+    if task.get("status") in ("done", "blocked"):
+        return jsonify({"error": "Only an open task can be made ready for Colosseum"}), 409
+    config, error = _validate_colosseum_config(request.get_json(force=True, silent=True) or {})
+    if error:
+        return jsonify({"error": error}), 400
+    return jsonify(TaskDB.set_colosseum_ready(task_id, config, user_id=user_id)), 200
+
+
+@tasks_bp.route("/api/tasks/colosseum/next", methods=["GET"])
+def api_next_colosseum_task():
+    user_id = getattr(g, "user_id", "")
+    workspace_id = request.args.get("workspace_id")
+    if not workspace_id:
+        return jsonify({"error": "workspace_id parameter is required"}), 400
+    rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    ready = [task for task in TaskDB.list_all(workspace_id=workspace_id, user_id=user_id, status="todo") if task.get("colosseum_ready")]
+    if not ready:
+        return jsonify({"message": "No ready Colosseum task", "workspace_id": workspace_id}), 200
+    ready.sort(key=lambda task: rank.get(task.get("priority"), 2))
+    return jsonify(ready[0]), 200
 
 
 @tasks_bp.route("/api/tasks/<task_id>/deps", methods=["POST"])

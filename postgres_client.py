@@ -170,6 +170,8 @@ CREATE TABLE IF NOT EXISTS workspaces (
     updated_at          TIMESTAMPTZ NOT NULL,
     created_session_id  TEXT,
     user_id             TEXT DEFAULT '',
+    colosseum_ready     BOOLEAN NOT NULL DEFAULT FALSE,
+    colosseum_config    JSONB NOT NULL DEFAULT '{}'::jsonb,
     color               TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_ws_status ON workspaces(status);
@@ -576,6 +578,9 @@ _SCHEMA_MIGRATIONS = (
             "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS user_id TEXT DEFAULT ''",
             "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS color TEXT DEFAULT ''",
             "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS user_id TEXT DEFAULT ''",
+            "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS colosseum_ready BOOLEAN NOT NULL DEFAULT FALSE",
+            "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS colosseum_config JSONB NOT NULL DEFAULT '{}'::jsonb",
+            "CREATE INDEX IF NOT EXISTS idx_tasks_colosseum_ready ON tasks(workspace_id, colosseum_ready, status)",
             "ALTER TABLE notes ADD COLUMN IF NOT EXISTS user_id TEXT DEFAULT ''",
             "ALTER TABLE merge_requests ADD COLUMN IF NOT EXISTS user_id TEXT DEFAULT ''",
             "ALTER TABLE jira_tickets ADD COLUMN IF NOT EXISTS user_id TEXT DEFAULT ''",

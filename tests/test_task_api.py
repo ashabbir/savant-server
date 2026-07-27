@@ -147,6 +147,18 @@ class TestTaskApiUpdate:
         refetch = client.get("/api/tasks").get_json()
         assert refetch[0]["status"] == "in-progress"
 
+    def test_claim_moves_todo_task_to_in_progress_once(self, client, ws):
+        task = _create_task(client, ws, title="Claim me").get_json()
+        tid = task["task_id"]
+        ready = client.post(f"/api/tasks/{tid}/colosseum-ready", json={
+            "config": {"repository": "/tmp/repo", "agent": {"program": "codex", "args": ["exec"]}},
+        })
+        assert ready.status_code == 200
+        claimed = client.post(f"/api/tasks/{tid}/claim")
+        assert claimed.status_code == 200
+        assert claimed.get_json()["status"] == "in-progress"
+        assert client.post(f"/api/tasks/{tid}/claim").status_code == 409
+
     def test_update_preserves_seq(self, client, ws):
         """REGRESSION: updating a task must not lose its seq number."""
         task = _create_task(client, ws, title="Seq check").get_json()
