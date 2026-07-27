@@ -1238,9 +1238,10 @@ def _exec_structure_search(q: str, repo: str | None, repo_ids: list[str], limit:
                 warnings.append(f"{repo_id}: repository not found")
                 incomplete = True
                 continue
+            canonical_repo_id = record.get("name") or repo_id
             try:
                 search_result = service.search_symbols(
-                    repo_id, _resolve_repo_path(record["path"]), q, limit=limit
+                    canonical_repo_id, _resolve_repo_path(record["path"]), q, limit=limit
                 )
             except Exception as exc:
                 warnings.append(f"{repo_id}: {exc}")
@@ -1250,9 +1251,9 @@ def _exec_structure_search(q: str, repo: str | None, repo_ids: list[str], limit:
             incomplete = incomplete or search_result.incomplete
             warnings.extend(f"{repo_id}: {warning}" for warning in search_result.warnings)
             results_by_repo.append([
-                {"id": s.id, "node_type": s.kind, "name": s.name,
+                 {"id": s.id, "node_type": s.kind, "name": s.name,
                  "start_line": s.location.start_line, "end_line": s.location.end_line,
-                 "rel_path": s.location.file_path, "repo": repo_id,
+                 "rel_path": s.location.file_path, "repo": canonical_repo_id,
                  "qualified_name": s.qualified_name, "signature": s.signature}
                 for s in search_result.items
             ])
@@ -1309,9 +1310,10 @@ def _exec_graph_search(g_query: str, repo_ids: list[str], limit: int) -> dict:
             combined_warnings.append(f"{repo_id}: repository not found")
             incomplete = True
             continue
+        canonical_repo_id = record.get("name") or repo_id
         try:
             explored = service.explore(
-                repo_id,
+                canonical_repo_id,
                 _resolve_repo_path(record["path"]),
                 g_query,
                 max_files=min(limit, 20),
@@ -1328,14 +1330,14 @@ def _exec_graph_search(g_query: str, repo_ids: list[str], limit: int) -> dict:
             "symbols": [s.model_dump(mode="json") for s in explored.symbols],
             "edges": [e.model_dump(mode="json") for e in explored.edges],
         }
-        repository_results[repo_id] = repo_result
+        repository_results[canonical_repo_id] = repo_result
         incomplete = incomplete or explored.incomplete
         combined_warnings.extend(f"{repo_id}: {warning}" for warning in explored.warnings)
         combined_symbols.extend(repo_result["symbols"])
         combined_edges.extend(repo_result["edges"])
 
-    if len(repo_ids) == 1 and repo_ids[0] in repository_results:
-        return repository_results[repo_ids[0]]
+    if len(repository_results) == 1:
+        return next(iter(repository_results.values()))
     return {
         "provider": "multi_repo",
         "incomplete": incomplete,

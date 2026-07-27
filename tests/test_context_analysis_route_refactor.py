@@ -47,7 +47,8 @@ def test_research_route_explores_multiple_repositories(monkeypatch, client, tmp_
     monkeypatch.setattr(
         ContextDB,
         "get_repo",
-        lambda repo_id: {"path": str(repo_paths[repo_id])} if repo_id in repo_paths else None,
+        lambda repo_id: {"path": str(repo_paths[repo_id.lower()]), "name": repo_id.lower()}
+        if repo_id.lower() in repo_paths else None,
     )
 
     class Service:
@@ -84,7 +85,7 @@ def test_research_route_explores_multiple_repositories(monkeypatch, client, tmp_
 
     response = client.post(
         "/api/context/research",
-        json={"q": "run", "repo": ["repo-one", "repo-two"], "type": "code", "limit": 3},
+        json={"q": "run", "repo": ["REPO-ONE", "REPO-TWO"], "type": "code", "limit": 3},
     )
 
     assert response.status_code == 200
