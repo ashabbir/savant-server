@@ -589,16 +589,13 @@ def trigger_periodic_sync_all():
 @context_bp.route("/api/context/repos", methods=["POST"])
 @admin_required
 def add_repo():
-    """Add a project from a configured source (does NOT index it)."""
+    """Register a project and enqueue its first download/index/analysis pass."""
     if not _ensure_init():
         return jsonify({"error": "Context not initialized"}), 503
 
     data = request.get_json(force=True) or {}
     source = (data.get("source") or "").strip().lower()
     branch = (data.get("branch") or "").strip() or None
-    started_at = perf_counter()
-    activity_repo_name = ""
-
     from .db import ContextDB
 
     if source not in {"github", "gitlab", "directory"}:
@@ -606,54 +603,57 @@ def add_repo():
 
     try:
         if source in {"github", "gitlab"}:
-            from .ingestion import IngestionError, detect_repo_provider, ingest_repo
+            from .ingestion import IngestionError, detect_repo_provider, prepare_repository_registration
 
             url = (data.get("url") or "").strip()
-            activity_repo_name = url.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git") or "unknown"
             provider = detect_repo_provider(url)
             if provider != source:
                 return jsonify({"error": f"URL does not match source '{source}'"}), 400
-            ingested = ingest_repo(url=url, branch=branch)
+            registration = prepare_repository_registration(url=url, branch=branch)
         else:
             from .ingestion import IngestionError, ingest_directory
 
             directory = (data.get("directory") or "").strip()
-            ingested = ingest_directory(directory=directory)
+            registration = ingest_directory(directory=directory)
     except IngestionError as e:
-        if source in {"github", "gitlab"}:
-            _record_repo_sync_activity(
-                repo_name=activity_repo_name or "unknown", operation="clone",
-                trigger="project_add", provider=source, branch=branch or "",
-                status="failed", duration_ms=int((perf_counter() - started_at) * 1000),
-                error=str(e), details="Repository clone failed",
-            )
         return jsonify({"error": str(e)}), 400
 
-    existing = ContextDB.get_repo(ingested.name)
-    if existing and existing.get("path") != ingested.path:
+    existing = ContextDB.get_repo(registration.name)
+    if existing and existing.get("path") != registration.path:
         return jsonify({
             "error": (
-                f"Project '{ingested.name}' already exists at {existing.get('path')}. "
+                f"Project '{registration.name}' already exists at {existing.get('path')}. "
                 "Use a different source path or remove the existing project first."
             )
         }), 409
 
-    repo = ContextDB.add_repo(ingested.name, ingested.path)
-    if source in {"github", "gitlab"}:
-        ContextDB.mark_repo_fetched(ingested.name)
-        _record_repo_sync_activity(
-            repo_name=ingested.name, operation=ingested.operation or "clone", trigger="project_add",
-            provider=ingested.provider, branch=ingested.branch,
-            status="success", after_commit=ingested.after_commit,
-            fetched=True, code_changed=ingested.changed,
-            duration_ms=int((perf_counter() - started_at) * 1000),
-            details=(
-                "Repository refreshed during project add"
-                if ingested.operation == "refresh" else "Repository cloned"
-            ),
-        )
-        repo = ContextDB.get_repo(ingested.name)
-    return jsonify(repo), 201
+    repo = ContextDB.add_repo(registration.name, registration.path)
+    from db.jobs import JobDB
+    job_type = "initial_repo_sync" if source in {"github", "gitlab"} else "initial_repo_processing"
+    active = JobDB.find_active_types(["initial_repo_sync", "initial_repo_processing"], registration.name)
+    if active:
+        job = active
+        reused = True
+    else:
+        payload = {
+            "source": source,
+            "actor_id": getattr(g, "user_id", "") or "user",
+            "source_app": (request.headers.get("X-App-Name") or request.headers.get("X-Savant-App") or "").strip().lower(),
+        }
+        if source in {"github", "gitlab"}:
+            payload.update({"url": registration.url, "branch": registration.branch, "provider": registration.provider})
+        job = JobDB.create_job(job_type, registration.name, payload=payload)
+        reused = False
+    response = dict(repo)
+    response.update({
+        "registration_accepted": True,
+        "job_id": job["id"],
+        "job_type": job_type,
+        "processing_status": "queued",
+        "message": "Repository registered. Downloading, indexing, and analysis run in the background.",
+        "reused": reused,
+    })
+    return jsonify(response), 202
 @context_bp.route("/api/context/repos/<name>/refresh", methods=["POST"])
 @admin_required
 def refresh_repo(name):
@@ -791,7 +791,7 @@ def stop_indexing():
 
     # Cancel via job queue (new path)
     job_cancelled = False
-    for jt in ("index", "reindex", "ast", "index-all"):
+    for jt in ("index", "reindex", "ast", "index-all", "initial_repo_sync", "initial_repo_processing"):
         active = JobDB.find_active(jt, name)
         if active:
             JobDB.request_cancel(active["id"])

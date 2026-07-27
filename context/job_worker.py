@@ -70,7 +70,7 @@ def _process_next_job():
 
     started_at = perf_counter()
     try:
-        result = _execute_job(job_id, job_type, target)
+        result = _execute_job(job_id, job_type, target, job.get("result") or {})
         JobDB.set_done(job_id, result)
         _record_job_activity(job_type, target, "success", result, started_at)
         logger.info(f"Job {job_id} completed: {job_type} → {target}")
@@ -97,6 +97,7 @@ def _record_job_activity(
     if job_type not in {
         "index", "reindex", "ast", "index-all", "ast-all",
         "codegraph_index", "codegraph_sync", "differential_sync",
+        "initial_repo_sync", "initial_repo_processing",
     }:
         return
     try:
@@ -123,9 +124,10 @@ def _record_job_activity(
             before_commit=result.get("before_commit"),
             after_commit=result.get("after_commit"),
             files_changed=result.get("files_changed"),
-            indexed=job_type in {"index", "reindex", "index-all", "differential_sync"} and status == "success",
+            indexed=job_type in {"index", "reindex", "index-all", "differential_sync", "initial_repo_sync", "initial_repo_processing"} and status == "success",
             graphed=job_type in {
-                "ast", "ast-all", "codegraph_index", "codegraph_sync", "differential_sync"
+                "ast", "ast-all", "codegraph_index", "codegraph_sync", "differential_sync",
+                "initial_repo_sync", "initial_repo_processing"
             } and status == "success",
             duration_ms=int((perf_counter() - started_at) * 1000),
             error=error, details=json.dumps(result, default=str)[:10000],
@@ -181,11 +183,12 @@ def _make_progress_callback(job_id: str):
     return callback
 
 
-def _execute_job(job_id: str, job_type: str, target: str) -> dict:
+def _execute_job(job_id: str, job_type: str, target: str, payload: dict | None = None) -> dict:
     """Dispatch job to the appropriate handler."""
     from db.jobs import JobDB
 
     progress_cb = _make_progress_callback(job_id)
+    payload = payload or {}
 
     if job_type == "index":
         return _run_index(target, progress_cb, clear=True)
@@ -201,8 +204,59 @@ def _execute_job(job_id: str, job_type: str, target: str) -> dict:
         return _run_code_intelligence_sync(job_id, target, progress_cb)
     elif job_type == "differential_sync":
         return _run_differential_sync(job_id, target, progress_cb)
+    elif job_type == "initial_repo_sync":
+        return _run_initial_repo_sync(target, payload, progress_cb)
+    elif job_type == "initial_repo_processing":
+        return _run_initial_repo_processing(target, progress_cb)
     else:
         raise ValueError(f"Unknown job type: {job_type}")
+
+
+def _run_initial_repo_sync(target: str, payload: dict, progress_cb) -> dict:
+    """Clone a newly registered remote, then index and analyze it in one job."""
+    from context.ingestion import ingest_repo
+    from context.db import ContextDB
+    started_at = perf_counter()
+    url = str(payload.get("url") or "")
+    if not url:
+        raise ValueError("Initial repository sync is missing its remote URL")
+    progress_cb(2, "Downloading repository", "Preparing first checkout")
+    ingested = ingest_repo(url, branch=payload.get("branch") or None)
+    if ingested.name != target:
+        raise RuntimeError(f"Registered repository name changed from {target} to {ingested.name}")
+    ContextDB.add_repo(ingested.name, ingested.path)
+    ContextDB.mark_repo_fetched(ingested.name)
+    ContextDB.record_repo_sync_log(
+        repo_name=ingested.name, operation=ingested.operation or "clone", trigger="project_add",
+        provider=ingested.provider, branch=ingested.branch, status="success",
+        after_commit=ingested.after_commit, fetched=True, code_changed=ingested.changed,
+        duration_ms=int((perf_counter() - started_at) * 1000), details="Initial repository clone completed",
+        actor_id=str(payload.get("actor_id") or "user"),
+        source_app=str(payload.get("source_app") or ""),
+    )
+    return _run_initial_repo_processing(target, progress_cb, clone_result={
+        "operation": ingested.operation, "after_commit": ingested.after_commit,
+    })
+
+
+def _run_initial_repo_processing(target: str, progress_cb, clone_result: dict | None = None) -> dict:
+    """Build semantic index and AST analysis after the checkout is available."""
+    from context.indexer import Indexer
+    repo_path, repo_name = _resolve_repo(target)
+    indexer = Indexer()
+    progress_cb(20, "Indexing codebase", "Building semantic code index")
+    index_result = indexer.index_repository(repo_path, repo_name=repo_name, clear=True,
+                                             job_progress_cb=lambda pct, phase, message: progress_cb(20 + int(pct * .55), f"Indexing: {phase}", message))
+    progress_cb(76, "Analyzing codebase", "Extracting source structure")
+    analysis_result = indexer.generate_ast_for_repository(repo_path, repo_name=repo_name, clear=True,
+        job_progress_cb=lambda pct, phase, message: progress_cb(76 + int(pct * .23), f"Analysis: {phase}", message))
+    # The standalone AST endpoint uses ``ast_only`` to indicate no semantic
+    # index exists. This combined setup job has completed both stages.
+    from context.db import ContextDB
+    ContextDB.update_repo_status(repo_name, "indexed")
+    progress_cb(100, "Complete", "Repository download, indexing, and analysis completed")
+    return {"repo_name": repo_name, "clone": clone_result or {}, "index_result": index_result,
+            "analysis_result": analysis_result}
 
 
 def _run_differential_sync(job_id: str, target: str, progress_cb) -> dict:

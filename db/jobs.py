@@ -20,8 +20,14 @@ class JobDB:
         return _row_to_dict(row, _JSON_FIELDS)
 
     @staticmethod
-    def create_job(job_type: str, target: str) -> dict:
-        """Insert a new queued job. Returns the job dict."""
+    def create_job(job_type: str, target: str, payload: dict | None = None) -> dict:
+        """Insert a new queued job.
+
+        ``result`` doubles as a small, durable payload while a job is queued.
+        This keeps work such as a first repository clone restart-safe without
+        adding a second transient in-memory queue or a schema migration.
+        Handlers replace it with their result on completion.
+        """
         conn = get_connection()
         try:
             job_id = str(uuid.uuid4())
@@ -33,12 +39,14 @@ class JobDB:
                        VALUES (%s, %s, %s, 'queued', 0, 'Queued', '', %s, '{}')""",
                     (job_id, job_type, target, now),
                 )
+                if payload:
+                    cur.execute("UPDATE jobs SET result = %s WHERE id = %s", (json.dumps(payload), job_id))
             conn.commit()
             return {
                 "id": job_id, "job_type": job_type, "target": target,
                 "status": "queued", "progress": 0, "phase": "Queued",
                 "message": "", "created_at": now, "started_at": None,
-                "finished_at": None, "result": {},
+                "finished_at": None, "result": payload or {},
             }
         finally:
             release_connection(conn)

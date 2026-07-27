@@ -55,6 +55,16 @@ class IngestedProject:
     after_commit: str = ""
 
 
+@dataclass(frozen=True)
+class RepositoryRegistration:
+    """Validated repository identity used to enqueue a first clone."""
+    name: str
+    path: str
+    provider: str
+    url: str
+    branch: str = ""
+
+
 def _get_git_head(repo_path: Path) -> str:
     """Get current HEAD commit hash for a git repository."""
     repo = None
@@ -164,21 +174,11 @@ def detect_repo_provider(url: str) -> str:
 
 
 def ingest_repo(url: str, branch: Optional[str] = None) -> IngestedProject:
-    parsed = _parse_repo_url(url)
-    provider = detect_repo_provider(url)
+    registration = prepare_repository_registration(url, branch)
+    provider = registration.provider
     token = _token_for_provider(provider)
-    if not token:
-        raise IngestionError(f"{provider.title()} source is not configured")
-
-    base_dir = _base_code_dir()
-    slug = _repo_slug_from_url(parsed.path)
-    if not slug:
-        raise IngestionError("Repository URL must include owner/repository")
-
-    target_path = (base_dir / slug).resolve()
-    _assert_under_base(target_path, base_dir)
-
-    safe_url = _normalize_remote_url(parsed)
+    target_path = Path(registration.path)
+    safe_url = registration.url
 
     checkout_exists = target_path.exists()
     if checkout_exists:
@@ -193,13 +193,35 @@ def ingest_repo(url: str, branch: Optional[str] = None) -> IngestedProject:
 
     after_commit = _get_git_head(target_path)
     return IngestedProject(
-        name=slug,
+        name=registration.name,
         path=str(target_path),
         changed=bool(after_commit),
         provider=provider,
         operation="refresh" if checkout_exists else "clone",
         branch=branch or _get_git_branch(target_path),
         after_commit=after_commit,
+    )
+
+
+def prepare_repository_registration(url: str, branch: Optional[str] = None) -> RepositoryRegistration:
+    """Validate a remote and reserve its server checkout location without cloning.
+
+    Registration must return quickly so a large clone is handled by the durable
+    job queue rather than holding an HTTP request (and the UI modal) open.
+    """
+    parsed = _parse_repo_url(url)
+    provider = detect_repo_provider(url)
+    if not _token_for_provider(provider):
+        raise IngestionError(f"{provider.title()} source is not configured")
+    base_dir = _base_code_dir()
+    slug = _repo_slug_from_url(parsed.path)
+    if not slug:
+        raise IngestionError("Repository URL must include owner/repository")
+    target_path = (base_dir / slug).resolve()
+    _assert_under_base(target_path, base_dir)
+    return RepositoryRegistration(
+        name=slug, path=str(target_path), provider=provider,
+        url=_normalize_remote_url(parsed), branch=branch or "",
     )
 
 

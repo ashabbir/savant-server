@@ -302,16 +302,18 @@ def test_repository_sync_fetch_falls_back_to_anonymous_for_public_repo(monkeypat
     ]
 
 
-def test_add_repo_route_updates_existing_repo_without_duplicate(client, monkeypatch):
+def test_add_repo_route_registers_immediately_and_queues_background_sync(client, monkeypatch):
     from context import routes
     from context import db as context_db
+    from context.ingestion import RepositoryRegistration
+    from db.jobs import JobDB
 
     monkeypatch.setattr(routes, "_ensure_init", lambda: True)
     monkeypatch.setattr(
-        "context.ingestion.ingest_repo",
-        lambda url, branch=None: IngestedProject(
-            name="repo", path="/tmp/repos/repo", changed=True, provider="github",
-            branch="main", after_commit="abc123",
+        "context.ingestion.prepare_repository_registration",
+        lambda url, branch=None: RepositoryRegistration(
+            name="repo", path="/tmp/repos/repo", provider="github",
+            url="https://github.com/acme/repo.git", branch=branch or "",
         ),
     )
 
@@ -334,13 +336,19 @@ def test_add_repo_route_updates_existing_repo_without_duplicate(client, monkeypa
         json={"source": "github", "url": "https://github.com/acme/repo.git"},
     )
 
-    assert resp.status_code == 201
+    assert resp.status_code == 202
     assert calls["add"] == 1
-    assert resp.get_json()["name"] == "repo"
-    log = context_db.ContextDB.list_repo_sync_logs(repo_name="repo")[0]
-    assert log["operation"] == "clone"
-    assert log["trigger"] == "project_add"
-    assert log["after_commit"] == "abc123"
+    body = resp.get_json()
+    assert body["name"] == "repo"
+    assert body["registration_accepted"] is True
+    assert body["job_type"] == "initial_repo_sync"
+    job = JobDB.get_job(body["job_id"])
+    assert job["status"] == "queued"
+    assert job["result"] == {
+        "source": "github", "url": "https://github.com/acme/repo.git",
+        "branch": "", "provider": "github", "actor_id": "ahmed",
+        "source_app": "savant-olympus",
+    }
 
 
 def test_add_repo_route_rejects_source_url_mismatch(client, monkeypatch):

@@ -487,6 +487,18 @@ class TestJobWorker:
         assert calls[0][:2] == ("job-123", "repo-25")
         assert callable(calls[0][2])
 
+    def test_initial_repository_sync_dispatches_durable_payload(self, monkeypatch):
+        import context.job_worker as worker
+
+        calls = []
+        monkeypatch.setattr(worker, "_make_progress_callback", lambda _job_id: (lambda *_args: None))
+        monkeypatch.setattr(worker, "_run_initial_repo_sync", lambda *args: calls.append(args) or {"ok": True})
+
+        payload = {"url": "https://github.com/acme/huge-repo.git", "branch": "main"}
+        assert worker._execute_job("job-123", "initial_repo_sync", "huge-repo", payload) == {"ok": True}
+        assert calls[0][:2] == ("huge-repo", payload)
+        assert callable(calls[0][2])
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 4. Backward compatibility — indexing-status merges job data
@@ -518,6 +530,20 @@ class TestIndexingStatusBackwardCompat:
         data = resp.get_json()
         assert "my-repo" in data
         assert data["my-repo"]["status"] == "queued"
+
+    def test_indexing_status_exposes_initial_repository_download(self, client):
+        from db.jobs import JobDB
+        j = JobDB.create_job(
+            "initial_repo_sync", "huge-repo",
+            payload={"url": "https://github.com/acme/huge-repo.git"},
+        )
+
+        response = client.get("/api/context/repos/indexing-status")
+
+        entry = response.get_json()["huge-repo"]
+        assert entry["status"] == "queued"
+        assert entry["job_id"] == j["id"]
+        assert entry["job_type"] == "initial_repo_sync"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
