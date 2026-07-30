@@ -27,7 +27,7 @@ def _validate_colosseum_config(data):
     timeout = config.get("timeout_seconds", 3600)
     if not isinstance(timeout, int) or not 0 < timeout <= 86400:
         return None, "config.timeout_seconds must be between 1 and 86400"
-    return {**config, "repository": repository, "provider": provider}, None
+    return {**config, "repository": repository, "provider": provider, "persona": config.get("persona", ""), "tags": config.get("tags", []), "model": config.get("model", "")}, None
 
 
 def _next_available_workday(start_date_str: str, ended_days=None, work_week=None) -> str:
@@ -147,7 +147,10 @@ def api_next_colosseum_task():
     user_id = getattr(g, "user_id", "")
     workspace_id = request.args.get("workspace_id") or None
     rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}
-    ready = [task for task in TaskDB.list_all(workspace_id=workspace_id, user_id=user_id, status="todo") if task.get("colosseum_ready")]
+    all_tasks = []
+    for s in ("todo", "backlog", "ready"):
+        all_tasks.extend(TaskDB.list_all(workspace_id=workspace_id, user_id=user_id, status=s))
+    ready = [task for task in all_tasks if task.get("colosseum_ready")]
     if not ready:
         return jsonify({"message": "No ready Colosseum task", "workspace_id": workspace_id}), 200
     ready.sort(key=lambda task: rank.get(task.get("priority"), 2))

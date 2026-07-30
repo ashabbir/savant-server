@@ -38,6 +38,9 @@ const server = net.createServer(socket => {
     }
   });
 });
+server.on('error', error => console.error(`CodeGraph bridge server error: ${error.message}`));
 server.listen(socketPath, () => fs.chmodSync(socketPath, 0o600));
 const shutdown = () => { server.close(); operations.close(); try { fs.unlinkSync(socketPath); } catch {} };
 process.on('SIGTERM', shutdown); process.on('SIGINT', shutdown);
+process.on('uncaughtException', error => console.error(`CodeGraph bridge uncaught exception: ${error.message}`, error.stack));
+process.on('unhandledRejection', (reason) => console.error(`CodeGraph bridge unhandled rejection: ${reason instanceof Error ? reason.message : reason}`));

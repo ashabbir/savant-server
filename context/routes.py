@@ -1220,7 +1220,13 @@ def _exec_code_search(q: str, repo: str | None, limit: int, should_exclude_tests
     )
     if should_exclude_tests:
         res = [r for r in res if not (r.get("rel_path", "").lower().startswith("test") or "/test" in r.get("rel_path", "").lower())]
-    return {"query": q, "result_count": len(res[:limit]), "results": res[:limit]}
+    MAX_CONTENT = 800
+    trimmed = []
+    for r in res[:limit]:
+        if r.get("content") and len(r["content"]) > MAX_CONTENT:
+            r = {**r, "content": r["content"][:MAX_CONTENT] + "…"}
+        trimmed.append(r)
+    return {"query": q, "result_count": len(trimmed), "results": trimmed}
 
 
 def _exec_structure_search(q: str, repo: str | None, repo_ids: list[str], limit: int, should_exclude_tests: bool) -> dict:
@@ -1288,53 +1294,87 @@ def _exec_memory_search(q: str, repo: str | None, limit: int) -> dict:
     res = ContextDB.vector_search(
         qvec, limit=limit, repo_filter=repo_filter, memory_bank_only=True,
     )
-    return {"query": q, "result_count": len(res), "results": res}
+    MAX_CONTENT = 1200
+    trimmed = []
+    for r in res:
+        if r.get("content") and len(r["content"]) > MAX_CONTENT:
+            r = {**r, "content": r["content"][:MAX_CONTENT] + "…"}
+        trimmed.append(r)
+    return {"query": q, "result_count": len(trimmed), "results": trimmed}
 
 
 def _exec_graph_search(g_query: str, repo_ids: list[str], limit: int) -> dict:
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     from code_intelligence.runtime import build_service
     from .db import ContextDB
     if not repo_ids:
         return {"error": "explicit repo is required for structural exploration"}
 
     service = build_service()
-    repository_results = {}
-    combined_symbols = []
-    combined_edges = []
-    combined_warnings = []
-    incomplete = False
-    for repo_id in repo_ids:
+    max_files = min(limit, 20)
+
+    def _explore_repo(repo_id):
         record = ContextDB.get_repo(repo_id)
         if not record:
-            repository_results[repo_id] = {"error": "repository not found"}
-            combined_warnings.append(f"{repo_id}: repository not found")
-            incomplete = True
-            continue
+            return repo_id, None, {"error": "repository not found"}
         canonical_repo_id = record.get("name") or repo_id
         try:
             explored = service.explore(
                 canonical_repo_id,
                 _resolve_repo_path(record["path"]),
                 g_query,
-                max_files=min(limit, 20),
+                max_files=max_files,
             )
+            return canonical_repo_id, explored, None
         except Exception as exc:
-            repository_results[repo_id] = {"error": str(exc)}
-            combined_warnings.append(f"{repo_id}: {exc}")
-            incomplete = True
-            continue
-        repo_result = {
-            "provider": explored.provider,
-            "incomplete": explored.incomplete,
-            "warnings": explored.warnings,
-            "symbols": [s.model_dump(mode="json") for s in explored.symbols],
-            "edges": [e.model_dump(mode="json") for e in explored.edges],
-        }
-        repository_results[canonical_repo_id] = repo_result
-        incomplete = incomplete or explored.incomplete
-        combined_warnings.extend(f"{repo_id}: {warning}" for warning in explored.warnings)
-        combined_symbols.extend(repo_result["symbols"])
-        combined_edges.extend(repo_result["edges"])
+            return canonical_repo_id, None, {"error": str(exc)}
+
+    repository_results = {}
+    combined_symbols = []
+    combined_edges = []
+    combined_warnings = []
+    incomplete = False
+
+    with ThreadPoolExecutor(max_workers=min(len(repo_ids), 8)) as pool:
+        futures = {pool.submit(_explore_repo, rid): rid for rid in repo_ids}
+        for future in as_completed(futures):
+            canonical_repo_id, explored, err = future.result()
+            if err:
+                repository_results[canonical_repo_id] = err
+                combined_warnings.append(f"{canonical_repo_id}: {err['error']}")
+                incomplete = True
+                continue
+            def _slim_symbol(s):
+                loc = s.location
+                return {
+                    "id": s.id, "kind": s.kind, "name": s.name,
+                    "qualified_name": s.qualified_name, "signature": s.signature,
+                    "file_path": loc.file_path if loc else None,
+                    "start_line": loc.start_line if loc else None,
+                    "end_line": loc.end_line if loc else None,
+                    "repo_id": loc.repo_id if loc else None,
+                }
+
+            def _slim_edge(e):
+                return {
+                    "kind": e.kind, "provenance": e.provenance,
+                    "source_id": e.source_id, "target_id": e.target_id,
+                }
+
+            sym_limit = min(limit, 10)
+            edge_limit = min(limit * 2, 20)
+            repo_result = {
+                "provider": explored.provider,
+                "incomplete": explored.incomplete,
+                "warnings": explored.warnings,
+                "symbols": [_slim_symbol(s) for s in explored.symbols[:sym_limit]],
+                "edges": [_slim_edge(e) for e in explored.edges[:edge_limit]],
+            }
+            repository_results[canonical_repo_id] = repo_result
+            incomplete = incomplete or explored.incomplete
+            combined_warnings.extend(f"{canonical_repo_id}: {w}" for w in explored.warnings)
+            combined_symbols.extend(repo_result["symbols"])
+            combined_edges.extend(repo_result["edges"])
 
     if len(repository_results) == 1:
         return next(iter(repository_results.values()))
@@ -1424,7 +1464,7 @@ def context_research():
 
             graph_futures = {
                 g_query: executor.submit(_exec_graph_search, g_query, repo_ids, limit)
-                for g_query in sorted(graph_queries)[:5]
+                for g_query in sorted(graph_queries)[:3]
             }
 
             graph_results = {}

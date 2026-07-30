@@ -192,7 +192,8 @@ def _execute_sync_pass_for_all_repos(
             # 3. CodeGraph generation if needed (code changed OR graph stale/uninitialized)
             config = CodeIntelligenceConfigDB.get(repo_name) or CodeIntelligenceConfigDB.get(str(repo_id))
             graph_freshness = config.get("freshness") if config else None
-            is_graph_stale = graph_freshness in {"stale", "pending_sync", None} or not config
+            graph_missing_on_disk = not (repo_path / ".codegraph" / "codegraph.db").exists()
+            is_graph_stale = graph_freshness in {"stale", "pending_sync", None} or not config or graph_missing_on_disk
             should_graph = code_changed or is_graph_stale
 
             if should_graph:

@@ -108,8 +108,22 @@ def install_header_capture(mcp_instance):
         async def wrapper(scope, receive, send):
             if scope["type"] == "http":
                 _capture_scope_context(scope, server_name)
+                # MCP SDK 1.25.0 bug: SSE handle_sse() returns Response() after
+                # connect_sse() already sent http.response.start, causing a double-
+                # start that crashes uvicorn. Drop the second http.response.start.
+                response_started = False
 
-            await inner_app(scope, receive, send)
+                async def safe_send(message):
+                    nonlocal response_started
+                    if message["type"] == "http.response.start":
+                        if response_started:
+                            return
+                        response_started = True
+                    await send(message)
+
+                await inner_app(scope, receive, safe_send)
+            else:
+                await inner_app(scope, receive, send)
 
         return wrapper
 
