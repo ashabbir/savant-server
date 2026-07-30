@@ -1,4 +1,4 @@
-# Savant Server (Version 14.2.11 - Patch Release)
+# Savant Server (Version 15.0.0 - Major Release)
 
 License Owned by Project X. This repository is private and proprietary.
 
@@ -91,6 +91,19 @@ Seed data is embedded in `abilities/bootstrap.py`. On first startup, abilities a
 
 - `GET /health/live` — process alive
 - `GET /health/ready` — DB initialized, abilities bootstrapped
+
+### Knowledge Graph Maintenance
+
+The dedicated `knowledge.maintenance_runner` process runs the institutional
+knowledge graph optimization job at `0 */4 * * *` UTC. Each pass takes a
+PostgreSQL advisory transaction lock, promotes staged workspace knowledge in
+bounded batches, resolves explicit supersession records, consolidates exact
+canonical entities, applies a taxonomy cluster, expires time-bound records,
+and writes an audit row. The work is isolated from Flask/MCP SSE workers.
+
+- `GET /api/knowledge/maintenance/status` — scheduler state and recent runs (admin)
+- `GET /api/knowledge/maintenance/runs` — audit history (admin)
+- `POST /api/knowledge/maintenance/run` — queue an immediate run (admin)
 
 ### Version Info
 

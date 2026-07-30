@@ -13,7 +13,7 @@ RUN apt-get update \
 # Overlay the checked-out server source, including the Git ingestion fix.
 # .dockerignore excludes local credentials such as .env.
 COPY --chown=savant:savant . /app
-RUN python -m pip install --no-cache-dir "$(grep '^dulwich' /app/requirements.txt)" \
+RUN python -m pip install --no-cache-dir $(grep -E '^(dulwich|APScheduler)' /app/requirements.txt) \
     && chmod +x /app/docker-entrypoint.sh
 
 USER savant

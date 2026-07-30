@@ -426,6 +426,26 @@ CREATE INDEX IF NOT EXISTS idx_kge_target ON kg_edges(target_id);
 CREATE INDEX IF NOT EXISTS idx_kge_type   ON kg_edges(edge_type);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_kge_unique ON kg_edges(source_id, target_id, edge_type);
 
+-- Knowledge Graph background maintenance audit trail.  The graph itself remains
+-- the source of truth. This table makes every automated mutation observable.
+CREATE TABLE IF NOT EXISTS kg_maintenance_runs (
+    id                      BIGSERIAL PRIMARY KEY,
+    trigger                 TEXT NOT NULL DEFAULT 'scheduled',
+    status                  TEXT NOT NULL DEFAULT 'running',
+    started_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    finished_at             TIMESTAMPTZ,
+    nodes_promoted          INTEGER NOT NULL DEFAULT 0,
+    duplicates_merged       INTEGER NOT NULL DEFAULT 0,
+    contradictions_resolved INTEGER NOT NULL DEFAULT 0,
+    nodes_expired           INTEGER NOT NULL DEFAULT 0,
+    edges_pruned            INTEGER NOT NULL DEFAULT 0,
+    nodes_pruned            INTEGER NOT NULL DEFAULT 0,
+    clusters_assigned       INTEGER NOT NULL DEFAULT 0,
+    error                   TEXT NOT NULL DEFAULT '',
+    details                 JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+CREATE INDEX IF NOT EXISTS idx_kg_maintenance_runs_started ON kg_maintenance_runs(started_at DESC);
+
 -- -------------------------------------------------------------------------
 -- Context / Embedding tables (replaces sqlite-vec)
 -- -------------------------------------------------------------------------
@@ -682,6 +702,22 @@ _SCHEMA_MIGRATIONS = (
                JSONB NOT NULL DEFAULT '{}'::jsonb""",
             "CREATE INDEX IF NOT EXISTS idx_ctx_repo_sync_logs_operation ON ctx_repo_sync_logs(operation)",
             "CREATE INDEX IF NOT EXISTS idx_ctx_repo_sync_logs_trigger ON ctx_repo_sync_logs(trigger)",
+        ),
+    ),
+    (
+        7,
+        "add knowledge graph maintenance audit trail",
+        (
+            """CREATE TABLE IF NOT EXISTS kg_maintenance_runs (
+                id BIGSERIAL PRIMARY KEY, trigger TEXT NOT NULL DEFAULT 'scheduled',
+                status TEXT NOT NULL DEFAULT 'running', started_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                finished_at TIMESTAMPTZ, nodes_promoted INTEGER NOT NULL DEFAULT 0,
+                duplicates_merged INTEGER NOT NULL DEFAULT 0, contradictions_resolved INTEGER NOT NULL DEFAULT 0,
+                nodes_expired INTEGER NOT NULL DEFAULT 0, edges_pruned INTEGER NOT NULL DEFAULT 0,
+                nodes_pruned INTEGER NOT NULL DEFAULT 0, clusters_assigned INTEGER NOT NULL DEFAULT 0,
+                error TEXT NOT NULL DEFAULT '', details JSONB NOT NULL DEFAULT '{}'::jsonb
+            )""",
+            "CREATE INDEX IF NOT EXISTS idx_kg_maintenance_runs_started ON kg_maintenance_runs(started_at DESC)",
         ),
     ),
     (

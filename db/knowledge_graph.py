@@ -755,3 +755,17 @@ class KnowledgeGraphDB:
             return domain_ids
         finally:
             release_connection(conn)
+
+    @staticmethod
+    def list_maintenance_runs(limit: int = 50) -> list[dict]:
+        """Return the most recent background graph-maintenance executions."""
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT * FROM kg_maintenance_runs ORDER BY started_at DESC LIMIT %s",
+                    (max(1, min(int(limit), 500)),),
+                )
+                return [_base_row(row, json_fields={"details": {}}) for row in cur.fetchall()]
+        finally:
+            release_connection(conn)

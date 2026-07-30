@@ -105,6 +105,33 @@ def health():
     return jsonify({"status": "ok", "nodes": node_count})
 
 
+@knowledge_bp.route("/api/knowledge/maintenance/status", methods=["GET"])
+@admin_required
+def maintenance_status():
+    """Report scheduler state and the latest transactional maintenance runs."""
+    from knowledge.maintenance import get_maintenance_status
+    return jsonify({
+        "scheduler": get_maintenance_status(),
+        "runs": KnowledgeGraphDB.list_maintenance_runs(limit=_safe_int(request.args.get("limit"), 20, 1, 100)),
+    })
+
+
+@knowledge_bp.route("/api/knowledge/maintenance/runs", methods=["GET"])
+@admin_required
+def maintenance_runs():
+    return jsonify({"runs": KnowledgeGraphDB.list_maintenance_runs(limit=_safe_int(request.args.get("limit"), 50, 1, 500))})
+
+
+@knowledge_bp.route("/api/knowledge/maintenance/run", methods=["POST"])
+@admin_required
+@require_savant_app
+def trigger_maintenance():
+    """Queue graph maintenance in a background thread, preserving SSE responsiveness."""
+    from knowledge.maintenance import trigger_maintenance_async
+    result = trigger_maintenance_async()
+    return jsonify(result), (202 if result.get("accepted") else 409)
+
+
 # ---------------------------------------------------------------------------
 # Graph: Nodes
 # ---------------------------------------------------------------------------

@@ -17,6 +17,7 @@ mkdir -p "$DATA_DIR/hf" "$DATA_DIR/abilities/personas" "$DATA_DIR/abilities/rule
 export SAVANT_API_BASE="${SAVANT_API_BASE:-http://127.0.0.1:${FLASK_PORT:-8090}}"
 export SAVANT_APP_NAME="${SAVANT_APP_NAME:-savant-mcp}"
 export SAVANT_EXTERNAL_PERIODIC_RUNNER=1
+export SAVANT_EXTERNAL_KG_MAINTENANCE=1
 export NODE_OPTIONS="${NODE_OPTIONS:---disable-warning=ExperimentalWarning}"
 
 # Start the private CodeGraph bridge before API workers. Its Unix socket lives
@@ -62,6 +63,12 @@ CHILD_PIDS="$CHILD_PIDS $JOB_WORKER_PID"
 python -m context.periodic_runner &
 PERIODIC_RUNNER_PID="$!"
 CHILD_PIDS="$CHILD_PIDS $PERIODIC_RUNNER_PID"
+
+# One dedicated scheduler process owns the four-hour graph optimization cron.
+# The transaction advisory lock remains a cross-container guard during deploys.
+python -m knowledge.maintenance_runner &
+KG_MAINTENANCE_PID="$!"
+CHILD_PIDS="$CHILD_PIDS $KG_MAINTENANCE_PID"
 
 gunicorn \
   --bind "${FLASK_HOST:-0.0.0.0}:${FLASK_PORT:-8090}" \
