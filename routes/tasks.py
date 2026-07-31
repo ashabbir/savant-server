@@ -146,8 +146,10 @@ def api_next_colosseum_task():
     workspace_id = request.args.get("workspace_id") or None
     rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}
     ready_tasks = TaskDB.list_all(workspace_id=workspace_id, user_id=user_id, status="ready")
-    # Filter for tasks that have a repository configured (or in colosseum_config)
     ready = [task for task in ready_tasks if task.get("colosseum_config", {}).get("repository") or task.get("repository")]
+    if not ready:
+        return jsonify({"message": "No ready Colosseum task", "workspace_id": workspace_id}), 200
+    ready.sort(key=lambda task: rank.get(task.get("priority"), 2))
     selected = ready[0]
     config = dict(selected.get("colosseum_config") or {})
     if not config.get("provider"):
