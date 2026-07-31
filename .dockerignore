@@ -11,7 +11,9 @@ tests_refactored
 *.db
 *.db-shm
 *.db-wal
-data
+data/*
+!data/default_skills/
+!data/default_skills/**
 .env
 node_modules
 models
