@@ -21,6 +21,7 @@ from .skills_shared import (
     _display_skill_name,
     _is_noise_skill_file,
 )
+from .default_skills import is_default_skill
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,8 @@ def list_skills():
                 "status": meta.get("status", "active"),
                 "created_at": meta.get("created_at", ""),
                 "updated_at": meta.get("updated_at", ""),
+                "system": is_default_skill(meta.get("id", skill_dir.name)),
+                "deletable": not is_default_skill(meta.get("id", skill_dir.name)),
             })
     return jsonify({"skills": skills})
 
@@ -128,6 +131,9 @@ def update_skill(skill_id):
     skill_path = (SKILLS_DIR / skill_id).resolve()
     if not skill_path.exists() or not str(skill_path).startswith(str(SKILLS_DIR.resolve())):
         return jsonify({"error": "Skill not found"}), 404
+
+    if is_default_skill(skill_id) and (request.get_json(silent=True) or {}).get("status") == "inactive":
+        return jsonify({"error": "Built-in Savant skills must remain active"}), 403
         
     data = request.get_json()
     meta = _read_meta(skill_path)
@@ -188,6 +194,8 @@ def delete_skill(skill_id):
     skill_path = (SKILLS_DIR / skill_id).resolve()
     if not skill_path.exists() or not str(skill_path).startswith(str(SKILLS_DIR.resolve())):
         return jsonify({"error": "Skill not found"}), 404
+    if is_default_skill(skill_id):
+        return jsonify({"error": "Built-in Savant skills cannot be deleted"}), 403
 
     try:
         shutil.rmtree(skill_path)

@@ -4,6 +4,7 @@ import io
 from app import app
 from db.users import UserDB
 from abilities.skills_routes import SKILLS_DIR
+from abilities.default_skills import DEFAULT_SKILL_IDS, ensure_default_skills
 
 @pytest.fixture
 def client():
@@ -13,6 +14,7 @@ def client():
     if SKILLS_DIR.exists():
         shutil.rmtree(SKILLS_DIR)
     SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_default_skills()
     with app.test_client() as client:
         yield client
 
@@ -164,6 +166,20 @@ def test_skills_list_and_manage(client):
     assert resp.get_json()["deleted"] is True
     assert resp.get_json()["status"] == "deleted"
     assert not os.path.exists(skill_dir)
+
+
+def test_default_skills_are_installed_listed_and_cannot_be_removed(client):
+    headers = {"X-API-Key": "sk-ahmed-savant-001"}
+    listed = client.get("/api/skills", headers=headers)
+    skills = {skill["id"]: skill for skill in listed.get_json()["skills"]}
+    assert DEFAULT_SKILL_IDS <= skills.keys()
+    for skill_id in DEFAULT_SKILL_IDS:
+        assert skills[skill_id]["system"] is True
+        assert skills[skill_id]["deletable"] is False
+        assert client.delete(f"/api/skills/{skill_id}", headers=headers).status_code == 403
+        assert client.put(
+            f"/api/skills/{skill_id}", json={"status": "inactive"}, headers=headers
+        ).status_code == 403
 
 
 def test_skill_archive_download(client):

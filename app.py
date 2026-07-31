@@ -31,6 +31,7 @@ from tools.routes import tools_bp
 from reminders.routes import reminders_bp
 from code_intelligence.routes import code_intelligence_bp
 from abilities.skills_routes import skills_bp
+from abilities.default_skills import ensure_default_skills
 
 from routes import (
     users_bp,
@@ -92,6 +93,7 @@ install_request_logging(app)
 with app.app_context():
     try:
         init_schema()
+        ensure_default_skills()
         if os.environ.get("SAVANT_EXTERNAL_PERIODIC_RUNNER") != "1":
             from context.periodic_runner import start_periodic_runner
             start_periodic_runner()

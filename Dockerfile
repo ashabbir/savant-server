@@ -13,6 +13,9 @@ RUN apt-get update \
 # Overlay the checked-out server source, including the Git ingestion fix.
 # .dockerignore excludes local credentials such as .env.
 COPY --chown=savant:savant . /app
+# Keep the mandatory skill bundle in the immutable application layer. Startup
+# reconciles it into the persistent SAVANT_SERVER_DATA_DIR volume.
+COPY --chown=savant:savant data/default_skills /app/data/default_skills
 RUN python -m pip install --no-cache-dir $(grep -E '^(dulwich|APScheduler)' /app/requirements.txt) \
     && chmod +x /app/docker-entrypoint.sh
 

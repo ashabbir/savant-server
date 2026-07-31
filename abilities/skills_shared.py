@@ -133,7 +133,10 @@ def _safe_extract_zip(archive_path: Path, target_dir: Path) -> None:
             member_name = member.filename
             if not member_name or member_name.endswith("/"):
                 continue
-            out_path = _resolve_extraction_target(target_dir, member_name)
+            try:
+                out_path = _resolve_extraction_target(target_dir, member_name)
+            except ValueError as exc:
+                raise ValueError(f"Unsafe zip member path: {member_name}") from exc
             out_path.parent.mkdir(parents=True, exist_ok=True)
             with zip_ref.open(member, "r") as src, out_path.open("wb") as dst:
                 shutil.copyfileobj(src, dst)
@@ -147,7 +150,10 @@ def _safe_extract_tar(archive_path: Path, target_dir: Path) -> None:
             if not member.isfile():
                 continue
             member_name = member.name
-            out_path = _resolve_extraction_target(target_dir, member_name)
+            try:
+                out_path = _resolve_extraction_target(target_dir, member_name)
+            except ValueError as exc:
+                raise ValueError(f"Unsafe tar member path: {member_name}") from exc
             out_path.parent.mkdir(parents=True, exist_ok=True)
             extracted = tar_ref.extractfile(member)
             if extracted is None:
