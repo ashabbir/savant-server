@@ -20,9 +20,7 @@ def _validate_colosseum_config(data):
         return None, "config must be an object"
     repository = str(config.get("repository") or "").strip()
     provider = str(config.get("provider") or "").strip().lower()
-    if not repository or not os.path.isabs(repository):
-        return None, "config.repository must be an absolute repository path"
-    if provider not in COLOSSEUM_PROVIDERS:
+    if provider and provider not in COLOSSEUM_PROVIDERS:
         return None, "config.provider must be an installed Colosseum provider"
     timeout = config.get("timeout_seconds", 3600)
     if not isinstance(timeout, int) or not 0 < timeout <= 86400:

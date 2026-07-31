@@ -445,7 +445,7 @@ class TaskDB:
                        ON CONFLICT (task_id) DO UPDATE SET ready = TRUE, config = EXCLUDED.config, updated_at = EXCLUDED.updated_at""",
                     (task_id, json.dumps(config), now),
                 )
-                cur.execute("UPDATE tasks SET status = 'todo', updated_at = %s WHERE task_id = %s", (now, task_id))
+                cur.execute("UPDATE tasks SET updated_at = %s WHERE task_id = %s", (now, task_id))
             conn.commit()
             return TaskDB._get_by_id_with_conn(task_id, conn, user_id=user_id)
         finally:
