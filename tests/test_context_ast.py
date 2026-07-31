@@ -451,6 +451,29 @@ def test_context_analysis_api_and_mcp_proxy(monkeypatch, client, tmp_path):
     assert data["summary"]["after_complexity"] >= 1
     assert data["target"]["found_after"] is True
 
+    proposed_source = """
+class Service:
+    def run(self, enabled):
+        if enabled:
+            return 1
+        return 0
+
+def helper(x):
+    return x + 1
+""".strip()
+    proposal = client.post("/api/context/analysis", json={
+        "repo": "repo-analysis",
+        "path": "sample.py",
+        "name": "Service",
+        "node_type": "class",
+        "code": proposed_source,
+    })
+    assert proposal.status_code == 200
+    proposal_data = proposal.get_json()
+    assert proposal_data["summary"]["status"] == "updated"
+    assert proposal_data["before"]["line_count"] == 4
+    assert proposal_data["after"]["complexity"] > proposal_data["before"]["complexity"]
+
     captured = {}
 
     def fake_post(path, json=None):
@@ -459,10 +482,31 @@ def test_context_analysis_api_and_mcp_proxy(monkeypatch, client, tmp_path):
         return {"ok": True}
 
     monkeypatch.setattr(context_server, "_post", fake_post)
-    out = context_server.analyze_code(repo="repo-analysis", path="sample.py", name="Service", node_type="class")
+    out = context_server.analyze_code(
+        repo="repo-analysis", path="sample.py", name="Service", node_type="class", code=proposed_source,
+    )
     assert out == {"ok": True}
     assert captured["path"] == "/api/context/analysis"
     assert captured["json"]["name"] == "Service"
+    assert captured["json"]["code"] == proposed_source
+
+
+def test_context_analysis_accepts_standalone_submitted_source(client):
+    submitted_source = """
+def sample(value):
+    if value:
+        return value
+    return None
+    print("unreachable")
+""".strip()
+
+    resp = client.post("/api/context/analysis", json={"code": submitted_source})
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["summary"]["status"] == "new"
+    assert data["before"]["line_count"] == 0
+    assert any(finding["rule_id"] == "unreachable_code" for finding in data["after"]["findings"])
 
 
 def test_context_analysis_accepts_diff_only_payload(client):

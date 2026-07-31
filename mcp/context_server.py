@@ -58,7 +58,13 @@ mcp = FastMCP(
         "Tools:\n"
         "  - research(q, repo, type, limit): Primary codebase & memory research tool for AI agents.\n"
         "  - structure_search(q, repo): AST structural match to pinpoint class/function definitions.\n"
-        "  - analyze_code(repo, path, uri, name, class_name, symbol, node_type, diff, code): Detailed code analysis tool."
+        "  - analyze_code(repo, path, uri, name, class_name, symbol, node_type, diff, code): Detailed code analysis tool.\n\n"
+        "ANALYZE_CODE USAGE:\n"
+        "  - Standalone review: pass code='<complete file source>' with no repo/path/diff. This is read-only and reports complexity, findings, and refactor targets.\n"
+        "  - Proposed change review: pass repo + path + code='<proposed complete file source>'. The submitted source is compared with the indexed file; no file is written.\n"
+        "  - Narrow review: add symbol/name/class_name and node_type to score only that target. Submitted code must include the target declaration.\n"
+        "  - Diff review: pass repo + path + diff='<unified diff>' to assess the patched indexed file.\n"
+        "  - After editing, call analyze_code again without code/diff to assess the currently indexed source. Analysis never executes submitted code or changes repository files."
     ),
     host=_args.host,
     port=_args.port,
@@ -203,10 +209,13 @@ def analyze_code(
     diff: str = None,
     code: str = None,
 ) -> dict:
-    """Analyze a file, class, symbol, code body, or diff for implementation impact.
+    """Analyze a file, class, symbol, submitted source, or diff for implementation impact.
 
     Identify the target with repo plus path, URI, name, class_name, or symbol.
-    Supply diff for before/after analysis or code for analysis of a new body.
+    Supply ``code`` alone to review a complete submitted file without reading
+    or changing any repository. Supply ``repo`` and ``path`` with ``code`` to
+    compare that proposed source against the indexed file before editing it.
+    Supply ``diff`` for a unified before/after comparison.
     """
     payload = {}
     if repo:

@@ -348,8 +348,11 @@ def _execute_analysis(params: dict) -> dict:
     from .analysis import AnalysisTarget, analyze_code
     from .db import ContextDB
 
+    # A submitted source body is a proposed replacement for the indexed file,
+    # not a reason to discard the indexed baseline.  Loading it here lets MCP
+    # callers review a change before writing it to the working tree.
     before_text = ""
-    if params["code"] is None and params["repo"] and params["path"]:
+    if params["repo"] and params["path"]:
         current = ContextDB.read_code_file(f"{params['repo']}:{params['path']}")
         before_text = (current or {}).get("content", "")
     target = AnalysisTarget(

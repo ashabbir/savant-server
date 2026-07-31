@@ -407,6 +407,7 @@ def analyze_code(
     target_missing_is_new: bool = False,
 ) -> dict[str, Any]:
     before = content_before or ""
+    submitted_source = content_after is not None
     if content_after is None and diff is not None:
         content_after = _apply_unified_diff(before, diff)
     if content_after is None:
@@ -424,7 +425,9 @@ def analyze_code(
     after_score = _score_text(after_pick["text"], path)
     delta = after_score["complexity"] - before_score["complexity"]
 
-    if not before_pick["target_found"] and after_pick["target_found"]:
+    if target_missing_is_new and not before.strip() and submitted_source:
+        status = "new"
+    elif not before_pick["target_found"] and after_pick["target_found"]:
         status = "new"
     elif before_pick["target_found"] and not after_pick["target_found"]:
         status = "removed"

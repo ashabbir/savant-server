@@ -83,6 +83,46 @@ def example_tool(param: str) -> dict:
     return _api("POST", "/api/feature/example", json={"param": param})
 ```
 
+### Savant Context: `analyze_code` guide
+
+Use `savant-context.analyze_code` for a read-only structural review before or after a refactor. It never executes submitted source and never writes to a repository. The result includes complexity, line count, findings, before/after deltas, and a safe refactor workflow.
+
+| Goal | Required arguments | What is analyzed |
+|------|--------------------|------------------|
+| Review a pasted file | `code` | The complete submitted file; no repository lookup is required. |
+| Review a proposed replacement | `repo`, `path`, `code` | Submitted complete file compared with the indexed file. |
+| Review only one declaration | Add `symbol` / `name` / `class_name`, plus `node_type` | The matching function or class in the baseline and submitted source. |
+| Review a patch | `repo`, `path`, `diff` | Indexed file with the unified diff applied in memory. |
+| Review after editing | `repo`, `path` | Current indexed file. Re-index first if the file changed on disk. |
+
+Examples:
+
+```text
+# Find refactor targets in a file supplied by the caller
+analyze_code(
+  code="""def normalize(value):
+    if value:
+        return value.strip()
+    return None
+    print('unreachable')
+"""
+)
+
+# Validate a proposed complete replacement before changing it on disk
+analyze_code(
+  repo="savant-server",
+  path="context/routes.py",
+  symbol="_execute_analysis",
+  node_type="function",
+  code="""def _execute_analysis(params):
+    # proposed replacement, including the function declaration
+    ...
+"""
+)
+```
+
+When narrowing to a function or class, `code` must include its declaration (for example, `def function_name(...)`), not only its inner body. The initial standalone call reports a `new` baseline; a repository-backed proposal reports `updated` with its delta when it differs from indexed source.
+
 ### Abilities Bootstrap
 
 Seed data is embedded in `abilities/bootstrap.py`. On first startup, abilities are materialized to `SAVANT_SERVER_DATA_DIR/abilities/`.
