@@ -148,10 +148,20 @@ def api_next_colosseum_task():
     ready_tasks = TaskDB.list_all(workspace_id=workspace_id, user_id=user_id, status="ready")
     # Filter for tasks that have a repository configured (or in colosseum_config)
     ready = [task for task in ready_tasks if task.get("colosseum_config", {}).get("repository") or task.get("repository")]
-    if not ready:
-        return jsonify({"message": "No ready Colosseum task", "workspace_id": workspace_id}), 200
-    ready.sort(key=lambda task: rank.get(task.get("priority"), 2))
-    return jsonify(ready[0]), 200
+    selected = ready[0]
+    config = dict(selected.get("colosseum_config") or {})
+    if not config.get("provider"):
+        from routes.preferences import get_user_preference
+        ready_settings = get_user_preference("colosseum:ready-settings", {})
+        config["provider"] = ready_settings.get("provider") or "codex"
+        if ready_settings.get("persona"):
+            config["persona"] = ready_settings.get("persona")
+        if ready_settings.get("tags"):
+            config["tags"] = [t.strip() for t in str(ready_settings.get("tags")).split(",") if t.strip()]
+        if ready_settings.get("model"):
+            config["model"] = ready_settings.get("model")
+    selected["colosseum_config"] = config
+    return jsonify(selected), 200
 
 
 
