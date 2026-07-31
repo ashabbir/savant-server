@@ -460,8 +460,7 @@ class TaskDB:
         """
         conn = get_connection()
         try:
-            where = """WHERE task_id = %s AND status IN ('todo', 'backlog', 'ready')
-                AND EXISTS (SELECT 1 FROM colosseum_tasks WHERE colosseum_tasks.task_id = tasks.task_id AND ready = TRUE)"""
+            where = """WHERE task_id = %s AND status = 'ready'"""
             values = [_now(), task_id]
             if user_id:
                 where += " AND user_id = %s"
