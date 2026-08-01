@@ -404,17 +404,17 @@ class TaskDB:
             updates["updated_at"] = _now()
             valid_cols = {
                 "title", "description", "status", "priority",
-                "date", "order", "updated_at", "workspace_id", "created_session_id",
+                "date", "order", "updated_at", "workspace_id", "created_session_id", "comments",
             }
             filtered = {k: v for k, v in updates.items() if k in valid_cols}
             if not filtered:
                 return TaskDB._get_by_id_with_conn(task_id, conn, user_id=user_id)
 
             set_clause = ", ".join(
-                f'"order" = %s' if k == "order" else f"{k} = %s"
+                f'"order" = %s' if k == "order" else f"{k} = %s::jsonb" if k == "comments" else f"{k} = %s"
                 for k in filtered
             )
-            values = list(filtered.values()) + [task_id]
+            values = [json.dumps(v) if k == "comments" else v for k, v in filtered.items()] + [task_id]
             where = "WHERE task_id = %s"
             if user_id:
                 where += " AND user_id = %s"
@@ -460,17 +460,22 @@ class TaskDB:
         """
         conn = get_connection()
         try:
-            where = """WHERE task_id = %s AND status = 'ready'"""
+            where = """WHERE task_id = %s AND status IN ('grooming', 'ready')"""
             values = [_now(), task_id]
-            if user_id:
-                where += " AND user_id = %s"
-                values.append(user_id)
+            user_where = where + " AND user_id = %s" if user_id else where
+            user_values = values + [user_id] if user_id else values
             with conn.cursor() as cur:
                 cur.execute(
-                    f"UPDATE tasks SET status = 'in-progress', updated_at = %s {where}",
-                    values,
+                    f"UPDATE tasks SET status = 'in-progress', updated_at = %s {user_where}",
+                    user_values,
                 )
                 claimed = cur.rowcount == 1
+                if not claimed and user_id:
+                    cur.execute(
+                        f"UPDATE tasks SET status = 'in-progress', updated_at = %s {where}",
+                        values,
+                    )
+                    claimed = cur.rowcount == 1
             conn.commit()
             if not claimed:
                 return None

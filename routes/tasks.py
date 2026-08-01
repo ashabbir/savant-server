@@ -112,6 +112,36 @@ def api_task_detail(task_id):
     return jsonify(updated)
 
 
+@tasks_bp.route("/api/tasks/<task_id>/comments", methods=["GET", "POST"])
+def api_task_comments(task_id):
+    user_id = getattr(g, "user_id", "")
+    task = TaskDB.get_by_id(task_id, user_id=user_id)
+    if not task:
+        return jsonify({"error": "Task not found"}), 404
+
+    if request.method == "GET":
+        return jsonify(task.get("comments", []))
+
+    data = request.get_json(force=True, silent=True) or {}
+    text = (data.get("text") or "").strip()
+    if not text:
+        return jsonify({"error": "Comment text is required"}), 400
+
+    author = data.get("author") or "agent"
+    role = data.get("role") or "agent"
+    comment_obj = {
+        "id": f"c-{uuid.uuid4().hex[:8]}",
+        "author": author,
+        "text": text,
+        "role": role,
+        "createdAt": datetime.utcnow().isoformat() + "Z",
+    }
+    existing_comments = task.get("comments") or []
+    existing_comments.append(comment_obj)
+    updated = TaskDB.update(task_id, {"comments": existing_comments}, user_id=user_id)
+    return jsonify(comment_obj), 200
+
+
 @tasks_bp.route("/api/tasks/<task_id>/claim", methods=["POST"])
 def api_task_claim(task_id):
     """Claim a todo task for a single execution worker.
@@ -148,6 +178,10 @@ def api_next_colosseum_task():
     grooming_tasks = TaskDB.list_all(workspace_id=workspace_id, user_id=user_id, status="grooming")
     ready_tasks = TaskDB.list_all(workspace_id=workspace_id, user_id=user_id, status="ready")
     all_colosseum_tasks = grooming_tasks + ready_tasks
+    if not all_colosseum_tasks and user_id:
+        grooming_tasks = TaskDB.list_all(workspace_id=workspace_id, user_id="", status="grooming")
+        ready_tasks = TaskDB.list_all(workspace_id=workspace_id, user_id="", status="ready")
+        all_colosseum_tasks = grooming_tasks + ready_tasks
     if not all_colosseum_tasks:
         return jsonify({"message": "No ready or grooming Colosseum task", "workspace_id": workspace_id}), 200
     all_colosseum_tasks.sort(key=lambda task: rank.get(task.get("priority"), 2))
