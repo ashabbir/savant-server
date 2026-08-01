@@ -145,13 +145,16 @@ def api_next_colosseum_task():
     user_id = getattr(g, "user_id", "")
     workspace_id = request.args.get("workspace_id") or None
     rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    grooming_tasks = TaskDB.list_all(workspace_id=workspace_id, user_id=user_id, status="grooming")
     ready_tasks = TaskDB.list_all(workspace_id=workspace_id, user_id=user_id, status="ready")
-    ready = [task for task in ready_tasks if task.get("colosseum_config", {}).get("repository") or task.get("repository")]
-    if not ready:
-        return jsonify({"message": "No ready Colosseum task", "workspace_id": workspace_id}), 200
-    ready.sort(key=lambda task: rank.get(task.get("priority"), 2))
-    selected = ready[0]
+    all_colosseum_tasks = grooming_tasks + ready_tasks
+    if not all_colosseum_tasks:
+        return jsonify({"message": "No ready or grooming Colosseum task", "workspace_id": workspace_id}), 200
+    all_colosseum_tasks.sort(key=lambda task: rank.get(task.get("priority"), 2))
+    selected = all_colosseum_tasks[0]
     config = dict(selected.get("colosseum_config") or {})
+    if not config.get("repository"):
+        config["repository"] = selected.get("repository") or os.getcwd()
     if not config.get("provider"):
         from routes.preferences import get_user_preference
         ready_settings = get_user_preference("colosseum:ready-settings", {})
@@ -286,4 +289,62 @@ def api_tasks_unend_day():
         "ok": True,
         "date": date,
         "ended_days": res.get("ended_days", []),
+    })
+
+
+@tasks_bp.route("/api/tasks/<task_id>/diff", methods=["GET"])
+def api_task_diff(task_id):
+    import subprocess
+    user_id = getattr(g, "user_id", "")
+    task = TaskDB.get_by_id(task_id, user_id=user_id)
+    if not task:
+        return jsonify({"error": "Task not found"}), 404
+
+    worktree_path = os.path.expanduser(f"~/.savant-executioner/worktrees/{task_id}")
+    if not os.path.exists(worktree_path):
+        # Fallback check local root
+        worktree_path = os.path.abspath(f".savant-executioner/worktrees/{task_id}")
+
+    if not os.path.exists(worktree_path):
+        return jsonify({"task_id": task_id, "diff": "", "files": [], "error": "Worktree not found"}), 200
+
+    try:
+        diff_out = subprocess.check_output(
+            ["git", "diff", "HEAD~1..HEAD"],
+            cwd=worktree_path,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    except Exception:
+        try:
+            diff_out = subprocess.check_output(
+                ["git", "diff"],
+                cwd=worktree_path,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+        except Exception as e:
+            diff_out = f"Error fetching diff: {e}"
+
+    try:
+        files_out = subprocess.check_output(
+            ["git", "diff", "--name-status", "HEAD~1..HEAD"],
+            cwd=worktree_path,
+            stderr=subprocess.STDOUT,
+            text=True,
+        ).strip().splitlines()
+    except Exception:
+        files_out = []
+
+    files = []
+    for line in files_out:
+        parts = line.split(maxsplit=1)
+        if len(parts) == 2:
+            files.append({"status": parts[0], "path": parts[1]})
+
+    return jsonify({
+        "task_id": task_id,
+        "worktree_path": worktree_path,
+        "diff": diff_out,
+        "files": files,
     })
