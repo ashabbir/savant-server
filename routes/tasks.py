@@ -429,6 +429,17 @@ def api_task_diff(task_id):
         return jsonify({"error": "Task not found"}), 404
 
     config = task.get("colosseum_config") or {}
+    persisted_diff = config.get("diff")
+    persisted_files = config.get("files")
+    if isinstance(persisted_diff, str) and isinstance(persisted_files, list):
+        return jsonify({
+            "task_id": task_id,
+            "worktree_path": config.get("worktree_path", ""),
+            "base_commit": config.get("base_commit"),
+            "commit": config.get("commit"),
+            "diff": persisted_diff,
+            "files": persisted_files,
+        })
     worktree_candidates = [
         config.get("worktree_path"),
         os.path.join(

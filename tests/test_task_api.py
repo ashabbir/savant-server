@@ -282,6 +282,29 @@ class TestColosseumLifecycleApi:
         assert "-before" in payload["diff"]
         assert "+after" in payload["diff"]
 
+    def test_diff_prefers_the_publication_snapshot(self, client, ws):
+        task = _create_task(client, ws, title="Persisted diff", status="review").get_json()
+        self._ready(client, task["task_id"])
+        client.put(f"/api/tasks/{task['task_id']}/colosseum-metadata", json={
+            "worktree_path": "/host/path/not-visible-in-server",
+            "base_commit": "base123",
+            "commit": "head456",
+            "diff": "diff --git a/README.md b/README.md\n",
+            "files": [{"status": "M", "path": "README.md"}],
+        })
+
+        response = client.get(f"/api/tasks/{task['task_id']}/diff")
+
+        assert response.status_code == 200
+        assert response.get_json() == {
+            "task_id": task["task_id"],
+            "worktree_path": "/host/path/not-visible-in-server",
+            "base_commit": "base123",
+            "commit": "head456",
+            "diff": "diff --git a/README.md b/README.md\n",
+            "files": [{"status": "M", "path": "README.md"}],
+        }
+
     def test_worker_can_register_a_deterministic_savant_merge_request(self, client, ws):
         response = client.post("/api/merge-requests", json={
             "mr_id": "mr-colosseum-task-1",
