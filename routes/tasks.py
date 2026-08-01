@@ -429,11 +429,26 @@ def api_task_diff(task_id):
         return jsonify({"error": "Task not found"}), 404
 
     config = task.get("colosseum_config") or {}
-    worktree_path = os.path.expanduser(str(config.get("worktree_path") or f"~/.savant/colosseum/worktrees/{task_id}"))
-    if not os.path.exists(worktree_path):
-        worktree_path = os.path.expanduser(f"~/.savant-executioner/worktrees/{task_id}")
+    worktree_candidates = [
+        config.get("worktree_path"),
+        os.path.join(
+            os.environ.get("SAVANT_COLOSSEUM_WORKTREES_DIR", "~/.savant/colosseum/worktrees"),
+            task_id,
+        ),
+        f"~/.savant-executioner/worktrees/{task_id}",
+    ]
+    worktree_path = next(
+        (
+            expanded
+            for candidate in worktree_candidates
+            if candidate
+            for expanded in [os.path.expanduser(str(candidate))]
+            if os.path.isdir(expanded)
+        ),
+        "",
+    )
 
-    if not os.path.exists(worktree_path):
+    if not worktree_path:
         return jsonify({"task_id": task_id, "diff": "", "files": [], "error": "Worktree not found"}), 200
 
     try:

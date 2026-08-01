@@ -4,7 +4,7 @@ These test the full HTTP round-trip including JSON serialization,
 ensuring fields like task_id, seq, depends_on are always present.
 """
 
-import sys, os, json
+import sys, os, json, subprocess
 import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -257,6 +257,30 @@ class TestColosseumLifecycleApi:
 
         assert response.status_code == 200
         assert response.get_json()["error"] == "Worktree not found"
+
+    def test_diff_uses_the_container_visible_colosseum_worktree(self, client, ws, tmp_path, monkeypatch):
+        task = _create_task(client, ws, title="Mounted diff", status="review").get_json()
+        self._ready(client, task["task_id"])
+        worktree = tmp_path / task["task_id"]
+        worktree.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=worktree, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=worktree, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=worktree, check=True)
+        (worktree / "README.md").write_text("before\n")
+        subprocess.run(["git", "add", "README.md"], cwd=worktree, check=True)
+        subprocess.run(["git", "commit", "-qm", "before"], cwd=worktree, check=True)
+        (worktree / "README.md").write_text("after\n")
+        subprocess.run(["git", "commit", "-qam", "after"], cwd=worktree, check=True)
+        monkeypatch.setenv("SAVANT_COLOSSEUM_WORKTREES_DIR", str(tmp_path))
+
+        response = client.get(f"/api/tasks/{task['task_id']}/diff")
+
+        payload = response.get_json()
+        assert response.status_code == 200
+        assert payload["worktree_path"] == str(worktree)
+        assert payload["files"] == [{"status": "M", "path": "README.md"}]
+        assert "-before" in payload["diff"]
+        assert "+after" in payload["diff"]
 
     def test_worker_can_register_a_deterministic_savant_merge_request(self, client, ws):
         response = client.post("/api/merge-requests", json={
