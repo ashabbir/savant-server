@@ -438,11 +438,59 @@ class TaskDB:
             if not task:
                 return None
             now = _now()
+            current_config = dict(task.get("colosseum_config") or {})
+            current_config.update(config)
             with conn.cursor() as cur:
                 cur.execute(
                     """INSERT INTO colosseum_tasks (task_id, ready, config, updated_at)
                        VALUES (%s, TRUE, %s::jsonb, %s)
                        ON CONFLICT (task_id) DO UPDATE SET ready = TRUE, config = EXCLUDED.config, updated_at = EXCLUDED.updated_at""",
+                    (task_id, json.dumps(current_config), now),
+                )
+                cur.execute("UPDATE tasks SET updated_at = %s WHERE task_id = %s", (now, task_id))
+            conn.commit()
+            return TaskDB._get_by_id_with_conn(task_id, conn, user_id=user_id)
+        finally:
+            release_connection(conn)
+
+    @staticmethod
+    def set_colosseum_ready_state(task_id: str, ready: bool, user_id: str = "") -> dict | None:
+        conn = get_connection()
+        try:
+            task = TaskDB._get_by_id_with_conn(task_id, conn, user_id=user_id)
+            if not task:
+                return None
+            now = _now()
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO colosseum_tasks (task_id, ready, config, updated_at)
+                       VALUES (%s, %s, %s::jsonb, %s)
+                       ON CONFLICT (task_id) DO UPDATE
+                       SET ready = EXCLUDED.ready, updated_at = EXCLUDED.updated_at""",
+                    (task_id, bool(ready), json.dumps(task.get("colosseum_config") or {}), now),
+                )
+                cur.execute("UPDATE tasks SET updated_at = %s WHERE task_id = %s", (now, task_id))
+            conn.commit()
+            return TaskDB._get_by_id_with_conn(task_id, conn, user_id=user_id)
+        finally:
+            release_connection(conn)
+
+    @staticmethod
+    def patch_colosseum_config(task_id: str, updates: dict, user_id: str = "") -> dict | None:
+        conn = get_connection()
+        try:
+            task = TaskDB._get_by_id_with_conn(task_id, conn, user_id=user_id)
+            if not task:
+                return None
+            config = dict(task.get("colosseum_config") or {})
+            config.update(updates)
+            now = _now()
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO colosseum_tasks (task_id, ready, config, updated_at)
+                       VALUES (%s, FALSE, %s::jsonb, %s)
+                       ON CONFLICT (task_id) DO UPDATE
+                       SET config = EXCLUDED.config, updated_at = EXCLUDED.updated_at""",
                     (task_id, json.dumps(config), now),
                 )
                 cur.execute("UPDATE tasks SET updated_at = %s WHERE task_id = %s", (now, task_id))
@@ -452,34 +500,64 @@ class TaskDB:
             release_connection(conn)
 
     @staticmethod
+    def append_colosseum_run(task_id: str, run: dict, user_id: str = "") -> dict | None:
+        task = TaskDB.get_by_id(task_id, user_id=user_id)
+        if not task:
+            return None
+        config = dict(task.get("colosseum_config") or {})
+        runs = list(config.get("runs") or [])
+        runs.append(run)
+        TaskDB.patch_colosseum_config(task_id, {"runs": runs}, user_id=user_id)
+        return run
+
+    @staticmethod
     def claim_todo(task_id: str, user_id: str = "") -> dict | None:
-        """Atomically move a todo task into active execution.
+        """Atomically move a queued Colosseum phase into active execution.
 
         The status predicate is the claim guard: competing workers can list the
         same task, but only one UPDATE succeeds.
         """
         conn = get_connection()
         try:
-            where = """WHERE task_id = %s AND status IN ('grooming', 'ready')"""
-            values = [_now(), task_id]
-            user_where = where + " AND user_id = %s" if user_id else where
-            user_values = values + [user_id] if user_id else values
+            allowed = ("grooming", "ready", "review", "approved")
             with conn.cursor() as cur:
-                cur.execute(
-                    f"UPDATE tasks SET status = 'in-progress', updated_at = %s {user_where}",
-                    user_values,
-                )
-                claimed = cur.rowcount == 1
-                if not claimed and user_id:
+                if user_id:
                     cur.execute(
-                        f"UPDATE tasks SET status = 'in-progress', updated_at = %s {where}",
-                        values,
+                        "SELECT status FROM tasks WHERE task_id = %s AND status = ANY(%s) AND user_id = %s FOR UPDATE",
+                        (task_id, list(allowed), user_id),
                     )
-                    claimed = cur.rowcount == 1
+                    row = cur.fetchone()
+                else:
+                    cur.execute(
+                        "SELECT status FROM tasks WHERE task_id = %s AND status = ANY(%s) FOR UPDATE",
+                        (task_id, list(allowed)),
+                    )
+                    row = cur.fetchone()
+                if row is None and user_id:
+                    cur.execute(
+                        "SELECT status FROM tasks WHERE task_id = %s AND status = ANY(%s) FOR UPDATE",
+                        (task_id, list(allowed)),
+                    )
+                    row = cur.fetchone()
+                if row is None:
+                    conn.rollback()
+                    return None
+                claimed_from = row["status"]
+                cur.execute(
+                    "UPDATE tasks SET status = 'in-progress', updated_at = %s WHERE task_id = %s",
+                    (_now(), task_id),
+                )
+                cur.execute(
+                    "UPDATE colosseum_tasks SET ready = FALSE, updated_at = %s WHERE task_id = %s",
+                    (_now(), task_id),
+                )
             conn.commit()
-            if not claimed:
-                return None
-            return TaskDB._get_by_id_with_conn(task_id, conn, user_id=user_id)
+            claimed = TaskDB._get_by_id_with_conn(task_id, conn, user_id=user_id)
+            if claimed is None:
+                claimed = TaskDB._get_by_id_with_conn(task_id, conn)
+            if claimed is not None:
+                claimed["colosseum_claimed_from"] = claimed_from
+            return claimed
         finally:
             release_connection(conn)
 

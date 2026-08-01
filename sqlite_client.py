@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL,
     created_session_id  TEXT,
+    comments            TEXT NOT NULL DEFAULT '[]',
     FOREIGN KEY (workspace_id) REFERENCES workspaces(workspace_id)
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_ws_status ON tasks(workspace_id, status);

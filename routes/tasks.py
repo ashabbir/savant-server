@@ -19,13 +19,38 @@ def _validate_colosseum_config(data):
     if not isinstance(config, dict):
         return None, "config must be an object"
     repository = str(config.get("repository") or "").strip()
+    work_type = str(config.get("work_type") or ("development" if repository else "research")).strip().lower()
+    if work_type not in {"development", "research"}:
+        return None, "config.work_type must be development or research"
     provider = str(config.get("provider") or "").strip().lower()
     if provider and provider not in COLOSSEUM_PROVIDERS:
         return None, "config.provider must be an installed Colosseum provider"
     timeout = config.get("timeout_seconds", 3600)
     if not isinstance(timeout, int) or not 0 < timeout <= 86400:
         return None, "config.timeout_seconds must be between 1 and 86400"
-    return {**config, "repository": repository, "provider": provider, "persona": config.get("persona", ""), "tags": config.get("tags", []), "model": config.get("model", "")}, None
+    return {
+        **config,
+        "repository": repository,
+        "work_type": work_type,
+        "autopilot": bool(config.get("autopilot", False)),
+        "provider": provider,
+        "persona": config.get("persona", ""),
+        "tags": config.get("tags", []),
+        "model": config.get("model", ""),
+    }, None
+
+
+def _comment(task: dict, text: str, author: str, role: str) -> tuple[dict, list[dict]]:
+    comment = {
+        "id": f"c-{uuid.uuid4().hex[:8]}",
+        "author": author,
+        "text": text,
+        "role": role,
+        "createdAt": datetime.utcnow().isoformat() + "Z",
+    }
+    comments = list(task.get("comments") or [])
+    comments.append(comment)
+    return comment, comments
 
 
 def _next_available_workday(start_date_str: str, ended_days=None, work_week=None) -> str:
@@ -129,16 +154,8 @@ def api_task_comments(task_id):
 
     author = data.get("author") or "agent"
     role = data.get("role") or "agent"
-    comment_obj = {
-        "id": f"c-{uuid.uuid4().hex[:8]}",
-        "author": author,
-        "text": text,
-        "role": role,
-        "createdAt": datetime.utcnow().isoformat() + "Z",
-    }
-    existing_comments = task.get("comments") or []
-    existing_comments.append(comment_obj)
-    updated = TaskDB.update(task_id, {"comments": existing_comments}, user_id=user_id)
+    comment_obj, existing_comments = _comment(task, text, author, role)
+    TaskDB.update(task_id, {"comments": existing_comments}, user_id=user_id)
     return jsonify(comment_obj), 200
 
 
@@ -175,32 +192,109 @@ def api_next_colosseum_task():
     user_id = getattr(g, "user_id", "")
     workspace_id = request.args.get("workspace_id") or None
     rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}
-    grooming_tasks = TaskDB.list_all(workspace_id=workspace_id, user_id=user_id, status="grooming")
-    ready_tasks = TaskDB.list_all(workspace_id=workspace_id, user_id=user_id, status="ready")
-    all_colosseum_tasks = grooming_tasks + ready_tasks
+    phases = ("approved", "review", "ready", "grooming")
+    all_colosseum_tasks = [
+        task
+        for phase in phases
+        for task in TaskDB.list_all(workspace_id=workspace_id, user_id=user_id, status=phase)
+        if task.get("colosseum_ready")
+    ]
     if not all_colosseum_tasks and user_id:
-        grooming_tasks = TaskDB.list_all(workspace_id=workspace_id, user_id="", status="grooming")
-        ready_tasks = TaskDB.list_all(workspace_id=workspace_id, user_id="", status="ready")
-        all_colosseum_tasks = grooming_tasks + ready_tasks
+        all_colosseum_tasks = [
+            task
+            for phase in phases
+            for task in TaskDB.list_all(workspace_id=workspace_id, user_id="", status=phase)
+            if task.get("colosseum_ready")
+        ]
     if not all_colosseum_tasks:
-        return jsonify({"message": "No ready or grooming Colosseum task", "workspace_id": workspace_id}), 200
-    all_colosseum_tasks.sort(key=lambda task: rank.get(task.get("priority"), 2))
+        return jsonify({"message": "No queued Colosseum task", "workspace_id": workspace_id}), 200
+    phase_rank = {phase: index for index, phase in enumerate(phases)}
+    all_colosseum_tasks.sort(key=lambda task: (phase_rank.get(task.get("status"), 9), rank.get(task.get("priority"), 2)))
     selected = all_colosseum_tasks[0]
     config = dict(selected.get("colosseum_config") or {})
     if not config.get("repository"):
         config["repository"] = selected.get("repository") or os.getcwd()
-    if not config.get("provider"):
-        from routes.preferences import get_user_preference
-        ready_settings = get_user_preference("colosseum:ready-settings", {})
-        config["provider"] = ready_settings.get("provider") or "codex"
-        if ready_settings.get("persona"):
-            config["persona"] = ready_settings.get("persona")
-        if ready_settings.get("tags"):
-            config["tags"] = [t.strip() for t in str(ready_settings.get("tags")).split(",") if t.strip()]
-        if ready_settings.get("model"):
-            config["model"] = ready_settings.get("model")
+    settings_key = "colosseum:review-settings" if selected.get("status") == "review" else "colosseum:ready-settings"
+    phase_settings = get_user_preference(settings_key, {})
+    config["provider"] = config.get("provider") or phase_settings.get("provider") or "codex"
+    if phase_settings.get("persona"):
+        config["persona"] = phase_settings.get("persona")
+    if phase_settings.get("tags"):
+        config["tags"] = [t.strip() for t in str(phase_settings.get("tags")).split(",") if t.strip()]
+    if phase_settings.get("model"):
+        config["model"] = phase_settings.get("model")
     selected["colosseum_config"] = config
     return jsonify(selected), 200
+
+
+@tasks_bp.route("/api/tasks/<task_id>/colosseum-ready-state", methods=["POST"])
+def api_task_colosseum_ready_state(task_id):
+    user_id = getattr(g, "user_id", "")
+    data = request.get_json(force=True, silent=True) or {}
+    if not isinstance(data.get("ready"), bool):
+        return jsonify({"error": "ready must be a boolean"}), 400
+    updated = TaskDB.set_colosseum_ready_state(task_id, data["ready"], user_id=user_id)
+    if not updated:
+        return jsonify({"error": "Task not found"}), 404
+    return jsonify(updated), 200
+
+
+@tasks_bp.route("/api/tasks/<task_id>/colosseum-metadata", methods=["PUT"])
+def api_task_colosseum_metadata(task_id):
+    user_id = getattr(g, "user_id", "")
+    data = request.get_json(force=True, silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "metadata must be an object"}), 400
+    updated = TaskDB.patch_colosseum_config(task_id, data, user_id=user_id)
+    if not updated:
+        return jsonify({"error": "Task not found"}), 404
+    return jsonify(updated), 200
+
+
+@tasks_bp.route("/api/tasks/<task_id>/colosseum-runs", methods=["GET", "POST"])
+def api_task_colosseum_runs(task_id):
+    user_id = getattr(g, "user_id", "")
+    task = TaskDB.get_by_id(task_id, user_id=user_id)
+    if not task:
+        return jsonify({"error": "Task not found"}), 404
+    if request.method == "GET":
+        return jsonify(list((task.get("colosseum_config") or {}).get("runs") or [])), 200
+
+    data = request.get_json(force=True, silent=True) or {}
+    if not isinstance(data, dict) or not str(data.get("phase") or "").strip():
+        return jsonify({"error": "phase is required"}), 400
+    run = {**data}
+    run.setdefault("run_id", f"run-{uuid.uuid4().hex[:12]}")
+    run.setdefault("created_at", datetime.utcnow().isoformat() + "Z")
+    TaskDB.append_colosseum_run(task_id, run, user_id=user_id)
+    return jsonify(run), 201
+
+
+@tasks_bp.route("/api/tasks/<task_id>/approval", methods=["POST"])
+def api_task_approval(task_id):
+    user_id = getattr(g, "user_id", "")
+    task = TaskDB.get_by_id(task_id, user_id=user_id)
+    if not task:
+        return jsonify({"error": "Task not found"}), 404
+    if task.get("status") != "human-review":
+        return jsonify({"error": "Task is not awaiting human review"}), 409
+
+    data = request.get_json(force=True, silent=True) or {}
+    decision = str(data.get("decision") or "").strip().lower()
+    reason = str(data.get("comment") or "").strip()
+    if decision not in {"approve", "reject"}:
+        return jsonify({"error": "decision must be approve or reject"}), 400
+    if decision == "reject" and not reason:
+        return jsonify({"error": "A rejection comment is required"}), 400
+
+    work_type = str((task.get("colosseum_config") or {}).get("work_type") or "development")
+    status = "ready" if decision == "reject" else ("done" if work_type == "research" else "approved")
+    label = "approved" if decision == "approve" else "rejected"
+    text = f"Human review {label}." + (f"\n\n{reason}" if reason else "")
+    _, comments = _comment(task, text, user_id or "user", "user")
+    TaskDB.update(task_id, {"status": status, "comments": comments}, user_id=user_id)
+    updated = TaskDB.set_colosseum_ready_state(task_id, status in {"ready", "approved"}, user_id=user_id)
+    return jsonify(updated), 200
 
 
 
@@ -334,10 +428,10 @@ def api_task_diff(task_id):
     if not task:
         return jsonify({"error": "Task not found"}), 404
 
-    worktree_path = os.path.expanduser(f"~/.savant-executioner/worktrees/{task_id}")
+    config = task.get("colosseum_config") or {}
+    worktree_path = os.path.expanduser(str(config.get("worktree_path") or f"~/.savant/colosseum/worktrees/{task_id}"))
     if not os.path.exists(worktree_path):
-        # Fallback check local root
-        worktree_path = os.path.abspath(f".savant-executioner/worktrees/{task_id}")
+        worktree_path = os.path.expanduser(f"~/.savant-executioner/worktrees/{task_id}")
 
     if not os.path.exists(worktree_path):
         return jsonify({"task_id": task_id, "diff": "", "files": [], "error": "Worktree not found"}), 200

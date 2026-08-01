@@ -169,6 +169,7 @@ CREATE TABLE IF NOT EXISTS workspaces (
     created_at          TIMESTAMPTZ NOT NULL,
     updated_at          TIMESTAMPTZ NOT NULL,
     created_session_id  TEXT,
+    comments            JSONB NOT NULL DEFAULT '[]'::jsonb,
     user_id             TEXT DEFAULT '',
     colosseum_ready     BOOLEAN NOT NULL DEFAULT FALSE,
     colosseum_config    JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -608,6 +609,7 @@ _SCHEMA_MIGRATIONS = (
             "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS user_id TEXT DEFAULT ''",
             "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS color TEXT DEFAULT ''",
             "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS user_id TEXT DEFAULT ''",
+            "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS comments JSONB NOT NULL DEFAULT '[]'::jsonb",
             "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS colosseum_ready BOOLEAN NOT NULL DEFAULT FALSE",
             "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS colosseum_config JSONB NOT NULL DEFAULT '{}'::jsonb",
             "CREATE INDEX IF NOT EXISTS idx_tasks_colosseum_ready ON tasks(workspace_id, colosseum_ready, status)",
@@ -736,6 +738,13 @@ _SCHEMA_MIGRATIONS = (
                SELECT task_id, TRUE, colosseum_config FROM tasks
                WHERE colosseum_ready = TRUE
                ON CONFLICT (task_id) DO NOTHING""",
+        ),
+    ),
+    (
+        8,
+        "add durable task comments for execution and review evidence",
+        (
+            "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS comments JSONB NOT NULL DEFAULT '[]'::jsonb",
         ),
     ),
 )

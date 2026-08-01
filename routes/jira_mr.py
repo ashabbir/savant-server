@@ -1,5 +1,7 @@
 """Jira Tickets & Merge Requests Routes Blueprint for Savant Server."""
 
+import uuid
+
 from flask import Blueprint, g, jsonify, request
 from db.jira_tickets import JiraTicketDB
 from db.merge_requests import MergeRequestDB
@@ -81,10 +83,12 @@ def api_merge_requests():
         return jsonify({"error": "title or url is required"}), 400
 
     created = MergeRequestDB.create({
+        "mr_id": data.get("mr_id") or f"mr-{uuid.uuid4().hex[:12]}",
         "title": title or url,
         "url": url,
         "status": data.get("status", "open"),
         "workspace_id": data.get("workspace_id"),
+        "author": data.get("author", ""),
         "user_id": user_id,
     })
     return jsonify(created), 201

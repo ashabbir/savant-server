@@ -147,8 +147,8 @@ class TestTaskApiUpdate:
         refetch = client.get("/api/tasks").get_json()
         assert refetch[0]["status"] == "in-progress"
 
-    def test_claim_moves_todo_task_to_in_progress_once(self, client, ws):
-        task = _create_task(client, ws, title="Claim me").get_json()
+    def test_claim_moves_ready_task_to_in_progress_once(self, client, ws):
+        task = _create_task(client, ws, title="Claim me", status="ready").get_json()
         tid = task["task_id"]
         ready = client.post(f"/api/tasks/{tid}/colosseum-ready", json={
             "config": {"repository": "/tmp/repo", "provider": "codex"},
@@ -157,7 +157,157 @@ class TestTaskApiUpdate:
         claimed = client.post(f"/api/tasks/{tid}/claim")
         assert claimed.status_code == 200
         assert claimed.get_json()["status"] == "in-progress"
+        assert claimed.get_json()["colosseum_claimed_from"] == "ready"
+        assert claimed.get_json()["colosseum_ready"] is False
         assert client.post(f"/api/tasks/{tid}/claim").status_code == 409
+
+    def test_claim_preserves_grooming_phase_for_worker_dispatch(self, client, ws):
+        task = _create_task(client, ws, title="Groom me", status="grooming").get_json()
+        tid = task["task_id"]
+        client.post(f"/api/tasks/{tid}/colosseum-ready", json={
+            "config": {"work_type": "research", "provider": "codex"},
+        })
+
+        claimed = client.post(f"/api/tasks/{tid}/claim")
+
+        assert claimed.status_code == 200
+        assert claimed.get_json()["status"] == "in-progress"
+        assert claimed.get_json()["colosseum_claimed_from"] == "grooming"
+
+
+class TestColosseumLifecycleApi:
+    def test_metadata_then_ready_state_queues_a_backlog_task(self, client, ws):
+        task = _create_task(client, ws, title="New lifecycle task").get_json()
+        task_id = task["task_id"]
+
+        metadata = client.put(
+            f"/api/tasks/{task_id}/colosseum-metadata",
+            json={"work_type": "research", "autopilot": True},
+        )
+        assert metadata.status_code == 200
+        assert metadata.get_json()["colosseum_config"]["work_type"] == "research"
+
+        queued = client.post(
+            f"/api/tasks/{task_id}/colosseum-ready-state",
+            json={"ready": True},
+        )
+        assert queued.status_code == 200
+        assert queued.get_json()["colosseum_ready"] is True
+
+    def _ready(self, client, task_id, **config):
+        payload = {
+            "work_type": "development",
+            "repository": "/tmp/repo",
+            "provider": "codex",
+            **config,
+        }
+        return client.post(f"/api/tasks/{task_id}/colosseum-ready", json={"config": payload})
+
+    def test_next_requires_explicit_ready_marker_and_selects_each_worker_phase(self, client, ws):
+        ignored = _create_task(client, ws, title="Not submitted", status="grooming").get_json()
+        grooming = _create_task(client, ws, title="Submitted grooming", status="grooming").get_json()
+        self._ready(client, grooming["task_id"], work_type="research", repository="")
+
+        response = client.get(f"/api/tasks/colosseum/next?workspace_id={ws}")
+
+        assert response.status_code == 200
+        assert response.get_json()["task_id"] == grooming["task_id"]
+        assert response.get_json()["task_id"] != ignored["task_id"]
+
+        client.post(f"/api/tasks/{grooming['task_id']}/claim")
+        review = _create_task(client, ws, title="Machine review", status="review").get_json()
+        self._ready(client, review["task_id"])
+        response = client.get(f"/api/tasks/colosseum/next?workspace_id={ws}")
+        assert response.get_json()["task_id"] == review["task_id"]
+
+        client.post(f"/api/tasks/{review['task_id']}/claim")
+        approved = _create_task(client, ws, title="Approved merge", status="approved").get_json()
+        self._ready(client, approved["task_id"])
+        response = client.get(f"/api/tasks/colosseum/next?workspace_id={ws}")
+        assert response.get_json()["task_id"] == approved["task_id"]
+
+    def test_worker_can_append_structured_run_evidence(self, client, ws):
+        task = _create_task(client, ws, title="Evidence", status="ready").get_json()
+        self._ready(client, task["task_id"], autopilot=False)
+
+        response = client.post(f"/api/tasks/{task['task_id']}/colosseum-runs", json={
+            "run_id": "run-1",
+            "phase": "work",
+            "status": "passed",
+            "summary": "Implemented the requested behavior",
+            "rationale": "The existing branch lacked the approval gate",
+            "branch": "savant-execution/evidence",
+            "commit": "abc123",
+        })
+
+        assert response.status_code == 201
+        runs = client.get(f"/api/tasks/{task['task_id']}/colosseum-runs").get_json()
+        assert runs == [response.get_json()]
+        refreshed = client.get(f"/api/tasks/{task['task_id']}").get_json()
+        assert refreshed["colosseum_config"]["runs"][0]["rationale"] == "The existing branch lacked the approval gate"
+
+    def test_colosseum_metadata_is_used_to_locate_the_worker_worktree(self, client, ws, tmp_path):
+        task = _create_task(client, ws, title="Diff path", status="review").get_json()
+        self._ready(client, task["task_id"])
+        client.put(f"/api/tasks/{task['task_id']}/colosseum-metadata", json={
+            "worktree_path": str(tmp_path / "worker-path"),
+        })
+
+        response = client.get(f"/api/tasks/{task['task_id']}/diff")
+
+        assert response.status_code == 200
+        assert response.get_json()["error"] == "Worktree not found"
+
+    def test_worker_can_register_a_deterministic_savant_merge_request(self, client, ws):
+        response = client.post("/api/merge-requests", json={
+            "mr_id": "mr-colosseum-task-1",
+            "workspace_id": ws,
+            "title": "Task branch ready",
+            "url": "git@example.invalid:repo.git",
+            "status": "review",
+            "author": "Colosseum",
+        })
+
+        assert response.status_code == 201
+        assert response.get_json()["mr_id"] == "mr-colosseum-task-1"
+        assert response.get_json()["status"] == "review"
+        assert response.get_json()["author"] == "Colosseum"
+
+    def test_human_approval_queues_development_merge(self, client, ws):
+        task = _create_task(client, ws, title="Approve code", status="human-review").get_json()
+        self._ready(client, task["task_id"], autopilot=False)
+        client.post(f"/api/tasks/{task['task_id']}/colosseum-ready-state", json={"ready": False})
+
+        response = client.post(f"/api/tasks/{task['task_id']}/approval", json={
+            "decision": "approve",
+            "comment": "Diff and validation look good",
+        })
+
+        assert response.status_code == 200
+        assert response.get_json()["status"] == "approved"
+        assert response.get_json()["colosseum_ready"] is True
+        assert response.get_json()["comments"][-1]["role"] == "user"
+
+    def test_human_rejection_returns_ticket_to_ready_with_reason(self, client, ws):
+        task = _create_task(client, ws, title="Reject code", status="human-review").get_json()
+        self._ready(client, task["task_id"], autopilot=False)
+
+        response = client.post(f"/api/tasks/{task['task_id']}/approval", json={
+            "decision": "reject",
+            "comment": "Missing the negative-path test",
+        })
+
+        assert response.status_code == 200
+        assert response.get_json()["status"] == "ready"
+        assert response.get_json()["colosseum_ready"] is True
+        assert "Missing the negative-path test" in response.get_json()["comments"][-1]["text"]
+
+    def test_approval_rejects_wrong_status_or_missing_rejection_reason(self, client, ws):
+        ready = _create_task(client, ws, title="Wrong state", status="ready").get_json()
+        assert client.post(f"/api/tasks/{ready['task_id']}/approval", json={"decision": "approve"}).status_code == 409
+
+        review = _create_task(client, ws, title="Needs reason", status="human-review").get_json()
+        assert client.post(f"/api/tasks/{review['task_id']}/approval", json={"decision": "reject"}).status_code == 400
 
     def test_update_preserves_seq(self, client, ws):
         """REGRESSION: updating a task must not lose its seq number."""
