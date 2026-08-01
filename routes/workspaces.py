@@ -219,11 +219,15 @@ api_workspaces = api_workspaces_list
 def api_workspace_session_files(workspace_id):
     user_id = getattr(g, "user_id", "")
     links = WorkspaceSessionLinkDB.list_by_workspace(workspace_id, user_id=user_id)
-    files = []
+    groups = []
     for link in links:
-        files.append({
+        groups.append({
             "session_id": link["session_id"],
             "provider": link["provider"],
             "attached_at": link.get("attached_at"),
+            "file_count": 0,
+            "files": [],
         })
-    return jsonify({"workspace_id": workspace_id, "files": files})
+    # `groups` is the renderer's session-file contract. Keep `files` during
+    # rollout so older desktop bundles can read the same records.
+    return jsonify({"workspace_id": workspace_id, "groups": groups, "files": groups})

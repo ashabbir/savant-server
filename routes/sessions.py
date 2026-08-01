@@ -512,6 +512,7 @@ def api_savant_session_detail(session_id):
 @sessions_bp.route("/api/gemini/session/<session_id>/conversation", methods=["GET"])
 @sessions_bp.route("/api/agy/session/<session_id>/conversation", methods=["GET"])
 @sessions_bp.route("/api/agt/session/<session_id>/conversation", methods=["GET"])
+@sessions_bp.route("/api/hermes/session/<session_id>/conversation", methods=["GET"])
 def api_session_conversation(session_id):
     if "/savant/" in (request.path or ""):
         from utils.session_parser import savant_parse_full_conversation
@@ -529,6 +530,7 @@ def api_session_conversation(session_id):
 @sessions_bp.route("/api/gemini/search", methods=["GET"])
 @sessions_bp.route("/api/agy/search", methods=["GET"])
 @sessions_bp.route("/api/agt/search", methods=["GET"])
+@sessions_bp.route("/api/hermes/search", methods=["GET"])
 def api_session_search():
     q = request.args.get("q", "")
     if len(q) < 2:

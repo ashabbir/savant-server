@@ -9,7 +9,10 @@ _INTERNAL_PROVIDER = "session"
 class WorkspaceSessionLinkDB:
     @staticmethod
     def _normalize_provider(provider: str) -> str:
-        return _INTERNAL_PROVIDER
+        value = str(provider or "").strip().lower()
+        # Old generic links remain compatible, but a provider-specific
+        # assignment must not lose the information Sanctum needs to render it.
+        return value if value and value not in ("unknown", "session") else _INTERNAL_PROVIDER
 
     @staticmethod
     def _get_link_with_conn(provider: str, session_id: str, conn) -> dict | None:

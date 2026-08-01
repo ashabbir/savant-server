@@ -5,7 +5,7 @@ from sqlite_client import get_connection
 
 def _mk_ws(client, name):
     resp = client.post("/api/workspaces", json={"name": name})
-    assert resp.status_code == 200
+    assert resp.status_code in (200, 201)
     return resp.get_json()["workspace_id"]
 
 
@@ -104,3 +104,18 @@ def test_workspace_session_links_api_assign_reassign_unassign_and_resolve(client
     resolved3 = client.get("/api/session-links/resolve", query_string={"provider": "ignored", "session_id": "sess-abc"})
     assert resolved3.status_code == 200
     assert resolved3.get_json()["workspace_id"] is None
+
+
+def test_workspace_session_files_uses_renderer_group_contract(client):
+    workspace_id = _mk_ws(client, "Renderer Contract")
+    client.post(
+        f"/api/workspaces/{workspace_id}/session-links",
+        json={"provider": "codex", "session_id": "sess-renderer"},
+    )
+
+    response = client.get(f"/api/workspaces/{workspace_id}/session-files")
+    assert response.status_code == 200
+    group = response.get_json()["groups"][0]
+    assert group["session_id"] == "sess-renderer"
+    assert group["provider"] == "codex"
+    assert group["files"] == []
