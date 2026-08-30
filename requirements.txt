@@ -12,6 +12,9 @@ tree-sitter-languages>=1.10.2
 huggingface_hub>=0.20.0
 sentence-transformers>=5.0.0
 torch>=2.0.0
-mcp
+# Pinned to v1: mcp 2.x renamed FastMCP to MCPServer and changed the SSE app
+# API. mcp/*.py all import `from mcp.server.fastmcp import FastMCP`, so an
+# unpinned install picks up 2.x and every MCP server fails to import.
+mcp<2
 flask-cors
 APScheduler>=3.10,<4

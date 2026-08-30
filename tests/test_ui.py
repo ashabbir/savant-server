@@ -19,9 +19,14 @@ pytestmark = pytest.mark.skipif(
     not os.path.exists(os.path.join(os.path.dirname(__file__), '..', 'templates', 'index.html')),
     reason="Client UI files located in savant-client repository"
 )
-import pytest
 
-from playwright.sync_api import sync_playwright, Page
+# Import Playwright lazily: the skipif marker above only suppresses the *tests*,
+# not module import, so a bare import breaks collection for the whole suite on
+# any machine without Playwright installed.
+sync_playwright = pytest.importorskip(
+    "playwright.sync_api",
+    reason="playwright is not installed; run `playwright install chromium` after installing it",
+).sync_playwright
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
