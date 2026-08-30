@@ -12,7 +12,7 @@ os.environ.setdefault(
     "SAVANT_DATABASE_URL",
     os.environ.get(
         "SAVANT_TEST_DATABASE_URL",
-        "******localhost:5432/savant_test",
+        "postgresql://localhost:5432/savant_test",
     ),
 )
 
