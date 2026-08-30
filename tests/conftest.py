@@ -8,10 +8,18 @@ import pytest
 # Add savant/ to path so imports work
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+os.environ.setdefault(
+    "SAVANT_DATABASE_URL",
+    os.environ.get(
+        "SAVANT_TEST_DATABASE_URL",
+        "******localhost:5432/savant_test",
+    ),
+)
+
 
 @pytest.fixture(autouse=True)
 def _isolated_db(tmp_path, monkeypatch, request):
-    """Every test gets its own fresh SQLite database."""
+    """Every test gets isolated SQLite state and a clean PostgreSQL test database."""
     if request.node.get_closest_marker("no_db"):
         yield None
         return
@@ -28,12 +36,18 @@ def _isolated_db(tmp_path, monkeypatch, request):
     init_sqlite()
 
     monkeypatch.setenv("SAVANT_EXTERNAL_PERIODIC_RUNNER", "1")
-    from postgres_client import get_connection, release_connection, init_schema
+    from postgres_client import (
+        get_connection,
+        init_schema,
+        release_connection,
+        require_test_database,
+    )
     init_schema()
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("TRUNCATE experiences, kg_nodes, kg_edges, kg_maintenance_runs, notes, tasks, task_ended_days, workspaces, jira_tickets, jira_notes, merge_requests, mr_notes, jobs, ctx_repos, ctx_files, ctx_chunks, ctx_ast_nodes, ctx_vec_chunks, ctx_repo_sync_logs, ctx_periodic_sync_logs, workspace_session_links, reminders, notifications, code_intelligence_config RESTART IDENTITY CASCADE;")
+            require_test_database(cur)
+            cur.execute("TRUNCATE experiences, kg_nodes, kg_edges, kg_maintenance_runs, notes, tasks, task_ended_days, workspaces, notebooks, jira_tickets, jira_notes, merge_requests, mr_notes, jobs, ctx_repos, ctx_files, ctx_chunks, ctx_ast_nodes, ctx_vec_chunks, ctx_repo_sync_logs, ctx_periodic_sync_logs, workspace_session_links, reminders, notifications, code_intelligence_config, users RESTART IDENTITY CASCADE;")
         conn.commit()
     finally:
         release_connection(conn)

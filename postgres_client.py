@@ -44,8 +44,8 @@ def _make_pool() -> ThreadedConnectionPool:
     """Create a new connection pool."""
     logger.info("Initialising PostgreSQL connection pool → %s", DATABASE_URL.split("@")[-1])
     pool = ThreadedConnectionPool(
-        minconn=5,
-        maxconn=50,
+        minconn=2,
+        maxconn=int(os.environ.get("PG_POOL_MAX", "20")),
         dsn=DATABASE_URL,
     )
     return pool
@@ -76,6 +76,23 @@ def release_connection(conn: psycopg2.extensions.connection) -> None:
     """Return a connection to the pool."""
     if _POOL is not None:
         _POOL.putconn(conn)
+
+
+def require_test_database(cursor: psycopg2.extensions.cursor) -> str:
+    """Refuse destructive test setup unless connected to a test-named database."""
+    cursor.execute("SELECT current_database() AS database_name")
+    row = cursor.fetchone()
+    database_name = row["database_name"] if isinstance(row, dict) else row[0]
+    normalized_name = str(database_name).strip().lower()
+    if not (
+        normalized_name.startswith("test_")
+        or normalized_name.endswith("_test")
+    ):
+        raise RuntimeError(
+            "Refusing to run destructive test setup against "
+            f"database '{database_name}'. Use a test-named database."
+        )
+    return str(database_name)
 
 
 @contextmanager
@@ -177,6 +194,165 @@ CREATE TABLE IF NOT EXISTS workspaces (
 );
 CREATE INDEX IF NOT EXISTS idx_ws_status ON workspaces(status);
 CREATE INDEX IF NOT EXISTS idx_ws_created ON workspaces(created_at);
+
+-- Collaborative notebooks
+CREATE TABLE IF NOT EXISTS notebooks (
+    notebook_id     TEXT PRIMARY KEY,
+    owner_user_id   TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    title           TEXT NOT NULL,
+    description     TEXT NOT NULL DEFAULT '',
+    objective       TEXT NOT NULL DEFAULT '',
+    visibility      TEXT NOT NULL DEFAULT 'private'
+                    CHECK (visibility IN ('private', 'shared')),
+    created_at      TIMESTAMPTZ NOT NULL,
+    updated_at      TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_notebooks_owner ON notebooks(owner_user_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS notebook_memberships (
+    notebook_id     TEXT NOT NULL REFERENCES notebooks(notebook_id) ON DELETE CASCADE,
+    user_id         TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    role            TEXT NOT NULL CHECK (role IN ('owner', 'editor', 'viewer')),
+    granted_by      TEXT REFERENCES users(user_id) ON DELETE SET NULL,
+    active          BOOLEAN NOT NULL DEFAULT TRUE,
+    active_at       TIMESTAMPTZ NOT NULL,
+    revoked_at      TIMESTAMPTZ,
+    updated_at      TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (notebook_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_notebook_memberships_user
+    ON notebook_memberships(user_id, active, notebook_id);
+
+CREATE TABLE IF NOT EXISTS notebook_sources (
+    source_id       TEXT PRIMARY KEY,
+    notebook_id     TEXT NOT NULL REFERENCES notebooks(notebook_id) ON DELETE CASCADE,
+    source_type     TEXT NOT NULL
+                    CHECK (source_type IN ('file', 'directory', 'url', 'savant_context_repo')),
+    name            TEXT NOT NULL DEFAULT '',
+    reference       TEXT NOT NULL DEFAULT '',
+    extracted_text  TEXT NOT NULL DEFAULT '',
+    status          TEXT NOT NULL DEFAULT 'pending',
+    metadata        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_by      TEXT NOT NULL REFERENCES users(user_id),
+    created_at      TIMESTAMPTZ NOT NULL,
+    updated_at      TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_notebook_sources_notebook
+    ON notebook_sources(notebook_id, created_at);
+
+CREATE TABLE IF NOT EXISTS notebook_conversations (
+    conversation_id TEXT PRIMARY KEY,
+    notebook_id     TEXT NOT NULL REFERENCES notebooks(notebook_id) ON DELETE CASCADE,
+    title           TEXT NOT NULL DEFAULT '',
+    created_by      TEXT NOT NULL REFERENCES users(user_id),
+    created_at      TIMESTAMPTZ NOT NULL,
+    updated_at      TIMESTAMPTZ NOT NULL,
+    UNIQUE (notebook_id, conversation_id)
+);
+CREATE INDEX IF NOT EXISTS idx_notebook_conversations_notebook
+    ON notebook_conversations(notebook_id, created_at);
+
+CREATE TABLE IF NOT EXISTS notebook_events (
+    event_id        TEXT PRIMARY KEY,
+    notebook_id     TEXT NOT NULL REFERENCES notebooks(notebook_id) ON DELETE CASCADE,
+    conversation_id TEXT NOT NULL,
+    event_type      TEXT NOT NULL DEFAULT 'message',
+    message_role    TEXT NOT NULL DEFAULT 'user',
+    content         TEXT NOT NULL,
+    metadata        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    author_user_id  TEXT NOT NULL REFERENCES users(user_id),
+    created_at      TIMESTAMPTZ NOT NULL,
+    UNIQUE (notebook_id, event_id),
+    FOREIGN KEY (notebook_id, conversation_id)
+        REFERENCES notebook_conversations(notebook_id, conversation_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_notebook_events_conversation
+    ON notebook_events(notebook_id, conversation_id, created_at);
+
+CREATE TABLE IF NOT EXISTS notebook_memories (
+    memory_id       TEXT PRIMARY KEY,
+    notebook_id     TEXT NOT NULL REFERENCES notebooks(notebook_id) ON DELETE CASCADE,
+    memory_type     TEXT NOT NULL CHECK (
+        memory_type IN ('decision', 'turning_point', 'assumption',
+                        'rejected_approach', 'open_question', 'working_state')
+    ),
+    title           TEXT NOT NULL DEFAULT '',
+    content         TEXT NOT NULL,
+    metadata        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    conversation_id TEXT REFERENCES notebook_conversations(conversation_id) ON DELETE SET NULL,
+    event_id        TEXT REFERENCES notebook_events(event_id) ON DELETE SET NULL,
+    author_user_id  TEXT NOT NULL REFERENCES users(user_id),
+    created_at      TIMESTAMPTZ NOT NULL,
+    updated_at      TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_notebook_memories_notebook
+    ON notebook_memories(notebook_id, created_at);
+
+CREATE TABLE IF NOT EXISTS notebook_artifacts (
+    artifact_id     TEXT PRIMARY KEY,
+    notebook_id     TEXT NOT NULL REFERENCES notebooks(notebook_id) ON DELETE CASCADE,
+    name            TEXT NOT NULL,
+    description     TEXT NOT NULL DEFAULT '',
+    format          TEXT NOT NULL DEFAULT 'text',
+    metadata        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_by      TEXT NOT NULL REFERENCES users(user_id),
+    created_at      TIMESTAMPTZ NOT NULL,
+    updated_at      TIMESTAMPTZ NOT NULL,
+    UNIQUE (notebook_id, artifact_id)
+);
+CREATE INDEX IF NOT EXISTS idx_notebook_artifacts_notebook
+    ON notebook_artifacts(notebook_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS notebook_artifact_versions (
+    artifact_id     TEXT NOT NULL,
+    notebook_id     TEXT NOT NULL,
+    version_number  INTEGER NOT NULL,
+    content         TEXT NOT NULL,
+    format          TEXT NOT NULL DEFAULT 'text',
+    metadata        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_by      TEXT NOT NULL REFERENCES users(user_id),
+    created_at      TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (artifact_id, version_number),
+    UNIQUE (notebook_id, artifact_id, version_number),
+    FOREIGN KEY (notebook_id, artifact_id)
+        REFERENCES notebook_artifacts(notebook_id, artifact_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_notebook_artifact_versions_notebook
+    ON notebook_artifact_versions(notebook_id, artifact_id, version_number DESC);
+
+CREATE TABLE IF NOT EXISTS notebook_artifact_renditions (
+    rendition_id    TEXT PRIMARY KEY,
+    artifact_id     TEXT NOT NULL,
+    notebook_id     TEXT NOT NULL,
+    version_number  INTEGER NOT NULL,
+    format          TEXT NOT NULL,
+    media_type      TEXT NOT NULL,
+    filename        TEXT NOT NULL,
+    byte_size       BIGINT NOT NULL CHECK (byte_size >= 0 AND byte_size <= 104857600),
+    checksum        TEXT NOT NULL CHECK (checksum ~ '^[a-f0-9]{64}$'),
+    renderer        TEXT NOT NULL,
+    renderer_version TEXT NOT NULL,
+    renderer_config JSONB NOT NULL DEFAULT '{}'::jsonb,
+    status          TEXT NOT NULL CHECK (
+        status IN ('pending', 'rendering', 'ready', 'failed', 'cancelled')
+    ),
+    error           TEXT NOT NULL DEFAULT '',
+    metadata        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    content         BYTEA,
+    created_by      TEXT NOT NULL REFERENCES users(user_id),
+    created_at      TIMESTAMPTZ NOT NULL,
+    updated_at      TIMESTAMPTZ NOT NULL,
+    FOREIGN KEY (artifact_id, version_number)
+        REFERENCES notebook_artifact_versions(artifact_id, version_number) ON DELETE CASCADE,
+    CHECK (
+        (status = 'ready' AND content IS NOT NULL AND octet_length(content) = byte_size)
+        OR (status <> 'ready' AND content IS NULL)
+    )
+);
+CREATE INDEX IF NOT EXISTS idx_notebook_artifact_renditions_version
+    ON notebook_artifact_renditions(
+        notebook_id, artifact_id, version_number, created_at DESC, rendition_id DESC
+    );
 
 -- Workspace <-> Session links
 CREATE TABLE IF NOT EXISTS workspace_session_links (
@@ -600,6 +776,242 @@ CREATE INDEX IF NOT EXISTS idx_ctx_repo_sync_logs_created ON ctx_repo_sync_logs(
 
 """
 
+_NOTEBOOK_V2_SCHEMA_STATEMENTS = (
+    "ALTER TABLE notebooks ADD COLUMN IF NOT EXISTS tagline TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE notebooks ADD COLUMN IF NOT EXISTS cover_media_type TEXT",
+    "ALTER TABLE notebooks ADD COLUMN IF NOT EXISTS cover_content BYTEA",
+    "ALTER TABLE notebooks ADD COLUMN IF NOT EXISTS cover_size_bytes INTEGER",
+    "ALTER TABLE notebooks ADD COLUMN IF NOT EXISTS cover_hash TEXT",
+    "ALTER TABLE notebooks ADD COLUMN IF NOT EXISTS cover_style JSONB NOT NULL DEFAULT '{}'::jsonb",
+    "ALTER TABLE notebooks ADD COLUMN IF NOT EXISTS runtime_settings JSONB NOT NULL DEFAULT '{}'::jsonb",
+    "ALTER TABLE notebook_sources ADD COLUMN IF NOT EXISTS content_snapshot TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE notebook_sources ADD COLUMN IF NOT EXISTS media_type TEXT NOT NULL DEFAULT 'text/plain'",
+    "ALTER TABLE notebook_sources ADD COLUMN IF NOT EXISTS size_bytes BIGINT NOT NULL DEFAULT 0",
+    "ALTER TABLE notebook_sources ADD COLUMN IF NOT EXISTS content_hash TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE notebook_sources ADD COLUMN IF NOT EXISTS content_version INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE notebook_sources ADD COLUMN IF NOT EXISTS provenance JSONB NOT NULL DEFAULT '{}'::jsonb",
+    "ALTER TABLE notebook_events ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ",
+    "ALTER TABLE notebook_events ADD COLUMN IF NOT EXISTS deleted_by TEXT REFERENCES users(user_id)",
+    "ALTER TABLE notebook_events ADD COLUMN IF NOT EXISTS deletion_reason TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE notebook_events ADD COLUMN IF NOT EXISTS original_content_hash TEXT NOT NULL DEFAULT ''",
+    """CREATE UNIQUE INDEX IF NOT EXISTS idx_notebook_sources_scoped
+       ON notebook_sources(notebook_id, source_id)""",
+    """CREATE TABLE IF NOT EXISTS conversation_compactions (
+        compaction_id TEXT PRIMARY KEY,
+        notebook_id TEXT NOT NULL REFERENCES notebooks(notebook_id) ON DELETE CASCADE,
+        conversation_id TEXT NOT NULL,
+        version_number INTEGER NOT NULL,
+        summary_content TEXT NOT NULL,
+        cutoff_event_id TEXT NOT NULL,
+        cutoff_event_at TIMESTAMPTZ NOT NULL,
+        originating_user_id TEXT NOT NULL REFERENCES users(user_id),
+        athena_run_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+        event_count INTEGER NOT NULL,
+        checksum TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL,
+        UNIQUE (notebook_id, conversation_id, version_number),
+        UNIQUE (notebook_id, compaction_id),
+        FOREIGN KEY (notebook_id, conversation_id)
+            REFERENCES notebook_conversations(notebook_id, conversation_id) ON DELETE CASCADE,
+        FOREIGN KEY (notebook_id, cutoff_event_id)
+            REFERENCES notebook_events(notebook_id, event_id)
+    )""",
+    """CREATE INDEX IF NOT EXISTS idx_conversation_compactions_latest
+       ON conversation_compactions(notebook_id, conversation_id, version_number DESC)""",
+    """CREATE TABLE IF NOT EXISTS engram_extraction_runs (
+        extraction_run_id TEXT PRIMARY KEY,
+        notebook_id TEXT NOT NULL REFERENCES notebooks(notebook_id) ON DELETE CASCADE,
+        conversation_id TEXT,
+        extractor_version TEXT NOT NULL DEFAULT '',
+        model TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'running'
+            CHECK (status IN ('running', 'completed', 'failed')),
+        source_fingerprint TEXT NOT NULL DEFAULT '',
+        metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_by TEXT NOT NULL REFERENCES users(user_id),
+        started_at TIMESTAMPTZ NOT NULL,
+        completed_at TIMESTAMPTZ,
+        UNIQUE (notebook_id, extraction_run_id),
+        FOREIGN KEY (notebook_id, conversation_id)
+            REFERENCES notebook_conversations(notebook_id, conversation_id) ON DELETE CASCADE
+    )""",
+    """CREATE INDEX IF NOT EXISTS idx_engram_extraction_runs_notebook
+       ON engram_extraction_runs(notebook_id, started_at DESC)""",
+    """CREATE TABLE IF NOT EXISTS engram_items (
+        item_id TEXT PRIMARY KEY,
+        notebook_id TEXT NOT NULL REFERENCES notebooks(notebook_id) ON DELETE CASCADE,
+        item_type TEXT NOT NULL CHECK (
+            item_type IN ('decision', 'turning_point', 'fact', 'assumption',
+                          'rejected_approach', 'open_question', 'working_state')
+        ),
+        status TEXT NOT NULL DEFAULT 'candidate' CHECK (
+            status IN ('candidate', 'accepted', 'rejected', 'resolved',
+                       'superseded', 'retracted')
+        ),
+        current_version INTEGER NOT NULL DEFAULT 1,
+        lock_version INTEGER NOT NULL DEFAULT 1,
+        supersedes_item_id TEXT,
+        created_by TEXT NOT NULL REFERENCES users(user_id),
+        created_at TIMESTAMPTZ NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL,
+        resolved_at TIMESTAMPTZ,
+        UNIQUE (notebook_id, item_id),
+        FOREIGN KEY (notebook_id, supersedes_item_id)
+            REFERENCES engram_items(notebook_id, item_id)
+    )""",
+    """CREATE INDEX IF NOT EXISTS idx_engram_items_current
+       ON engram_items(notebook_id, status, updated_at DESC)""",
+    """CREATE TABLE IF NOT EXISTS engram_item_versions (
+        item_id TEXT NOT NULL,
+        notebook_id TEXT NOT NULL,
+        version_number INTEGER NOT NULL,
+        title TEXT NOT NULL DEFAULT '',
+        content TEXT NOT NULL,
+        metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_by TEXT NOT NULL REFERENCES users(user_id),
+        created_at TIMESTAMPTZ NOT NULL,
+        PRIMARY KEY (item_id, version_number),
+        UNIQUE (notebook_id, item_id, version_number),
+        FOREIGN KEY (notebook_id, item_id)
+            REFERENCES engram_items(notebook_id, item_id) ON DELETE CASCADE
+    )""",
+    """CREATE TABLE IF NOT EXISTS engram_provenance (
+        provenance_id TEXT PRIMARY KEY,
+        notebook_id TEXT NOT NULL REFERENCES notebooks(notebook_id) ON DELETE CASCADE,
+        item_id TEXT NOT NULL,
+        item_version INTEGER NOT NULL,
+        conversation_id TEXT,
+        originating_operator_event_id TEXT,
+        athena_event_id TEXT,
+        author_user_id TEXT REFERENCES users(user_id),
+        source_id TEXT,
+        citation_locator TEXT NOT NULL DEFAULT '',
+        citation_hash TEXT NOT NULL DEFAULT '',
+        confidence DOUBLE PRECISION,
+        extraction_run_id TEXT,
+        created_at TIMESTAMPTZ NOT NULL,
+        UNIQUE (notebook_id, provenance_id),
+        FOREIGN KEY (notebook_id, item_id, item_version)
+            REFERENCES engram_item_versions(notebook_id, item_id, version_number) ON DELETE CASCADE,
+        FOREIGN KEY (notebook_id, conversation_id)
+            REFERENCES notebook_conversations(notebook_id, conversation_id) ON DELETE CASCADE,
+        FOREIGN KEY (notebook_id, originating_operator_event_id)
+            REFERENCES notebook_events(notebook_id, event_id),
+        FOREIGN KEY (notebook_id, athena_event_id)
+            REFERENCES notebook_events(notebook_id, event_id),
+        FOREIGN KEY (notebook_id, source_id)
+            REFERENCES notebook_sources(notebook_id, source_id),
+        FOREIGN KEY (notebook_id, extraction_run_id)
+            REFERENCES engram_extraction_runs(notebook_id, extraction_run_id)
+    )""",
+    """CREATE INDEX IF NOT EXISTS idx_engram_provenance_item
+       ON engram_provenance(notebook_id, item_id, item_version)""",
+    """CREATE TABLE IF NOT EXISTS engram_snapshots (
+        snapshot_id TEXT PRIMARY KEY,
+        notebook_id TEXT NOT NULL REFERENCES notebooks(notebook_id) ON DELETE CASCADE,
+        version_number INTEGER NOT NULL,
+        parent_snapshot_id TEXT,
+        checksum TEXT NOT NULL,
+        accepted_manifest JSONB NOT NULL,
+        created_by TEXT NOT NULL REFERENCES users(user_id),
+        created_at TIMESTAMPTZ NOT NULL,
+        UNIQUE (notebook_id, version_number),
+        UNIQUE (notebook_id, snapshot_id),
+        FOREIGN KEY (notebook_id, parent_snapshot_id)
+            REFERENCES engram_snapshots(notebook_id, snapshot_id)
+    )""",
+    """CREATE INDEX IF NOT EXISTS idx_engram_snapshots_notebook
+       ON engram_snapshots(notebook_id, version_number DESC)""",
+    """CREATE TABLE IF NOT EXISTS notebook_engrams (
+        notebook_id TEXT PRIMARY KEY REFERENCES notebooks(notebook_id) ON DELETE CASCADE,
+        current_snapshot_id TEXT,
+        revision BIGINT NOT NULL DEFAULT 0,
+        updated_at TIMESTAMPTZ NOT NULL,
+        FOREIGN KEY (notebook_id, current_snapshot_id)
+            REFERENCES engram_snapshots(notebook_id, snapshot_id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS engram_events (
+        engram_event_id TEXT PRIMARY KEY,
+        notebook_id TEXT NOT NULL REFERENCES notebooks(notebook_id) ON DELETE CASCADE,
+        item_id TEXT,
+        event_type TEXT NOT NULL CHECK (
+            event_type IN ('extracted', 'accepted', 'rejected', 'revised',
+                           'superseded', 'resolved', 'reconciled', 'compacted')
+        ),
+        from_status TEXT,
+        to_status TEXT,
+        item_version INTEGER,
+        snapshot_id TEXT,
+        conversation_id TEXT,
+        compaction_id TEXT,
+        actor_user_id TEXT NOT NULL REFERENCES users(user_id),
+        details JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL,
+        FOREIGN KEY (notebook_id, item_id)
+            REFERENCES engram_items(notebook_id, item_id) ON DELETE CASCADE,
+        FOREIGN KEY (notebook_id, snapshot_id)
+            REFERENCES engram_snapshots(notebook_id, snapshot_id),
+        FOREIGN KEY (notebook_id, conversation_id)
+            REFERENCES notebook_conversations(notebook_id, conversation_id) ON DELETE CASCADE,
+        FOREIGN KEY (notebook_id, compaction_id)
+            REFERENCES conversation_compactions(notebook_id, compaction_id)
+    )""",
+    """CREATE INDEX IF NOT EXISTS idx_engram_events_timeline
+       ON engram_events(notebook_id, created_at DESC, engram_event_id DESC)""",
+)
+
+_NOTEBOOK_V2_IMMUTABILITY_STATEMENTS = (
+    "DROP RULE IF EXISTS engram_item_versions_no_update ON engram_item_versions",
+    "DROP RULE IF EXISTS engram_item_versions_no_delete ON engram_item_versions",
+    "DROP RULE IF EXISTS engram_snapshots_no_update ON engram_snapshots",
+    "DROP RULE IF EXISTS engram_snapshots_no_delete ON engram_snapshots",
+    """CREATE OR REPLACE FUNCTION reject_engram_immutable_update()
+       RETURNS trigger LANGUAGE plpgsql AS $$
+       BEGIN
+         RAISE EXCEPTION '% is immutable', TG_TABLE_NAME;
+         RETURN OLD;
+       END
+       $$""",
+    """CREATE OR REPLACE FUNCTION protect_engram_item_version_delete()
+       RETURNS trigger LANGUAGE plpgsql AS $$
+       BEGIN
+         IF EXISTS (SELECT 1 FROM engram_items WHERE item_id = OLD.item_id) THEN
+           RAISE EXCEPTION 'engram_item_versions is immutable';
+         END IF;
+         RETURN OLD;
+       END
+       $$""",
+    """CREATE OR REPLACE FUNCTION protect_engram_snapshot_delete()
+       RETURNS trigger LANGUAGE plpgsql AS $$
+       BEGIN
+         IF EXISTS (SELECT 1 FROM notebooks WHERE notebook_id = OLD.notebook_id) THEN
+           RAISE EXCEPTION 'engram_snapshots is immutable';
+         END IF;
+         RETURN OLD;
+       END
+       $$""",
+    """DROP TRIGGER IF EXISTS protect_engram_item_versions_update
+       ON engram_item_versions""",
+    """CREATE TRIGGER protect_engram_item_versions_update
+       BEFORE UPDATE ON engram_item_versions
+       FOR EACH ROW EXECUTE FUNCTION reject_engram_immutable_update()""",
+    """DROP TRIGGER IF EXISTS protect_engram_item_versions_delete
+       ON engram_item_versions""",
+    """CREATE TRIGGER protect_engram_item_versions_delete
+       BEFORE DELETE ON engram_item_versions
+       FOR EACH ROW EXECUTE FUNCTION protect_engram_item_version_delete()""",
+    """DROP TRIGGER IF EXISTS protect_engram_snapshots_update
+       ON engram_snapshots""",
+    """CREATE TRIGGER protect_engram_snapshots_update
+       BEFORE UPDATE ON engram_snapshots
+       FOR EACH ROW EXECUTE FUNCTION reject_engram_immutable_update()""",
+    """DROP TRIGGER IF EXISTS protect_engram_snapshots_delete
+       ON engram_snapshots""",
+    """CREATE TRIGGER protect_engram_snapshots_delete
+       BEFORE DELETE ON engram_snapshots
+       FOR EACH ROW EXECUTE FUNCTION protect_engram_snapshot_delete()""",
+)
+
 _SCHEMA_MIGRATIONS = (
     (
         1,
@@ -723,6 +1135,72 @@ _SCHEMA_MIGRATIONS = (
         ),
     ),
     (
+        8,
+        "add collaborative notebook domain",
+        (
+            "CREATE INDEX IF NOT EXISTS idx_notebooks_owner ON notebooks(owner_user_id, updated_at DESC)",
+            """CREATE INDEX IF NOT EXISTS idx_notebook_memberships_user
+               ON notebook_memberships(user_id, active, notebook_id)""",
+            """CREATE INDEX IF NOT EXISTS idx_notebook_artifact_versions_notebook
+               ON notebook_artifact_versions(notebook_id, artifact_id, version_number DESC)""",
+        ),
+    ),
+    (
+        9,
+        "add notebook collaboration and engram v2",
+        _NOTEBOOK_V2_SCHEMA_STATEMENTS,
+    ),
+    (
+        10,
+        "protect immutable engram history without blocking notebook deletion",
+        _NOTEBOOK_V2_IMMUTABILITY_STATEMENTS,
+    ),
+    (
+        11,
+        "add notebook artifact renditions",
+        (
+            """CREATE UNIQUE INDEX IF NOT EXISTS uq_notebook_artifact_versions_scope
+               ON notebook_artifact_versions(notebook_id, artifact_id, version_number)""",
+            """CREATE TABLE IF NOT EXISTS notebook_artifact_renditions (
+                rendition_id TEXT PRIMARY KEY,
+                artifact_id TEXT NOT NULL,
+                notebook_id TEXT NOT NULL,
+                version_number INTEGER NOT NULL,
+                format TEXT NOT NULL,
+                media_type TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                byte_size BIGINT NOT NULL CHECK (byte_size >= 0 AND byte_size <= 104857600),
+                checksum TEXT NOT NULL CHECK (checksum ~ '^[a-f0-9]{64}$'),
+                renderer TEXT NOT NULL,
+                renderer_version TEXT NOT NULL,
+                renderer_config JSONB NOT NULL DEFAULT '{}'::jsonb,
+                status TEXT NOT NULL CHECK (
+                    status IN ('pending', 'rendering', 'ready', 'failed', 'cancelled')
+                ),
+                error TEXT NOT NULL DEFAULT '',
+                metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                content BYTEA,
+                created_by TEXT NOT NULL REFERENCES users(user_id),
+                created_at TIMESTAMPTZ NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL,
+                FOREIGN KEY (artifact_id, version_number)
+                    REFERENCES notebook_artifact_versions(
+                        artifact_id, version_number
+                    ) ON DELETE CASCADE,
+                CHECK (
+                    (status = 'ready' AND content IS NOT NULL
+                     AND octet_length(content) = byte_size)
+                    OR (status <> 'ready' AND content IS NULL)
+                )
+            )""",
+            """CREATE INDEX IF NOT EXISTS idx_notebook_artifact_renditions_version
+               ON notebook_artifact_renditions(
+                   notebook_id, artifact_id, version_number,
+                   created_at DESC, rendition_id DESC
+               )""",
+        ),
+    ),
+    (
         2,
         "move colosseum execution metadata into its own table",
         (
@@ -754,6 +1232,8 @@ def _execute_schema_sql(cur: psycopg2.extensions.cursor) -> None:
     """Create any missing current-schema tables and indexes."""
     statements = [statement.strip() for statement in _SCHEMA_SQL.split(";") if statement.strip()]
     for statement in statements:
+        cur.execute(statement)
+    for statement in _NOTEBOOK_V2_SCHEMA_STATEMENTS:
         cur.execute(statement)
 
 

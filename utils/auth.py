@@ -11,6 +11,7 @@ ALLOWED_SAVANT_APPS = {
     "savant-dashboard",
     "savant-client",
     "savant-mcp",
+    "savant-notebook",
 }
 
 
@@ -70,4 +71,3 @@ def check_domain_write_access(user_id: str, node_id: str | None = None, is_domai
             return True, None
 
     return False, f"Access denied. User '{user_id}' has read-only access for domain hierarchy {list(connected_domains)}."
-

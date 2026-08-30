@@ -6,6 +6,7 @@ project management, and indexing.
 
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
@@ -400,6 +401,59 @@ def memory_read():
     if not doc:
         return jsonify({"error": f"Resource not found: {uri}"}), 404
     return jsonify(doc)
+
+
+@context_bp.route("/api/context/memory/write", methods=["POST"])
+def memory_write():
+    """Upsert a memory-bank document (e.g. a generated project code wiki) for a repo."""
+    if not _ensure_init():
+        return jsonify({"error": "Context not initialized"}), 503
+
+    body = request.get_json(silent=True) or {}
+    repo_name = str(body.get("repo") or "").strip()
+    rel_path = str(body.get("path") or "").strip().lstrip("/")
+    content = body.get("content")
+
+    if not repo_name:
+        return jsonify({"error": "repo required"}), 400
+    if not rel_path:
+        return jsonify({"error": "path required"}), 400
+    if not isinstance(content, str) or not content.strip():
+        return jsonify({"error": "content required"}), 400
+    if ".." in rel_path.split("/"):
+        return jsonify({"error": "path must stay inside the repository"}), 400
+    if len(content) > 2_000_000:
+        return jsonify({"error": "content exceeds 2,000,000 characters"}), 400
+
+    from .db import ContextDB
+    repo = ContextDB.get_repo(repo_name)
+    if not repo:
+        return jsonify({"error": f"Repository not found: {repo_name}"}), 404
+
+    try:
+        from .chunker import ContentChunker
+        from .embeddings import EmbeddingModel
+        embedder = EmbeddingModel.get()
+        indexed_at = datetime.now(timezone.utc).isoformat()
+        file_id = ContextDB.insert_file(
+            repo["id"], rel_path, str(body.get("language") or "markdown"),
+            True, int(time.time_ns()), indexed_at,
+        )
+        ContextDB.clear_file_generated_data(file_id)
+        chunk_count = 0
+        for chunk_index, chunk_text in ContentChunker().chunk_with_metadata(content):
+            ContextDB.insert_chunk(file_id, chunk_index, chunk_text, embedder.embed_one(chunk_text))
+            chunk_count += 1
+        return jsonify({
+            "repo": repo["name"],
+            "path": rel_path,
+            "uri": f"{repo['name']}:{rel_path}",
+            "chunk_count": chunk_count,
+            "indexed_at": indexed_at,
+        })
+    except Exception as e:
+        logger.error(f"Memory write failed for {repo_name}:{rel_path}: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 # ---------------------------------------------------------------------------

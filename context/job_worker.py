@@ -35,11 +35,20 @@ def _worker_loop():
     # Delay initial start to let Flask finish booting
     time.sleep(3)
 
+    consecutive_errors = 0
     while True:
         try:
             _process_next_job()
+            consecutive_errors = 0
         except Exception as e:
-            logger.error(f"Job worker error: {e}")
+            consecutive_errors += 1
+            # Exponential backoff (2s → 4s → 8s … capped at 30s) to avoid
+            # flooding logs during DB recovery or transient connection failures.
+            backoff = min(2 ** consecutive_errors, 30)
+            if consecutive_errors == 1 or consecutive_errors % 5 == 0:
+                logger.error(f"Job worker error (attempt {consecutive_errors}): {e}")
+            time.sleep(backoff)
+            continue
         time.sleep(2)
 
 

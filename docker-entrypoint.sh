@@ -72,8 +72,9 @@ CHILD_PIDS="$CHILD_PIDS $KG_MAINTENANCE_PID"
 
 gunicorn \
   --bind "${FLASK_HOST:-0.0.0.0}:${FLASK_PORT:-8090}" \
-  --workers "${GUNICORN_WORKERS:-2}" \
-  --threads "${GUNICORN_THREADS:-4}" \
+  --workers "${GUNICORN_WORKERS:-1}" \
+  --threads "${GUNICORN_THREADS:-8}" \
+  --preload \
   --timeout 60 \
   app:app &
 GUNICORN_PID="$!"

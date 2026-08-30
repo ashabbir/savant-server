@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Schema version — bump when tables change
 # ---------------------------------------------------------------------------
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 # ---------------------------------------------------------------------------
 # SQL: Table creation
@@ -51,6 +51,158 @@ CREATE TABLE IF NOT EXISTS workspaces (
 );
 CREATE INDEX IF NOT EXISTS idx_ws_status ON workspaces(status);
 CREATE INDEX IF NOT EXISTS idx_ws_created ON workspaces(created_at);
+
+-- Collaborative notebooks
+CREATE TABLE IF NOT EXISTS notebooks (
+    notebook_id     TEXT PRIMARY KEY,
+    owner_user_id   TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    title           TEXT NOT NULL,
+    description     TEXT NOT NULL DEFAULT '',
+    objective       TEXT NOT NULL DEFAULT '',
+    visibility      TEXT NOT NULL DEFAULT 'private'
+                    CHECK (visibility IN ('private', 'shared')),
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_notebooks_owner ON notebooks(owner_user_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS notebook_memberships (
+    notebook_id     TEXT NOT NULL REFERENCES notebooks(notebook_id) ON DELETE CASCADE,
+    user_id         TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    role            TEXT NOT NULL CHECK (role IN ('owner', 'editor', 'viewer')),
+    granted_by      TEXT REFERENCES users(user_id) ON DELETE SET NULL,
+    active          INTEGER NOT NULL DEFAULT 1,
+    active_at       TEXT NOT NULL,
+    revoked_at      TEXT,
+    updated_at      TEXT NOT NULL,
+    PRIMARY KEY (notebook_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_notebook_memberships_user
+    ON notebook_memberships(user_id, active, notebook_id);
+
+CREATE TABLE IF NOT EXISTS notebook_sources (
+    source_id       TEXT PRIMARY KEY,
+    notebook_id     TEXT NOT NULL REFERENCES notebooks(notebook_id) ON DELETE CASCADE,
+    source_type     TEXT NOT NULL
+                    CHECK (source_type IN ('file', 'directory', 'url', 'savant_context_repo')),
+    name            TEXT NOT NULL DEFAULT '',
+    reference       TEXT NOT NULL DEFAULT '',
+    extracted_text  TEXT NOT NULL DEFAULT '',
+    status          TEXT NOT NULL DEFAULT 'pending',
+    metadata        TEXT NOT NULL DEFAULT '{}',
+    created_by      TEXT NOT NULL REFERENCES users(user_id),
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_notebook_sources_notebook
+    ON notebook_sources(notebook_id, created_at);
+
+CREATE TABLE IF NOT EXISTS notebook_conversations (
+    conversation_id TEXT PRIMARY KEY,
+    notebook_id     TEXT NOT NULL REFERENCES notebooks(notebook_id) ON DELETE CASCADE,
+    title           TEXT NOT NULL DEFAULT '',
+    created_by      TEXT NOT NULL REFERENCES users(user_id),
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    UNIQUE (notebook_id, conversation_id)
+);
+CREATE INDEX IF NOT EXISTS idx_notebook_conversations_notebook
+    ON notebook_conversations(notebook_id, created_at);
+
+CREATE TABLE IF NOT EXISTS notebook_events (
+    event_id        TEXT PRIMARY KEY,
+    notebook_id     TEXT NOT NULL REFERENCES notebooks(notebook_id) ON DELETE CASCADE,
+    conversation_id TEXT NOT NULL,
+    event_type      TEXT NOT NULL DEFAULT 'message',
+    message_role    TEXT NOT NULL DEFAULT 'user',
+    content         TEXT NOT NULL,
+    metadata        TEXT NOT NULL DEFAULT '{}',
+    author_user_id  TEXT NOT NULL REFERENCES users(user_id),
+    created_at      TEXT NOT NULL,
+    UNIQUE (notebook_id, event_id),
+    FOREIGN KEY (notebook_id, conversation_id)
+        REFERENCES notebook_conversations(notebook_id, conversation_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_notebook_events_conversation
+    ON notebook_events(notebook_id, conversation_id, created_at);
+
+CREATE TABLE IF NOT EXISTS notebook_memories (
+    memory_id       TEXT PRIMARY KEY,
+    notebook_id     TEXT NOT NULL REFERENCES notebooks(notebook_id) ON DELETE CASCADE,
+    memory_type     TEXT NOT NULL CHECK (
+        memory_type IN ('decision', 'turning_point', 'assumption',
+                        'rejected_approach', 'open_question', 'working_state')
+    ),
+    title           TEXT NOT NULL DEFAULT '',
+    content         TEXT NOT NULL,
+    metadata        TEXT NOT NULL DEFAULT '{}',
+    conversation_id TEXT REFERENCES notebook_conversations(conversation_id) ON DELETE SET NULL,
+    event_id        TEXT REFERENCES notebook_events(event_id) ON DELETE SET NULL,
+    author_user_id  TEXT NOT NULL REFERENCES users(user_id),
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_notebook_memories_notebook
+    ON notebook_memories(notebook_id, created_at);
+
+CREATE TABLE IF NOT EXISTS notebook_artifacts (
+    artifact_id     TEXT PRIMARY KEY,
+    notebook_id     TEXT NOT NULL REFERENCES notebooks(notebook_id) ON DELETE CASCADE,
+    name            TEXT NOT NULL,
+    description     TEXT NOT NULL DEFAULT '',
+    format          TEXT NOT NULL DEFAULT 'text',
+    metadata        TEXT NOT NULL DEFAULT '{}',
+    created_by      TEXT NOT NULL REFERENCES users(user_id),
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    UNIQUE (notebook_id, artifact_id)
+);
+CREATE INDEX IF NOT EXISTS idx_notebook_artifacts_notebook
+    ON notebook_artifacts(notebook_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS notebook_artifact_versions (
+    artifact_id     TEXT NOT NULL,
+    notebook_id     TEXT NOT NULL,
+    version_number  INTEGER NOT NULL,
+    content         TEXT NOT NULL,
+    format          TEXT NOT NULL DEFAULT 'text',
+    metadata        TEXT NOT NULL DEFAULT '{}',
+    created_by      TEXT NOT NULL REFERENCES users(user_id),
+    created_at      TEXT NOT NULL,
+    PRIMARY KEY (artifact_id, version_number),
+    FOREIGN KEY (notebook_id, artifact_id)
+        REFERENCES notebook_artifacts(notebook_id, artifact_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_notebook_artifact_versions_notebook
+    ON notebook_artifact_versions(notebook_id, artifact_id, version_number DESC);
+
+CREATE TABLE IF NOT EXISTS notebook_artifact_renditions (
+    rendition_id    TEXT PRIMARY KEY,
+    artifact_id     TEXT NOT NULL,
+    notebook_id     TEXT NOT NULL,
+    version_number  INTEGER NOT NULL,
+    format          TEXT NOT NULL,
+    media_type      TEXT NOT NULL,
+    filename        TEXT NOT NULL,
+    byte_size       INTEGER NOT NULL CHECK (byte_size >= 0 AND byte_size <= 104857600),
+    checksum        TEXT NOT NULL,
+    renderer        TEXT NOT NULL,
+    renderer_version TEXT NOT NULL,
+    renderer_config TEXT NOT NULL DEFAULT '{}',
+    status          TEXT NOT NULL,
+    error           TEXT NOT NULL DEFAULT '',
+    metadata        TEXT NOT NULL DEFAULT '{}',
+    content         BLOB,
+    created_by      TEXT NOT NULL REFERENCES users(user_id),
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    FOREIGN KEY (artifact_id, version_number)
+        REFERENCES notebook_artifact_versions(artifact_id, version_number) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_notebook_artifact_renditions_version
+    ON notebook_artifact_renditions(
+        notebook_id, artifact_id, version_number, created_at DESC
+    );
 
 -- Workspace ↔ Session links (server-owned mapping)
 CREATE TABLE IF NOT EXISTS workspace_session_links (
@@ -741,6 +893,11 @@ class SQLiteClient:
             conn.commit()
             self._stamp_version(conn, 13)
             logger.info("Migration v13: is_active column added to users")
+
+        if current < 14:
+            # v14 tables are created idempotently by _SCHEMA_SQL.
+            self._stamp_version(conn, 14)
+            logger.info("Migration v14: collaborative notebook domain added")
 
     def get_connection(self) -> sqlite3.Connection:
         """Return this thread's private connection, creating one if needed."""

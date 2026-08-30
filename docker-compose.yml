@@ -67,6 +67,7 @@ services:
       - ${SAVANT_DATA_DIR:-~/.savant/server-data}:/data/savant
       - ${SAVANT_COLOSSEUM_HOME:-~/.savant/colosseum}:/data/colosseum:ro
       - ${BASE_CODE_HOST_DIR:-/Users/home/base-code}:/base-code:rw
+      - ${LOCAL_CODE_DIR:-~/Developer/icapital}:/base-code/local:ro
     healthcheck:
       test: ["CMD-SHELL", "node /app/codegraph_bridge/src/healthcheck.js && python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health/ready', timeout=3)\""]
       interval: 15s
