@@ -4,6 +4,7 @@ import os
 import sys
 import json
 import time
+import requests
 from flask import Blueprint, g, jsonify, request
 from db.jobs import JobDB
 from db.notifications import NotificationDB
@@ -13,6 +14,14 @@ from postgres_client import get_connection, release_connection
 from abilities.bootstrap import abilities_bootstrap_status
 
 jobs_system_bp = Blueprint("jobs_system", __name__)
+
+
+def _port_from_environment(name, default):
+    """Read an optional port override without allowing malformed diagnostics."""
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
 
 
 def _list_mcp_tools(server_name=None):
@@ -70,6 +79,40 @@ def _list_mcp_tools(server_name=None):
     if server_name:
         return [r for r in rows if r["name"] == server_name]
     return rows
+
+
+def _probe_mcp_server(server):
+    """Return a copy of an MCP server descriptor with its live health state."""
+    result = dict(server)
+    try:
+        response = requests.get(server["url"], timeout=1, stream=True)
+        try:
+            if 200 <= response.status_code < 400:
+                result.update(status="ok", diagnostic="reachable")
+            else:
+                result.update(status="unavailable", diagnostic=f"HTTP {response.status_code}")
+        finally:
+            response.close()
+    except requests.RequestException:
+        result.update(status="unavailable", diagnostic="connection failed")
+    except OSError:
+        # Some test and deployment adapters raise OSError directly.
+        result.update(status="unavailable", diagnostic="connection failed")
+    return result
+
+
+def _postgres_readiness():
+    """Check the database without exposing connection strings or credentials."""
+    try:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+            return {"status": "ok"}
+        finally:
+            release_connection(conn)
+    except Exception:
+        return {"status": "unavailable", "diagnostic": "connection check failed"}
 
 
 @jobs_system_bp.route("/api/jobs/submit", methods=["POST"])
@@ -182,6 +225,10 @@ def api_system_info():
     }
     return jsonify({
         "status": "ok",
+        "flask": {
+            "host": os.environ.get("FLASK_HOST", "127.0.0.1"),
+            "port": _port_from_environment("FLASK_PORT", 8090),
+        },
         "mcp_servers": mcp_servers_dict,
         "abilities": abilities,
         "asset_count": abilities.get("asset_count", 0),
@@ -194,13 +241,15 @@ def api_mcp_health_single(name):
     tools = _list_mcp_tools(name)
     if not tools:
         return jsonify({"name": name, "status": "unknown"}), 404
-    return jsonify({"name": name, "status": "ok", "url": tools[0]["url"]})
+    server = _probe_mcp_server(tools[0])
+    return jsonify(server), 200 if server["status"] == "ok" else 503
 
 
 @jobs_system_bp.route("/api/mcp/health", methods=["GET"])
 def api_mcp_health_all():
-    tools = _list_mcp_tools()
-    return jsonify({"status": "ok", "servers": tools})
+    servers = [_probe_mcp_server(server) for server in _list_mcp_tools()]
+    healthy = all(server["status"] == "ok" for server in servers)
+    return jsonify({"status": "ok" if healthy else "degraded", "servers": servers}), 200 if healthy else 503
 
 
 @jobs_system_bp.route("/api/mcp", methods=["GET"])
@@ -265,7 +314,13 @@ def health_live():
 def health_ready():
     from server_version import get_build_info
 
-    return jsonify({"status": "ready", **get_build_info()})
+    postgres = _postgres_readiness()
+    ready = postgres["status"] == "ok"
+    return jsonify({
+        "status": "ready" if ready else "not_ready",
+        "dependencies": {"postgres": postgres},
+        **get_build_info(),
+    }), 200 if ready else 503
 
 
 @jobs_system_bp.route("/api/events", methods=["GET"])

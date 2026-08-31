@@ -2,6 +2,10 @@
 
 ## Verification commands
 
+- Set `SAVANT_TEST_DATABASE_URL` to a dedicated PostgreSQL database whose name
+  contains `test`, then set `SAVANT_DATABASE_URL` to the same URL for test
+  runs. The pytest fixture fails closed before `TRUNCATE` if this is absent or
+  unsafe.
 - `./run-tests.sh`
 - `.venv/bin/python -m pytest tests/<path>::<test_name> -v`
 - `.venv/bin/python -m pytest --cov=. --cov-report=term`

@@ -27,7 +27,15 @@ docker compose up -d --build
 
 ## Test
 
+Tests require an explicitly configured, isolated PostgreSQL database. The
+database name must contain `test`; the fixture refuses to run destructive
+setup otherwise. Do not point either variable at a development or production
+database.
+
 ```bash
+export SAVANT_TEST_DATABASE_URL='postgresql://savant_test_user:password@127.0.0.1:55432/savant_test'
+export SAVANT_DATABASE_URL="$SAVANT_TEST_DATABASE_URL"
+
 # All server tests
 ./run-tests.sh
 
@@ -67,7 +75,8 @@ Flask app (`app.py`) with feature modules as Blueprints:
 
 ### Data Layer
 
-- SQLite with WAL mode (`sqlite_client.py`)
+- PostgreSQL (with pgvector) via `postgres_client.py`; `SAVANT_DATABASE_URL`
+  is required for production deployment.
 - DB access: static-method classes in `db/` (`WorkspaceDB`, `TaskDB`, `NoteDB`, `MergeRequestDB`, `JiraTicketDB`, `NotificationDB`, `UserDB`)
 - Pydantic v2 models in `models.py` (use `ConfigDict`, not class-based `Config`)
 - Timestamps: ISO 8601 UTC strings
@@ -130,7 +139,11 @@ Seed data is embedded in `abilities/bootstrap.py`. On first startup, abilities a
 ### Health Probes
 
 - `GET /health/live` — process alive
-- `GET /health/ready` — DB initialized, abilities bootstrapped
+- `GET /health/ready` — PostgreSQL dependency is reachable; returns `503` with
+  a non-secret dependency diagnostic when it is not. It is intentionally
+  distinct from liveness.
+- `GET /api/mcp/health` — probes the MCP SSE servers on ports 8091-8095 and
+  returns `503` when any configured server is unreachable.
 
 ### Knowledge Graph Maintenance
 

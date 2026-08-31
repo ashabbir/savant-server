@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import pytest
+from test_database import require_test_database_url
 
 # Add savant/ to path so imports work
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -23,6 +24,10 @@ def _isolated_db(tmp_path, monkeypatch, request):
     if request.node.get_closest_marker("no_db"):
         yield None
         return
+    test_database_url = require_test_database_url()
+    import postgres_client
+    postgres_client.close_pool()
+    monkeypatch.setattr(postgres_client, "DATABASE_URL", test_database_url)
     db_path = str(tmp_path / "test_savant.db")
     monkeypatch.setenv("SAVANT_DB", db_path)
     monkeypatch.setattr("routes.preferences._PREFERENCES_FILE", str(tmp_path / "preferences.json"))

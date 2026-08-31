@@ -7,8 +7,6 @@ services:
       POSTGRES_USER: savant_user
       POSTGRES_PASSWORD: savant_secure_password
       POSTGRES_DB: savant
-    ports:
-      - "5432:5432"
     volumes:
       - ${SAVANT_DB_DIR:-~/.savant/db-data}:/var/lib/postgresql/data
     healthcheck:
@@ -66,7 +64,7 @@ services:
     volumes:
       - ${SAVANT_DATA_DIR:-~/.savant/server-data}:/data/savant
       - ${SAVANT_COLOSSEUM_HOME:-~/.savant/colosseum}:/data/colosseum:ro
-      - ${BASE_CODE_HOST_DIR:-/Users/home/base-code}:/base-code:rw
+      - ${BASE_CODE_HOST_DIR:-/Users/ahmedshabbir/base-code}:/base-code:rw
       - ${LOCAL_CODE_DIR:-~/Developer/icapital}:/base-code/local:ro
     healthcheck:
       test: ["CMD-SHELL", "node /app/codegraph_bridge/src/healthcheck.js && python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health/ready', timeout=3)\""]

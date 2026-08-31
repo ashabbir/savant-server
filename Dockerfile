@@ -1,6 +1,6 @@
 # Extend the published server image so local builds do not redownload the
 # large ML/CUDA dependency set just to add the Git runtime dependency.
-ARG SAVANT_SERVER_BASE_IMAGE=savant-server:base
+ARG SAVANT_SERVER_BASE_IMAGE=ashabbir/savant-server:latest
 
 FROM ${SAVANT_SERVER_BASE_IMAGE}
 

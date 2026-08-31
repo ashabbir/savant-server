@@ -1,10 +1,9 @@
 -r requirements.txt
 pytest>=8.2
 pytest-cov>=5.0
-pytest-asyncio>=0.23
-# Imported directly by tests/test_mcp_*.py and tests/test_system_info_refactor.py.
-requests>=2.32
+pytest-asyncio>=0.24
 # Browser automation for tests/test_ui.py. The package alone is not enough:
 # run `playwright install chromium` to fetch the browser binaries. The test
 # module skips itself when either the package or the browser is unavailable.
-playwright>=1.44
+playwright>=1.48
+
