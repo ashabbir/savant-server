@@ -1601,8 +1601,13 @@ def context_research():
             futures["code_search"] = executor.submit(
                 _exec_code_search, q, repo, limit, should_exclude_tests
             )
+            # Broad research should remain responsive across many repositories.
+            # Explicit `type=code` opts into the slower provider-backed symbol
+            # search; `all` uses the persisted AST projection and reserves the
+            # provider call for the bounded graph pass below.
+            structure_repo_ids = repo_ids if search_type == "code" else []
             futures["structure_search"] = executor.submit(
-                _exec_structure_search, q, repo, repo_ids, limit, should_exclude_tests
+                _exec_structure_search, q, repo, structure_repo_ids, limit, should_exclude_tests
             )
             futures["lossless_tree_search"] = executor.submit(
                 _exec_lossless_search, q, repo, limit
@@ -1647,7 +1652,7 @@ def context_research():
 
             graph_futures = {
                 g_query: executor.submit(_exec_graph_search, g_query, repo_ids, limit)
-                for g_query in sorted(graph_queries)[:2]
+                for g_query in sorted(graph_queries)[:1]
             }
 
             graph_results = {}
