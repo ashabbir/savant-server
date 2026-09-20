@@ -325,6 +325,7 @@ def research(
     type: Literal["all", "code", "memory"] = "all",
     limit: int = 10,
     exclude_tests: bool = True,
+    include_graph: bool | None = None,
 ) -> dict:
     """PRIMARY CODE & CONTEXT SEARCH TOOL FOR AI AGENTS.
 
@@ -342,6 +343,7 @@ def research(
           - "memory": Search architectural docs and memory bank markdown files only (omits source code).
       • limit (int, optional, default=10, maximum=10): Max result count per section. Keep this low for multi-repo work.
       • exclude_tests (bool, optional, default=True): Prioritizes core production source code over test files.
+      • include_graph (bool, optional): Expand CodeGraph results. Defaults to false for 'all' and true for 'code'.
 
     RETURN STRUCTURE FOR AGENTS:
       Returns a JSON dictionary containing:
@@ -358,6 +360,7 @@ def research(
         "type": type,
         "limit": max(1, min(int(limit), 10)),
         "exclude_tests": exclude_tests,
+        "include_graph": (type == "code") if include_graph is None else include_graph,
     }
     return _post("/api/context/research", json=payload)
 

@@ -94,7 +94,24 @@ class ContextDB:
             local_conn = True
         try:
             with conn.cursor() as cur:
-                cur.execute("SELECT * FROM ctx_repos WHERE LOWER(name) = LOWER(%s)", (name,))
+                cur.execute("""
+                    SELECT r.*,
+                           (SELECT COUNT(*) FROM ctx_files WHERE repo_id = r.id) AS file_count,
+                           (SELECT COUNT(*) FROM ctx_files WHERE repo_id = r.id AND is_memory_bank = 1) AS memory_bank_count,
+                           (SELECT COUNT(*) FROM ctx_chunks c
+                            JOIN ctx_files f ON c.file_id = f.id
+                            WHERE f.repo_id = r.id) AS chunk_count,
+                           (SELECT COUNT(*) FROM ctx_ast_nodes a
+                            JOIN ctx_files f ON a.file_id = f.id
+                            WHERE f.repo_id = r.id) AS ast_node_count,
+                           (SELECT COUNT(*) FROM ctx_lossless_trees t
+                            JOIN ctx_files f ON t.file_id = f.id
+                            WHERE f.repo_id = r.id) AS lst_file_count,
+                           (SELECT COALESCE(SUM(jsonb_array_length(t.tree->'nodes')), 0) FROM ctx_lossless_trees t
+                            JOIN ctx_files f ON t.file_id = f.id
+                            WHERE f.repo_id = r.id) AS lst_node_count
+                    FROM ctx_repos r WHERE LOWER(r.name) = LOWER(%s)
+                """, (name,))
                 row = cur.fetchone()
             return dict(row) if row else None
         finally:
@@ -110,10 +127,24 @@ class ContextDB:
             local_conn = True
         try:
             with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT * FROM ctx_repos WHERE id::text = %s OR LOWER(name) = LOWER(%s)",
-                    (str(repo_id), str(repo_id)),
-                )
+                cur.execute("""
+                    SELECT r.*,
+                           (SELECT COUNT(*) FROM ctx_files WHERE repo_id = r.id) AS file_count,
+                           (SELECT COUNT(*) FROM ctx_files WHERE repo_id = r.id AND is_memory_bank = 1) AS memory_bank_count,
+                           (SELECT COUNT(*) FROM ctx_chunks c
+                            JOIN ctx_files f ON c.file_id = f.id
+                            WHERE f.repo_id = r.id) AS chunk_count,
+                           (SELECT COUNT(*) FROM ctx_ast_nodes a
+                            JOIN ctx_files f ON a.file_id = f.id
+                            WHERE f.repo_id = r.id) AS ast_node_count,
+                           (SELECT COUNT(*) FROM ctx_lossless_trees t
+                            JOIN ctx_files f ON t.file_id = f.id
+                            WHERE f.repo_id = r.id) AS lst_file_count,
+                           (SELECT COALESCE(SUM(jsonb_array_length(t.tree->'nodes')), 0) FROM ctx_lossless_trees t
+                            JOIN ctx_files f ON t.file_id = f.id
+                            WHERE f.repo_id = r.id) AS lst_node_count
+                    FROM ctx_repos r WHERE r.id::text = %s OR LOWER(r.name) = LOWER(%s)
+                """, (str(repo_id), str(repo_id)))
                 row = cur.fetchone()
             return dict(row) if row else None
         finally:
@@ -134,7 +165,13 @@ class ContextDB:
                             WHERE f.repo_id = r.id) AS chunk_count,
                            (SELECT COUNT(*) FROM ctx_ast_nodes a
                             JOIN ctx_files f ON a.file_id = f.id
-                            WHERE f.repo_id = r.id) AS ast_node_count
+                            WHERE f.repo_id = r.id) AS ast_node_count,
+                           (SELECT COUNT(*) FROM ctx_lossless_trees t
+                            JOIN ctx_files f ON t.file_id = f.id
+                            WHERE f.repo_id = r.id) AS lst_file_count,
+                           (SELECT COALESCE(SUM(jsonb_array_length(t.tree->'nodes')), 0) FROM ctx_lossless_trees t
+                            JOIN ctx_files f ON t.file_id = f.id
+                            WHERE f.repo_id = r.id) AS lst_node_count
                     FROM ctx_repos r ORDER BY r.name
                 """)
                 rows = cur.fetchall()
@@ -954,7 +991,9 @@ class ContextDB:
                     SELECT r.id, r.name, r.path, r.status, r.indexed_at, r.created_at,
                            (SELECT COUNT(*) FROM ctx_files WHERE repo_id = r.id) AS file_count,
                            (SELECT COUNT(*) FROM ctx_chunks WHERE file_id IN (SELECT id FROM ctx_files WHERE repo_id = r.id)) AS chunk_count,
-                           (SELECT COUNT(*) FROM ctx_ast_nodes WHERE file_id IN (SELECT id FROM ctx_files WHERE repo_id = r.id)) AS ast_node_count
+                           (SELECT COUNT(*) FROM ctx_ast_nodes WHERE file_id IN (SELECT id FROM ctx_files WHERE repo_id = r.id)) AS ast_node_count,
+                           (SELECT COUNT(*) FROM ctx_lossless_trees t JOIN ctx_files f ON t.file_id = f.id WHERE f.repo_id = r.id) AS lst_file_count,
+                           (SELECT COALESCE(SUM(jsonb_array_length(t.tree->'nodes')), 0) FROM ctx_lossless_trees t JOIN ctx_files f ON t.file_id = f.id WHERE f.repo_id = r.id) AS lst_node_count
                     FROM ctx_repos r ORDER BY r.name
                 """)
                 rows = cur.fetchall()

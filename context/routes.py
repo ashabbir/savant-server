@@ -1590,6 +1590,7 @@ def context_research():
     limit = max(1, min(int(data.get("limit", 10)), 10))
     exclude_tests = bool(data.get("exclude_tests", True))
     should_exclude_tests = exclude_tests and "test" not in q.lower()
+    include_graph = bool(data.get("include_graph", search_type == "code"))
 
     results = {}
     top_symbols = []
@@ -1634,7 +1635,7 @@ def context_research():
                 if item.get("rel_path"):
                     top_files.add(item["rel_path"])
 
-        if search_type in ("all", "code"):
+        if search_type in ("all", "code") and include_graph:
             graph_queries = set()
             struct_res = results.get("structure_search", {})
             if isinstance(struct_res.get("results"), list):
@@ -1663,6 +1664,15 @@ def context_research():
                     graph_results[g_query] = {"error": str(e)[:300]}
 
             results["code_graph_search"] = graph_results
+        elif search_type in ("all", "code"):
+            results["code_graph_search"] = {
+                "provider": "deferred",
+                "incomplete": True,
+                "warnings": [
+                    "Graph expansion deferred; rerun research with include_graph=true or type=code."
+                ],
+                "repositories": {},
+            }
 
     code_cnt = len(results.get("code_search", {}).get("results", [])) if "code_search" in results else 0
     struct_cnt = len(results.get("structure_search", {}).get("results", [])) if "structure_search" in results else 0
