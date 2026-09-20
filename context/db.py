@@ -104,6 +104,9 @@ class ContextDB:
                            (SELECT COUNT(*) FROM ctx_ast_nodes a
                             JOIN ctx_files f ON a.file_id = f.id
                             WHERE f.repo_id = r.id) AS ast_node_count,
+                           (SELECT COUNT(DISTINCT a.file_id) FROM ctx_ast_nodes a
+                            JOIN ctx_files f ON a.file_id = f.id
+                            WHERE f.repo_id = r.id) AS ast_file_count,
                            (SELECT COUNT(*) FROM ctx_lossless_trees t
                             JOIN ctx_files f ON t.file_id = f.id
                             WHERE f.repo_id = r.id) AS lst_file_count,
@@ -137,6 +140,9 @@ class ContextDB:
                            (SELECT COUNT(*) FROM ctx_ast_nodes a
                             JOIN ctx_files f ON a.file_id = f.id
                             WHERE f.repo_id = r.id) AS ast_node_count,
+                           (SELECT COUNT(DISTINCT a.file_id) FROM ctx_ast_nodes a
+                            JOIN ctx_files f ON a.file_id = f.id
+                            WHERE f.repo_id = r.id) AS ast_file_count,
                            (SELECT COUNT(*) FROM ctx_lossless_trees t
                             JOIN ctx_files f ON t.file_id = f.id
                             WHERE f.repo_id = r.id) AS lst_file_count,
@@ -166,6 +172,9 @@ class ContextDB:
                            (SELECT COUNT(*) FROM ctx_ast_nodes a
                             JOIN ctx_files f ON a.file_id = f.id
                             WHERE f.repo_id = r.id) AS ast_node_count,
+                           (SELECT COUNT(DISTINCT a.file_id) FROM ctx_ast_nodes a
+                            JOIN ctx_files f ON a.file_id = f.id
+                            WHERE f.repo_id = r.id) AS ast_file_count,
                            (SELECT COUNT(*) FROM ctx_lossless_trees t
                             JOIN ctx_files f ON t.file_id = f.id
                             WHERE f.repo_id = r.id) AS lst_file_count,
@@ -992,6 +1001,7 @@ class ContextDB:
                            (SELECT COUNT(*) FROM ctx_files WHERE repo_id = r.id) AS file_count,
                            (SELECT COUNT(*) FROM ctx_chunks WHERE file_id IN (SELECT id FROM ctx_files WHERE repo_id = r.id)) AS chunk_count,
                            (SELECT COUNT(*) FROM ctx_ast_nodes WHERE file_id IN (SELECT id FROM ctx_files WHERE repo_id = r.id)) AS ast_node_count,
+                           (SELECT COUNT(DISTINCT file_id) FROM ctx_ast_nodes WHERE file_id IN (SELECT id FROM ctx_files WHERE repo_id = r.id)) AS ast_file_count,
                            (SELECT COUNT(*) FROM ctx_lossless_trees t JOIN ctx_files f ON t.file_id = f.id WHERE f.repo_id = r.id) AS lst_file_count,
                            (SELECT COALESCE(SUM(jsonb_array_length(t.tree->'nodes')), 0) FROM ctx_lossless_trees t JOIN ctx_files f ON t.file_id = f.id WHERE f.repo_id = r.id) AS lst_node_count
                     FROM ctx_repos r ORDER BY r.name
