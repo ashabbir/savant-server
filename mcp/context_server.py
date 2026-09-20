@@ -55,11 +55,18 @@ mcp = FastMCP(
         "      • 'code': Use when specifically looking for source code implementations, classes, functions, and import graphs (excludes memory bank).\n"
         "      • 'memory': Use when looking specifically for architectural decisions, project design docs, or memory bank history (excludes code).\n"
         "  - Scope lookup with 'repo' (e.g., repo='savant-server' or repo=['savant-client', 'savant-server']).\n\n"
+        "TOKEN-EFFICIENT AGENT WORKFLOW:\n"
+        "  - Start with research(type='all', limit=5) for multi-repository discovery.\n"
+        "  - Use research(type='code', limit=5) when you need source plus dependency relationships; use type='memory' only for design history.\n"
+        "  - Use structure_search to locate declarations, then get_lossless_tree on only the target file and narrow line range before editing.\n"
+        "  - LST preserves comments, whitespace, delimiters, and exact ranges, but do not request a whole large file; narrow ranges keep token cost low.\n"
+        "  - CodeGraph is for callers, imports, and impact surface; verify important edges against LST/source because some edges can be heuristic or stale.\n"
+        "  - For multi-repo work, pass an explicit repo list and keep limits low; expand only the repository or symbol that needs detail.\n\n"
         "Tools:\n"
-        "  - research(q, repo, type, limit): Primary codebase, lossless-source, graph, and memory research tool for AI agents.\n"
+        "  - research(q, repo, type, limit): Token-bounded primary codebase, lossless-source, graph, and memory research tool.\n"
         "  - structure_search(q, repo): AST structural match to pinpoint class/function definitions.\n"
-        "  - get_lossless_tree(repo, path, start_line, end_line): Exact source plus concrete syntax nodes and AST/CodeGraph coordinates.\n"
-        "  - search_lossless_tree(q, repo): Exact multi-repository source search with bounded syntax context.\n"
+        "  - get_lossless_tree(repo, path, start_line, end_line, max_nodes=200): Exact source plus concrete syntax nodes and AST/CodeGraph coordinates.\n"
+        "  - search_lossless_tree(q, repo, limit=10): Exact multi-repository source search with bounded syntax context.\n"
         "  - analyze_code(repo, path, uri, name, class_name, symbol, node_type, diff, code): Detailed code analysis tool.\n\n"
         "ANALYZE_CODE USAGE:\n"
         "  - Standalone review: pass code='<complete file source>' with no repo/path/diff. This is read-only and reports complexity, findings, and refactor targets.\n"
@@ -205,7 +212,7 @@ def get_lossless_tree(
     path: str,
     start_line: int | None = None,
     end_line: int | None = None,
-    max_nodes: int = 500,
+    max_nodes: int = 200,
 ) -> dict:
     """Get exact source, concrete syntax, AST declarations, and CodeGraph coordinates.
 
@@ -226,7 +233,7 @@ def get_lossless_tree(
 def search_lossless_tree(
     q: str,
     repo: str | list[str] = None,
-    limit: int = 20,
+    limit: int = 10,
 ) -> dict:
     """Find exact source matches across repositories with concrete syntax context."""
     params = {"q": q, "limit": limit}
@@ -316,7 +323,7 @@ def research(
     q: str,
     repo: str | list[str] = None,
     type: Literal["all", "code", "memory"] = "all",
-    limit: int = 20,
+    limit: int = 10,
     exclude_tests: bool = True,
 ) -> dict:
     """PRIMARY CODE & CONTEXT SEARCH TOOL FOR AI AGENTS.
@@ -333,7 +340,7 @@ def research(
           - "all" (default): Comprehensive search across code, AST structure, code graph, and memory bank documentation.
           - "code": Search source code files, AST definitions, and dependency graph (omits memory bank docs).
           - "memory": Search architectural docs and memory bank markdown files only (omits source code).
-      • limit (int, optional, default=20): Max result count per section.
+      • limit (int, optional, default=10, maximum=10): Max result count per section. Keep this low for multi-repo work.
       • exclude_tests (bool, optional, default=True): Prioritizes core production source code over test files.
 
     RETURN STRUCTURE FOR AGENTS:
@@ -349,7 +356,7 @@ def research(
         "q": q,
         "repo": repo,
         "type": type,
-        "limit": limit,
+        "limit": max(1, min(int(limit), 10)),
         "exclude_tests": exclude_tests,
     }
     return _post("/api/context/research", json=payload)

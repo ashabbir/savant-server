@@ -1378,7 +1378,7 @@ def _exec_code_search(q: str, repo: str | None, limit: int, should_exclude_tests
     )
     if should_exclude_tests:
         res = [r for r in res if not (r.get("rel_path", "").lower().startswith("test") or "/test" in r.get("rel_path", "").lower())]
-    MAX_CONTENT = 800
+    MAX_CONTENT = 600
     trimmed = []
     for r in res[:limit]:
         if r.get("content") and len(r["content"]) > MAX_CONTENT:
@@ -1452,7 +1452,7 @@ def _exec_memory_search(q: str, repo: str | None, limit: int) -> dict:
     res = ContextDB.vector_search(
         qvec, limit=limit, repo_filter=repo_filter, memory_bank_only=True,
     )
-    MAX_CONTENT = 1200
+    MAX_CONTENT = 700
     trimmed = []
     for r in res:
         if r.get("content") and len(r["content"]) > MAX_CONTENT:
@@ -1473,7 +1473,7 @@ def _exec_lossless_search(q: str, repo: str | None, limit: int) -> dict:
         source = artifact["source"]
         offset = max(0, int(artifact.get("match_offset") or 1) - 1)
         line = source[:offset].count("\n") + 1
-        item = bounded_tree(artifact, max(1, line - 2), line + 2, 120)
+        item = bounded_tree(artifact, max(1, line - 2), line + 2, 60)
         item.update({"repo": artifact["repo"], "rel_path": artifact["rel_path"], "match_line": line})
         results.append(item)
     return {"query": q, "result_count": len(results), "results": results}
@@ -1487,7 +1487,11 @@ def _exec_graph_search(g_query: str, repo_ids: list[str], limit: int) -> dict:
         return {"error": "explicit repo is required for structural exploration"}
 
     service = build_service()
-    max_files = min(limit, 20)
+    max_files = min(limit, 10)
+
+    def _clip(value, max_chars=240):
+        text = str(value or "")
+        return text if len(text) <= max_chars else text[:max_chars] + "…"
 
     def _explore_repo(repo_id):
         record = ContextDB.get_repo(repo_id)
@@ -1524,7 +1528,7 @@ def _exec_graph_search(g_query: str, repo_ids: list[str], limit: int) -> dict:
                 loc = s.location
                 return {
                     "id": s.id, "kind": s.kind, "name": s.name,
-                    "qualified_name": s.qualified_name, "signature": s.signature,
+                    "qualified_name": _clip(s.qualified_name), "signature": _clip(s.signature),
                     "file_path": loc.file_path if loc else None,
                     "start_line": loc.start_line if loc else None,
                     "end_line": loc.end_line if loc else None,
@@ -1537,12 +1541,12 @@ def _exec_graph_search(g_query: str, repo_ids: list[str], limit: int) -> dict:
                     "source_id": e.source_id, "target_id": e.target_id,
                 }
 
-            sym_limit = min(limit, 10)
-            edge_limit = min(limit * 2, 20)
+            sym_limit = min(limit, 5)
+            edge_limit = min(limit * 2, 10)
             repo_result = {
                 "provider": explored.provider,
                 "incomplete": explored.incomplete,
-                "warnings": explored.warnings,
+                "warnings": [_clip(w, 300) for w in explored.warnings[:5]],
                 "symbols": [_slim_symbol(s) for s in explored.symbols[:sym_limit]],
                 "edges": [_slim_edge(e) for e in explored.edges[:edge_limit]],
             }
@@ -1583,7 +1587,7 @@ def context_research():
             "error": "type must be one of: all, code, memory",
             "allowed_types": list(allowed_types),
         }), 400
-    limit = int(data.get("limit", 20))
+    limit = max(1, min(int(data.get("limit", 10)), 10))
     exclude_tests = bool(data.get("exclude_tests", True))
     should_exclude_tests = exclude_tests and "test" not in q.lower()
 
@@ -1643,7 +1647,7 @@ def context_research():
 
             graph_futures = {
                 g_query: executor.submit(_exec_graph_search, g_query, repo_ids, limit)
-                for g_query in sorted(graph_queries)[:3]
+                for g_query in sorted(graph_queries)[:2]
             }
 
             graph_results = {}
@@ -1651,7 +1655,7 @@ def context_research():
                 try:
                     graph_results[g_query] = g_future.result(timeout=30)
                 except Exception as e:
-                    graph_results[g_query] = {"error": str(e)}
+                    graph_results[g_query] = {"error": str(e)[:300]}
 
             results["code_graph_search"] = graph_results
 
