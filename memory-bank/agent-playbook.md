@@ -10,6 +10,11 @@
 ## Safe change order
 
 1. Locate the request path and auth boundary.
-2. Update the feature module and backing DB code together.
-3. Confirm startup/bootstrap still succeeds.
-4. Run the targeted tests and the broader suite when behavior crosses modules.
+2. Check `savant-knowledge.project_context(workspace_id)` or `search()` for domain rules and architectural constraints.
+3. Use `savant-context.research` for broad first-pass code & dependency exploration, and `structure_search` to pinpoint AST declarations.
+4. Use `savant-context.get_lossless_tree` on narrow line ranges to inspect concrete syntax (LST) before editing.
+5. Update the feature module and backing DB code together.
+6. Verify changes with `savant-context.analyze_code` to review complexity, lint findings, and CodeGraph blast radius.
+7. Confirm startup/bootstrap still succeeds.
+8. Run the targeted tests and the broader suite when behavior crosses modules.
+9. If durable architectural insights or bug discoveries were made, record them in `savant-knowledge.store` and publish with `commit_workspace`.

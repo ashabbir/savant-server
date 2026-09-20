@@ -43,37 +43,35 @@ from auth import auth_headers, install_header_capture
 mcp = FastMCP(
     "savant-context",
     instructions=(
-        "PHYSICAL CODEBASE CONTEXT SEARCH: Use this server to query actual source code, syntax, class structures, "
-        "and code-level dependency graphs. DO NOT use this server for high-level business capability domains, "
-        "partner clients, deployable service applications, or developer architecture decisions (use 'savant-knowledge' for those).\n\n"
-        "AI AGENT GUIDANCE FOR RESEARCH TOOL:\n"
-        "  - 'research' is your PRIMARY AND PREFERRED TOOL for exploring code, architecture, and memory banks. "
-        "Always use 'research' first when answering codebase questions, looking for implementations, or researching features.\n"
-        "  - Set 'q' to your search query (e.g. 'SessionManager', 'authentication JWT', 'database migration').\n"
-        "  - Set 'type' based on intent:\n"
-        "      • 'all' (default): Best for general exploration. Searches physical source code, AST structure, dependency graph, AND memory bank documentation.\n"
-        "      • 'code': Use when specifically looking for source code implementations, classes, functions, and import graphs (excludes memory bank).\n"
-        "      • 'memory': Use when looking specifically for architectural decisions, project design docs, or memory bank history (excludes code).\n"
-        "  - Scope lookup with 'repo' (e.g., repo='savant-server' or repo=['savant-client', 'savant-server']).\n\n"
-        "TOKEN-EFFICIENT AGENT WORKFLOW:\n"
-        "  - Start with research(type='all', limit=5) for multi-repository discovery.\n"
-        "  - Use research(type='code', limit=5) when you need source plus dependency relationships; use type='memory' only for design history.\n"
-        "  - Use structure_search to locate declarations, then get_lossless_tree on only the target file and narrow line range before editing.\n"
-        "  - LST preserves comments, whitespace, delimiters, and exact ranges, but do not request a whole large file; narrow ranges keep token cost low.\n"
-        "  - CodeGraph is for callers, imports, and impact surface; verify important edges against LST/source because some edges can be heuristic or stale.\n"
-        "  - For multi-repo work, pass an explicit repo list and keep limits low; expand only the repository or symbol that needs detail.\n\n"
-        "Tools:\n"
-        "  - research(q, repo, type, limit): Token-bounded primary codebase, lossless-source, graph, and memory research tool.\n"
-        "  - structure_search(q, repo): AST structural match to pinpoint class/function definitions.\n"
-        "  - get_lossless_tree(repo, path, start_line, end_line, max_nodes=200): Exact source plus concrete syntax nodes and AST/CodeGraph coordinates.\n"
-        "  - search_lossless_tree(q, repo, limit=10): Exact multi-repository source search with bounded syntax context.\n"
-        "  - analyze_code(repo, path, uri, name, class_name, symbol, node_type, diff, code): Detailed code analysis tool.\n\n"
-        "ANALYZE_CODE USAGE:\n"
-        "  - Standalone review: pass code='<complete file source>' with no repo/path/diff. This is read-only and reports complexity, findings, and refactor targets.\n"
-        "  - Proposed change review: pass repo + path + code='<proposed complete file source>'. The submitted source is compared with the indexed file; no file is written.\n"
-        "  - Narrow review: add symbol/name/class_name and node_type to score only that target. Submitted code must include the target declaration.\n"
-        "  - Diff review: pass repo + path + diff='<unified diff>' to assess the patched indexed file.\n"
-        "  - After editing, call analyze_code again without code/diff to assess the currently indexed source. Analysis never executes submitted code or changes repository files."
+        "PHYSICAL CODEBASE INTELLIGENCE & CONTEXT: Use this server to query actual source code, "
+        "concrete syntax trees (LST), abstract syntax trees (AST), code-level dependency graphs (CodeGraph), "
+        "and static code analysis. DO NOT use this server for high-level business capability domains, "
+        "client partner metadata, cross-system service catalogs, or architectural insights (use 'savant-knowledge' for those).\n\n"
+        "WHAT TO USE WHEN BEST — DECISION MATRIX FOR AI AGENTS:\n"
+        "  1. `research(q, repo, type='all'|'code'|'memory', limit)` — PRIMARY FIRST-PASS EXPLORATION:\n"
+        "     • WHEN: At the start of a task, when exploring unfamiliar features, concepts, or cross-cutting implementations.\n"
+        "     • WHY: Combines semantic code search, AST structure match, CodeGraph caller/callee graphs, and memory bank docs in one call.\n"
+        "     • OPTIONS: Use type='all' (default) for broad discovery; type='code' (auto-enables CodeGraph) when seeking implementations & call chains; type='memory' for architecture docs only.\n\n"
+        "  2. `structure_search(q, repo)` — AST CODE-GRAPH STRUCTURE PINPOINTING:\n"
+        "     • WHEN: You know a symbol name, class, function, or method name (e.g. 'SessionManager', 'authenticate_user') and need its exact declaration location.\n"
+        "     • WHY: Uses AST index rather than semantic embeddings. Zero semantic noise; directly pinpoints definitions, class hierarchies, and file coordinates.\n\n"
+        "  3. `get_lossless_tree(repo, path, start_line, end_line, max_nodes=200)` — LST CONCRETE SYNTAX BEFORE EDITING:\n"
+        "     • WHEN: Immediately before reading or editing targeted code lines where exact delimiters, comments, formatting, indentation, and concrete syntax coordinates matter.\n"
+        "     • WHY: Lossless Syntax Tree (LST) preserves full fidelity (unlike standard ASTs which strip comments and whitespace). Token-bounded; always specify narrow start_line/end_line ranges on large files.\n\n"
+        "  4. `search_lossless_tree(q, repo, limit=10)` — LST EXACT MULTI-REPO CODE MATCHING:\n"
+        "     • WHEN: Searching across repositories for exact code patterns, variable usages, or literal syntax constructs with concrete node context.\n"
+        "     • WHY: Bounded exact syntax matching with token-efficient AST node boundaries.\n\n"
+        "  5. `analyze_code(repo, path, code, diff, symbol, node_type)` — DEEP STATIC CODE ANALYSIS & IMPACT:\n"
+        "     • WHEN: Before or after modifying code, during refactoring, or when reviewing submitted code/diffs.\n"
+        "     • WHY: Evaluates cyclomatic/cognitive complexity, code quality findings/lints, duplication, maintainability, and CodeGraph blast radius (upstream callers / downstream dependencies).\n"
+        "     • USES: Standalone review (code='...'), proposed change validation (repo + path + code='...'), patch validation (repo + path + diff='...'), or post-edit check (repo + path).\n\n"
+        "CODEGRAPH & IMPACT ANALYSIS:\n"
+        "  - CodeGraph maps callers, callees, imports, and dependencies across files.\n"
+        "  - Access via research(include_graph=True) or the impact_surface section returned by research and analyze_code.\n"
+        "  - Use it to evaluate blast radius: upstream callers (who breaks if I change this?) and downstream dependencies (what does this rely on?).\n\n"
+        "CROSS-REFERENCE WITH KNOWLEDGE GRAPH MCP ('savant-knowledge'):\n"
+        "  - Before touching code: Check savant-knowledge.project_context(workspace_id) or savant-knowledge.search(query) for business domain constraints, client quirks, known issues, and architectural decisions.\n"
+        "  - After code analysis or refactoring: When new architectural patterns, system gotchas, or reusable lessons are discovered, record them in savant-knowledge.store(content, workspace_id, node_type='insight'|'issue', repo, files) and publish via savant-knowledge.commit_workspace."
     ),
     host=_args.host,
     port=_args.port,
@@ -183,7 +181,18 @@ def structure_search(
 ) -> dict:
     """Find code structures such as classes, functions, and methods using AST data.
 
-    Use this when the symbol shape matters more than semantic similarity.
+    WHEN TO USE:
+      Use when the symbol name or shape is known (e.g., 'SessionManager', 'authenticate_user')
+      and you need exact declaration locations without semantic vector fuzziness. AST search
+      directly pinpoints definitions, class hierarchies, and file coordinates.
+
+    WORKFLOW:
+      1. Use `structure_search` to locate the exact declaration file and line range.
+      2. Call `get_lossless_tree` on that specific file and narrow line range to inspect concrete syntax before editing.
+
+    KNOWLEDGE GRAPH:
+      If searching for high-level business capability domains, client partner requirements, or
+      architectural concepts rather than AST symbols, use `savant-knowledge.search` instead.
     """
     effective_query = q or query or ""
     params = {"query": effective_query}
@@ -214,11 +223,22 @@ def get_lossless_tree(
     end_line: int | None = None,
     max_nodes: int = 200,
 ) -> dict:
-    """Get exact source, concrete syntax, AST declarations, and CodeGraph coordinates.
+    """Get exact source, concrete syntax (LST), AST declarations, and CodeGraph coordinates.
 
-    Use this before an edit where comments, formatting, delimiters, or exact
-    source ranges matter. Results are bounded; request a narrower line range
-    for large files.
+    WHEN TO USE:
+      Immediately before reading or modifying code where exact indentation, whitespace,
+      delimiters, comments, and line ranges matter.
+
+    LST VS AST:
+      Standard ASTs discard formatting, comments, and whitespace. The Lossless Syntax Tree (LST)
+      preserves 100% concrete syntax fidelity with exact byte/line ranges for safe surgical edits.
+
+    TOKEN EFFICIENCY:
+      Results are bounded. Always specify narrow `start_line` and `end_line` ranges for large files
+      to keep token cost low.
+
+    CODEGRAPH:
+      Returns surrounding CodeGraph coordinates for call and dependency context.
     """
     params = {"repo": ",".join(repo) if isinstance(repo, list) else repo, "path": path,
               "max_nodes": max_nodes}
@@ -235,7 +255,16 @@ def search_lossless_tree(
     repo: str | list[str] = None,
     limit: int = 10,
 ) -> dict:
-    """Find exact source matches across repositories with concrete syntax context."""
+    """Find exact source matches across repositories with concrete syntax context (LST).
+
+    WHEN TO USE:
+      Multi-repository exact syntax pattern matching, variable usage, or literal code snippet
+      search with bounded concrete syntax node boundaries.
+
+    WORKFLOW:
+      Follow up with `get_lossless_tree` on matching files for detailed range inspection,
+      or `analyze_code` to evaluate potential changes.
+    """
     params = {"q": q, "limit": limit}
     if repo:
         params["repo"] = ",".join(repo) if isinstance(repo, list) else repo
@@ -254,13 +283,24 @@ def analyze_code(
     diff: str = None,
     code: str = None,
 ) -> dict:
-    """Analyze a file, class, symbol, submitted source, or diff for implementation impact.
+    """Analyze a file, class, symbol, submitted source, or diff for implementation impact and code quality.
 
-    Identify the target with repo plus path, URI, name, class_name, or symbol.
-    Supply ``code`` alone to review a complete submitted file without reading
-    or changing any repository. Supply ``repo`` and ``path`` with ``code`` to
-    compare that proposed source against the indexed file before editing it.
-    Supply ``diff`` for a unified before/after comparison.
+    WHEN TO USE:
+      • Standalone review: pass `code='...'` to evaluate complexity, findings, and refactor targets on a snippet or file without repo lookup.
+      • Proposed change review: pass `repo` + `path` + `code='...'` to compare proposed source against the indexed file before editing on disk.
+      • Patch review: pass `repo` + `path` + `diff='...'` to assess a unified diff.
+      • Post-edit verification: pass `repo` + `path` to verify complexity and findings after editing.
+
+    METRICS & FINDINGS:
+      Reports cyclomatic/cognitive complexity, code quality findings/lints, duplication, maintainability,
+      and before/after deltas. Never executes submitted code or mutates repository files.
+
+    CODEGRAPH IMPACT ANALYSIS:
+      Assesses upstream callers and downstream dependencies to map blast radius.
+
+    KNOWLEDGE GRAPH INTEGRATION:
+      When this analysis uncovers durable architectural patterns, tricky edge cases, or bug root causes,
+      record them in `savant-knowledge.store(content, workspace_id, node_type='insight'|'issue')`.
     """
     payload = {}
     if repo:
@@ -330,16 +370,28 @@ def research(
     """PRIMARY CODE & CONTEXT SEARCH TOOL FOR AI AGENTS.
 
     AI AGENT INSTRUCTIONS:
-      Use this tool as your single entry-point for searching the codebase, code dependencies, and project memory banks.
-      Do not attempt to call individual search tools, as research unifies semantic code search, AST structure match,
-      CodeGraph dependencies and memory bank markdown search in one call.
+      Use this tool as your single first-pass entry point for exploring the codebase, code dependencies,
+      and project memory banks. It unifies semantic code search, AST structure match, CodeGraph dependencies,
+      and memory bank markdown search in one call.
+
+    WHEN TO USE RESEARCH VS OTHER TOOLS:
+      • `research`: Start here for any feature exploration, unfamiliar domain, or broad discovery.
+      • `structure_search`: Switch to this when you know the exact symbol name and only need AST definitions.
+      • `get_lossless_tree`: Switch to this on a specific file and line range to see exact concrete syntax (LST) before editing.
+      • `analyze_code`: Run this before/after making edits to verify complexity, lint findings, and CodeGraph blast radius.
+
+    KNOWLEDGE GRAPH INTEGRATION:
+      • If seeking high-level business capability domains, client partner requirements, service catalogs,
+        or architectural decisions, query `savant-knowledge.project_context` or `savant-knowledge.search` first.
+      • After modifying code, record any durable architectural insights or bug discoveries back to
+        `savant-knowledge.store(content, workspace_id, node_type='insight'|'issue')`.
 
     PARAM GUIDANCE FOR AGENTS:
       • q (str, required): The search query concept, symbol name, or topic (e.g. "auth middleware", "SessionDB", "user routes").
       • repo (str | list[str], optional): Limit search scope to specific repository/repositories.
       • type (str, optional): Controls search scope. Must be one of:
           - "all" (default): Comprehensive search across code, AST structure, code graph, and memory bank documentation.
-          - "code": Search source code files, AST definitions, and dependency graph (omits memory bank docs).
+          - "code": Search source code files, AST definitions, and dependency graph (auto-enables CodeGraph; omits memory bank docs).
           - "memory": Search architectural docs and memory bank markdown files only (omits source code).
       • limit (int, optional, default=10, maximum=10): Max result count per section. Keep this low for multi-repo work.
       • exclude_tests (bool, optional, default=True): Prioritizes core production source code over test files.

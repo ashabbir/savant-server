@@ -58,17 +58,30 @@ _args, _ = _parser.parse_known_args()
 mcp = FastMCP(
     "savant-knowledge",
     instructions=(
-        "BUSINESS & ARCHITECTURE METADATA GRAPH: Use this server to retrieve/store high-level developer insights, "
-        "incident issues, system capability domains, partner clients, and technology stack info. "
-        "DO NOT use this server to search raw repository source code files, syntax definitions, or code syntax call-graphs "
-        "(use 'savant-context' for those).\n"
-        "Node types: client (Fidelity, UBS…), domain (Auth/SSO, Holdings…), "
-        "service (icn, simonapp…), library (icn-user-acl…), technology (Rails, Redis…), "
-        "insight (curated developer knowledge), issue (known bugs and problems), "
-        "project (repositories and codebases), concept (abstract ideas and patterns), "
-        "repo (source code repositories), session (AI coding session entries).\n"
-        "Workflow: store() creates staged nodes (requires workspace_id) -> commit_workspace() publishes them. "
-        "Use search() to query, neighbors() to traverse connections, and connect() to link nodes."
+        "BUSINESS & ARCHITECTURE METADATA GRAPH: Use this server to retrieve and store high-level developer insights, "
+        "incident issues, system capability domains, partner clients, technology stack info, and session outcomes. "
+        "DO NOT use this server to search raw repository source code files, AST definitions, concrete syntax trees (LST), "
+        "or code call graphs (use 'savant-context' for those).\n\n"
+        "CROSS-REFERENCE WITH CODE INTELLIGENCE MCP ('savant-context'):\n"
+        "  - Pivoting from Knowledge to Code:\n"
+        "      • When a knowledge node (domain, service, library, repo, project, issue, insight) points to a code entity or touched files:\n"
+        "          1. Use `savant-context.research(q=..., repo=...)` for first-pass exploration of the implementation and call graph.\n"
+        "          2. Use `savant-context.structure_search(q=..., repo=...)` to pinpoint exact AST class/function declarations.\n"
+        "          3. Use `savant-context.get_lossless_tree(repo=..., path=..., start_line=..., end_line=...)` to inspect exact concrete syntax (LST) before editing.\n"
+        "          4. Use `savant-context.analyze_code(repo=..., path=..., code=..., diff=...)` to assess code complexity, quality findings, and blast radius.\n"
+        "  - Capturing Findings from Code into Knowledge:\n"
+        "      • After analyzing or refactoring code with `savant-context` tools, capture durable architectural decisions, tricky bugs, "
+        "or reusable patterns here using `store()` (with workspace_id, node_type='insight'|'issue', repo, and files) and publish with `commit_workspace()`.\n\n"
+        "NODE TAXONOMY:\n"
+        "  client (Fidelity, UBS…), domain (Auth/SSO, Holdings…), service (icn, simonapp…), library (icn-user-acl…), "
+        "  technology (Rails, Redis…), insight (curated developer knowledge & decisions), issue (known bugs & problems), "
+        "  project (repositories & codebases), concept (abstract patterns), repo (source code repositories), session (AI session entries).\n\n"
+        "WORKFLOW:\n"
+        "  1. `project_context(workspace_id)` or `search(query)` to discover existing domain context and constraints.\n"
+        "  2. `neighbors(node_id)` to traverse relationships.\n"
+        "  3. `store(...)` creates staged nodes (requires workspace_id, domain connection, repo/files).\n"
+        "  4. `connect(...)` links nodes with typed edges (relates_to, applies_to, uses, depends_on, etc.).\n"
+        "  5. `commit_workspace(workspace_id)` or `commit_nodes(...)` publishes staged nodes to the live graph."
     ),
     host=_args.host,
     port=_args.port,
@@ -104,8 +117,18 @@ def _api(method: str, path: str, **kwargs) -> dict | list:
 
 @mcp.tool()
 def search(query: str, node_type: str = "", limit: int = 20) -> dict[str, Any]:
-    """
-    Search knowledge nodes by text query. Returns the most relevant matches.
+    """Search knowledge nodes by text query. Returns the most relevant matches.
+
+    WHEN TO USE:
+      Use to discover high-level business capability domains, client partner requirements,
+      services, libraries, technologies, developer insights, and known issues.
+
+    TRANSITION TO SAVANT-CONTEXT:
+      When search returns nodes referencing codebases, repositories, or source files:
+      • Use `savant-context.research` to explore the actual source code and CodeGraph dependencies.
+      • Use `savant-context.structure_search` to locate exact AST class or function declarations.
+      • Use `savant-context.get_lossless_tree` for concrete syntax (LST) before editing.
+      • Use `savant-context.analyze_code` to evaluate implementation complexity and impact.
 
     node_type filter (optional): client | domain | service | library | technology | insight | issue | project | concept | repo | session
     limit: max results (default 20, max 100)
@@ -119,8 +142,11 @@ def search(query: str, node_type: str = "", limit: int = 20) -> dict[str, Any]:
 
 @mcp.tool()
 def recent(node_type: str = "", limit: int = 20) -> dict[str, Any]:
-    """
-    Get the most recently created/updated knowledge nodes.
+    """Get the most recently created/updated knowledge nodes.
+
+    WHEN TO USE:
+      Check recent project decisions, newly logged issues, or recently touched domain nodes.
+      Follow up with `savant-context` tools when investigating associated source files.
 
     node_type filter (optional): client | domain | service | library | technology | insight | issue | project | concept | repo | session
     limit: max results (default 20, max 100)
@@ -133,11 +159,17 @@ def recent(node_type: str = "", limit: int = 20) -> dict[str, Any]:
 
 @mcp.tool()
 def project_context(workspace_id: str) -> dict[str, Any]:
-    """
-    Get aggregated knowledge context for a workspace.
+    """Get aggregated knowledge context for a workspace.
+
     Traverses the graph from the workspace project node (depth 2) to return
     connected insights, services, domains, tasks, and notes in one call.
     Use this to onboard an agent to a workspace at the start of a session.
+
+    SAVANT-CONTEXT INTEGRATION:
+      After discovering connected services, repositories, and touched files here:
+      • Call `savant-context.research(q=..., repo=...)` for source code and CodeGraph exploration.
+      • Call `savant-context.structure_search` to pinpoint AST symbols.
+      • Call `savant-context.get_lossless_tree` to view exact LST line ranges before making changes.
     """
     return _api("GET", "/api/knowledge/project_context", params={"workspace_id": workspace_id})
 
@@ -154,11 +186,16 @@ def store(
     files: str = "",
     connections: str = "",
 ) -> dict[str, Any]:
-    """
-    Store a knowledge node into the graph. The node is created as **staged**
+    """Store a knowledge node into the graph. The node is created as **staged**
     and must be committed (via commit_workspace) before it appears in the
     default graph view. This enables a review workflow:
     create (staged) -> review -> commit.
+
+    SAVANT-CONTEXT INTEGRATION:
+      When recording code changes, refactors, or bug resolutions:
+      • Populate `repo` and `files` with the exact paths analyzed via `savant-context.analyze_code` or `savant-context.structure_search`.
+      • Store architectural rationale or lessons learned (node_type='insight') so future agents know why code was designed this way.
+      • Store tricky bugs and edge-case behaviors (node_type='issue') so future agents avoid repeating defects.
 
     workspace_id: **Required.** The workspace this node belongs to. Every node
                   must be associated with a workspace for traceability.
@@ -225,9 +262,12 @@ def update_node(
     node_type: str = "",
     graph_type: str = "",
 ) -> dict[str, Any]:
-    """
-    Update an existing knowledge graph node's properties. Does NOT require a
+    """Update an existing knowledge graph node's properties. Does NOT require a
     workspace — you can edit any node you have the node_id for.
+
+    SAVANT-CONTEXT INTEGRATION:
+      Update node content or titles when deeper code exploration via `savant-context`
+      reveals new details about system architecture, performance limits, or implementation nuances.
 
     node_id:    The ID of the node to update (e.g. 'kgn_1234567890_1').
                 Use search() or recent() to find node IDs.
@@ -263,8 +303,7 @@ def connect(
     edge_type: str = "relates_to",
     label: str = "",
 ) -> dict[str, Any]:
-    """
-    Create a typed edge between two knowledge graph nodes.
+    """Create a typed edge between two knowledge graph nodes.
 
     source_id / target_id: node_id values from search() or recent()
     edge_type: relates_to | learned_from | applies_to | uses | evolved_from |
@@ -281,8 +320,7 @@ def connect(
 
 @mcp.tool()
 def disconnect(source_id: str, target_id: str, edge_type: str = "") -> dict[str, Any]:
-    """
-    Remove an edge between two nodes.
+    """Remove an edge between two nodes.
     If edge_type is given, removes only that edge type; otherwise removes all edges between them.
     """
     return _api("POST", "/api/knowledge/edges/disconnect", json={
@@ -294,8 +332,16 @@ def disconnect(source_id: str, target_id: str, edge_type: str = "") -> dict[str,
 
 @mcp.tool()
 def neighbors(node_id: str, depth: int = 1, edge_type: str = "") -> dict[str, Any]:
-    """
-    Traverse the graph outward from a node and return connected nodes + edges.
+    """Traverse the graph outward from a node and return connected nodes + edges.
+
+    WHEN TO USE:
+      Explore connections around a domain, service, technology, or issue.
+
+    TRANSITION TO SAVANT-CONTEXT:
+      When traversing leads to connected repos, services, or touched files, switch to:
+      • `savant-context.research` for code-level exploration and CodeGraph relationships.
+      • `savant-context.structure_search` for AST symbol definitions.
+      • `savant-context.get_lossless_tree` for concrete syntax (LST) inspection.
 
     node_id:   Starting node (use search() or list_concepts() to find IDs)
     depth:     Hops to traverse — 1 (immediate) to 5 (wide neighbourhood). Default 1.
@@ -309,10 +355,9 @@ def neighbors(node_id: str, depth: int = 1, edge_type: str = "") -> dict[str, An
 
 @mcp.tool()
 def list_concepts() -> list[dict[str, Any]]:
-    """
-    List all technology nodes in the knowledge graph.
-    Returns node_id, title, and metadata for each technology entry.
-    Useful for finding node IDs to wire connections to.
+    """List all concept nodes in the knowledge graph.
+    Returns node_id, title, and metadata for each concept entry.
+    Useful for discovering abstract architecture patterns and finding node IDs to wire connections to.
     """
     return _api("GET", "/api/knowledge/concepts")
 

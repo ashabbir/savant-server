@@ -77,20 +77,22 @@ utils/                  auth.py (admin_required decorator)
 
 Config: `mcp_servers.toml` / `mcp-config.json`
 
-### savant-context agent tools
+### savant-context agent tools: What to Use When Best
 
-The context MCP allowlist intentionally exposes only agent-facing code intelligence tools:
+The context MCP exposes specialized code intelligence tools covering AST, Lossless Syntax Trees (LST), CodeGraph, and static code analysis:
 
-| Tool | Purpose |
-|------|---------|
-| `research` | Broad first-pass exploration across source code, AST, memory bank, and CodeGraph relationships. |
-| `code_search` | Semantic search across indexed repository source code. |
-| `structure_search` | AST search for classes, functions, methods, and other code structures. |
-| `analyze_code` | Analyze a file, class, symbol, code body, or diff before/after a change. |
-| `memory_bank_search` | Semantic search over curated repository memory-bank Markdown. |
-| `code_graph_search` | Search imports, callers, dependencies, inheritance, and other CodeGraph relationships. |
+| Tool | Capability | When to Use Best | Key Benefit / Efficiency Rule |
+|------|------------|------------------|-------------------------------|
+| `research` | Unified discovery | **First-pass codebase exploration** at task start or feature discovery. | Unifies code search, AST definitions, CodeGraph, and memory bank in 1 call. Start with `type='all', limit=5`. |
+| `structure_search` | AST structure search | When the **symbol name or shape is known** (`SessionManager`, `auth_middleware`). | Exact AST declaration lookup; zero semantic vector fuzziness. Pinpoints class and method coordinates. |
+| `get_lossless_tree` | Concrete syntax tree (LST) | **Immediately before reading or editing code** for surgical changes or refactoring. | Preserves 100% concrete syntax (comments, whitespace, delimiters). **Always specify narrow line ranges**. |
+| `search_lossless_tree` | Multi-repo LST search | Exact syntax pattern matching or variable usage across repositories. | Bounded by concrete syntax nodes across repositories. |
+| `analyze_code` | Static code review & blast radius | **Before & after code modifications**, reviewing snippets, or patch review. | Evaluates cyclomatic/cognitive complexity, code quality findings/lints, duplication, and CodeGraph blast radius. |
 
-Administrative/index diagnostics and low-level memory-resource operations remain available through REST where needed, but are not exposed as agent MCP tools.
+#### Cross-Server Bridge with `savant-knowledge` MCP
+- **Before code work**: Call `savant-knowledge.project_context(workspace_id)` or `savant-knowledge.search(query)` to understand high-level business domains, partner client quirks (Fidelity, UBS…), and architectural decisions.
+- **Investigating knowledge entities**: When knowledge nodes reference repositories or files, transition to `savant-context.research` and `structure_search` for code-level exploration, then `get_lossless_tree` for concrete syntax inspection.
+- **After code work**: When code analysis or refactoring uncovers durable architectural patterns, bug root causes, or tricky edge cases, persist them in `savant-knowledge.store(content, workspace_id, node_type='insight'|'issue', repo, files)` and publish via `savant-knowledge.commit_workspace(workspace_id)`.
 
 ### savant-abilities agent tools
 

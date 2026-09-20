@@ -43,5 +43,8 @@
 - Conversation event deletion is a tombstone. Normal transcript reads omit
   deleted content, while append-only compactions provide summary-plus-tail
   context retrieval.
-- MCP traffic is exposed through `/api/mcp/*` style routes and related servers.
+- MCP traffic is exposed through `/api/mcp/*` style routes and related servers:
+  - `savant-context` (8093): AST structure search, Lossless Syntax Trees (LST), CodeGraph caller/callee graphs, semantic search, and static analysis (`analyze_code`).
+  - `savant-knowledge` (8094): Business domain capabilities, partner client metadata, services, libraries, and developer insights/issues.
+  - The two systems bridge together: knowledge nodes guide code exploration, while code analysis outcomes populate knowledge insights and issues.
 - Tooling and knowledge writes should preserve the authenticated user context.

@@ -119,11 +119,63 @@ MCP servers are **thin SSE bridges** that proxy tool calls to Flask REST endpoin
 
 Ports are **fixed** so AI tool configs never go stale. Configured via `SAVANT_*_MCP_PORT` env vars.
 
-**MCP tool rules:**
-- Every tool is a thin proxy — call the Flask API via `_api()` helper and return the result.
-- Use `@mcp.tool()` decorator. The docstring becomes the tool description.
-- Type hints on parameters are **required** — MCP uses them for JSON schema generation.
-- Return `dict` or `list`, never raw strings.
+### Tool Guide: What Tool to Use for What Purpose
+
+AI agents must select tools based on domain boundaries, abstraction layers, and task stage:
+
+#### 1. Code Intelligence & Context (`savant-context` - Port 8093)
+Use for physical codebase exploration, syntax trees, dependency graphs, and static quality checks:
+- **`research(q, repo, type='all'|'code'|'memory', limit)`**:
+  - **Purpose**: Single first-pass entry point for exploring codebases, dependencies, and memory banks.
+  - **When to use**: Starting an unfamiliar task, discovering feature implementations across repositories, or investigating bug reports.
+  - **Efficiency**: Use `type='all'` (default, limit 5) for broad exploration; `type='code'` (auto-enables CodeGraph) for source code & call chains; `type='memory'` for architecture docs only.
+- **`structure_search(q, repo)`**:
+  - **Purpose**: AST symbol definition pinpointing.
+  - **When to use**: When the symbol name or shape is known (`SessionManager`, `auth_middleware`) and you need its exact declaration location without semantic vector fuzziness.
+  - **Workflow**: Follow up with `get_lossless_tree` on that specific file and narrow line range before editing.
+- **`get_lossless_tree(repo, path, start_line, end_line, max_nodes=200)`**:
+  - **Purpose**: Concrete syntax tree (LST) inspection immediately before surgical edits.
+  - **When to use**: Before modifying code where exact indentation, whitespace, delimiters, comments, and line ranges matter.
+  - **LST vs AST**: Conventional ASTs discard comments and formatting; LST preserves 100% concrete syntax fidelity.
+  - **Efficiency**: **Always provide narrow `start_line` and `end_line` ranges** on large files to minimize token cost.
+- **`search_lossless_tree(q, repo, limit=10)`**:
+  - **Purpose**: Exact multi-repository syntax pattern matching.
+  - **When to use**: Locating identical syntax patterns, literal usages, or configurations across multiple repositories bounded by concrete syntax nodes.
+- **`analyze_code(repo, path, code, diff, symbol, node_type)`**:
+  - **Purpose**: Deep static code quality, complexity, and blast radius analysis.
+  - **When to use**: Before/after refactoring or editing, evaluating a standalone snippet (`code='...'`), reviewing a proposed replacement (`repo` + `path` + `code`), or checking a unified diff (`diff='...'`).
+  - **Metrics**: Reports cyclomatic/cognitive complexity, code health findings (dead code, unsafe error handling, tight coupling), and maintainability index without writing to disk or executing code.
+- **CodeGraph Relationships**:
+  - **Purpose**: Code-level call graphs, imports, and impact surfaces.
+  - **When to use**: Evaluating blast radius (`upstream_caller`: who calls this?; downstream: what does this call?) before changing function signatures or APIs. Surfaced in `research(include_graph=True)` and `analyze_code`.
+
+#### 2. Business & Architecture Knowledge Graph (`savant-knowledge` - Port 8094)
+Use for domain capability models, partner client rules, service catalogs, tech stacks, and developer insights:
+- **`project_context(workspace_id)`**:
+  - **Purpose**: Workspace onboarding at session start. Traverses the graph from the workspace project node (depth 2) to return connected domains, services, tasks, and notes.
+- **`search(query, node_type, limit)`**:
+  - **Purpose**: Discovering existing domain concepts, client partner requirements, architectural decisions, and known bugs.
+  - **Node types**: `client` (Fidelity, UBS…), `domain` (Auth/SSO, Holdings…), `service` (icn, simonapp…), `library`, `technology`, `insight` (curated knowledge/decisions), `issue` (known bugs), `project`, `concept`, `repo`, `session`.
+- **`neighbors(node_id, depth, edge_type)`**:
+  - **Purpose**: Traversing relationships outward from any entity to understand cross-service or client impacts.
+- **`store(content, workspace_id, node_type, repo, files, connections)`**:
+  - **Purpose**: Recording durable outcomes, design decisions (`insight`), or known bugs (`issue`). Created as `staged`; publish via `commit_workspace(workspace_id)` or `commit_nodes(...)`.
+- **`list_concepts()`**:
+  - **Purpose**: Listing abstract architectural concepts and design patterns.
+
+#### 3. Cross-Server Workflow Bridge
+- **From Knowledge to Code**: When a knowledge node references a `service`, `repo`, or `files`, transition to `savant-context.research` and `structure_search` to investigate the actual implementation, then `get_lossless_tree` before editing.
+- **From Code to Knowledge**: When code analysis or bug fixing reveals non-obvious architecture constraints, client workarounds, or incident root causes, record them in `savant-knowledge.store` and commit them for future agents.
+
+#### 4. Workspace & Task Management (`savant-workspace` - Port 8091)
+- `list_workspaces`, `get_workspace`, `create_workspace`, `close_workspace`
+- `list_tasks`, `create_task`, `update_task`, `complete_task`, `add_task_dependency`: Task dependency graphs and execution tracking.
+- `list_session_notes`, `create_session_note`: Ephemeral scratchpad notes for session context.
+- `list_jira_tickets`, `create_jira_ticket`, `list_merge_requests`, `create_merge_request`: Tracking integration work.
+
+#### 5. Abilities & Prompts (`savant-abilities` - Port 8092)
+- `find_assets(query, type)`: Locate backend coding rules, repo overlays, or policies without building full persona prompts.
+- `resolve_abilities(persona_id, repo_id)`: Compile personas, applicable rules, and policies into a deterministic prompt.
 
 ### Adding a new MCP server
 

@@ -92,9 +92,38 @@ def example_tool(param: str) -> dict:
     return _api("POST", "/api/feature/example", json={"param": param})
 ```
 
-### Savant Context: `analyze_code` guide
+### Savant Context & Knowledge: What to Use When Best
 
-Use `savant-context.analyze_code` for a read-only structural review before or after a refactor. It never executes submitted source and never writes to a repository. The result includes complexity, line count, findings, before/after deltas, and a safe refactor workflow.
+Savant provides two complementary MCP servers for AI agents:
+1. **`savant-context`** (Port 8093): Physical codebase intelligence — AST structure search, Lossless Syntax Trees (LST), CodeGraph dependency graphs, semantic code search, and static code analysis.
+2. **`savant-knowledge`** (Port 8094): Business & architecture metadata graph — capability domains, partner clients (Fidelity, UBS…), deployable services, shared libraries, tech stack, and curated developer insights/issues.
+
+#### Decision Matrix for AI Agents
+
+| Capability / Tool | Subsystem | When to Use Best | Key Benefit / Token Efficiency Tip |
+| :--- | :--- | :--- | :--- |
+| **`research`** | Context (Unified) | **Task start & initial discovery** when exploring an unfamiliar area, bug, or feature. | Combines semantic search, AST definitions, CodeGraph, and memory bank in 1 call. Start with `type='all', limit=5`. |
+| **`structure_search`** | Context (AST) | When the **symbol name or shape is known** (e.g. `SessionManager`, `authMiddleware`) and you need its exact declaration. | Direct AST index lookup. Zero semantic fuzziness. Pinpoints class and function declarations. |
+| **`get_lossless_tree`** | Context (LST) | **Immediately before reading or editing code** for surgical changes or refactoring. | Preserves 100% concrete syntax (whitespace, comments, delimiters). **Always specify narrow line ranges** (`start_line`, `end_line`). |
+| **`search_lossless_tree`** | Context (LST) | Multi-repository exact syntax pattern matching or variable usage. | Exact matching bounded by concrete syntax nodes across repositories. |
+| **`analyze_code`** | Context (Analysis) | **Before & after code modifications**, reviewing snippets, or testing unified diffs. | Evaluates cyclomatic/cognitive complexity, code quality findings/lints, duplication, and before/after deltas. |
+| **CodeGraph** | Context (Graph) | Investigating **who calls what** (`upstream_caller`), dependency chains, and ripple effects. | Built into `research(include_graph=True)` and returned in the `impact_surface` of `analyze_code`. |
+| **`project_context` / `search`** | Knowledge Graph | **Before code work**: checking domain rules, client quirks, architecture decisions, and known issues. | Traverses high-level domain graph (depth 2) to onboard an agent to workspace constraints. |
+| **`store` + `commit_workspace`** | Knowledge Graph | **After code work**: recording architectural decisions, bug patterns, or reusable lessons. | Links technical findings (`repo`, `files`) to business domains and services for future sessions. |
+
+#### Context Tool Deep-Dive
+
+##### 1. AST Structure Search (`structure_search`)
+Queries the AST symbol index directly. Use when you need the exact file path, class hierarchy, and line ranges where a function or class is defined without semantic vector fuzziness. Follow up with `get_lossless_tree` on that specific line range before modifying it.
+
+##### 2. Lossless Syntax Tree (`get_lossless_tree`, `search_lossless_tree`)
+Standard ASTs strip comments, whitespace, and formatting delimiters. The Lossless Syntax Tree (LST) preserves complete concrete syntax fidelity with exact byte and line coordinates. Always provide narrow `start_line` and `end_line` parameters on large files to keep token costs minimal.
+
+##### 3. CodeGraph & Blast Radius
+CodeGraph models code-level relationships: caller/callee (`calls`), module imports (`imports`), and class inheritance. Available through `research(include_graph=True)` and within the `impact_surface` section of `analyze_code`. Use it to answer: "Who breaks if I change this function?" and "What dependencies does this class rely on?"
+
+##### 4. Static Code Review (`analyze_code`)
+Use `savant-context.analyze_code` for read-only structural analysis before or after a refactor. It never executes submitted source and never writes to disk.
 
 | Goal | Required arguments | What is analyzed |
 |------|--------------------|------------------|
@@ -106,31 +135,33 @@ Use `savant-context.analyze_code` for a read-only structural review before or af
 
 Examples:
 
-```text
-# Find refactor targets in a file supplied by the caller
+```python
+# Standalone review of a code snippet
 analyze_code(
-  code="""def normalize(value):
+    code="""def normalize(value):
     if value:
         return value.strip()
     return None
-    print('unreachable')
 """
 )
 
-# Validate a proposed complete replacement before changing it on disk
+# Validate proposed replacement before writing to disk
 analyze_code(
-  repo="savant-server",
-  path="context/routes.py",
-  symbol="_execute_analysis",
-  node_type="function",
-  code="""def _execute_analysis(params):
+    repo="savant-server",
+    path="context/routes.py",
+    symbol="_execute_analysis",
+    node_type="function",
+    code="""def _execute_analysis(params):
     # proposed replacement, including the function declaration
     ...
 """
 )
 ```
 
-When narrowing to a function or class, `code` must include its declaration (for example, `def function_name(...)`), not only its inner body. The initial standalone call reports a `new` baseline; a repository-backed proposal reports `updated` with its delta when it differs from indexed source.
+#### Knowledge Graph Bridge: Transitioning Between Context and Knowledge
+
+- **From Knowledge to Code**: When `savant-knowledge.search` or `project_context` returns nodes pointing to services, repositories, or source files, transition to `savant-context.research` and `structure_search` to inspect the physical code, then `get_lossless_tree` for surgical editing.
+- **From Code to Knowledge**: When deep code analysis (`savant-context.analyze_code`) or refactoring reveals non-obvious architecture rules, client-specific workarounds, or bug root causes, persist them in `savant-knowledge.store` (with `workspace_id`, `node_type='insight'|'issue'`, `repo`, and touched `files`) and publish with `commit_workspace`.
 
 ### Abilities Bootstrap
 
