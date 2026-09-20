@@ -303,6 +303,328 @@ def api_setup_mcp():
     return jsonify({"status": "configured", "updated": True})
 
 
+_AGENT_SETUP_PROFILES = {
+    "copilot": {
+        "label": "GitHub Copilot",
+        "description": "GitHub Copilot Chat, CLI, and Agent Mode integration",
+        "presence_path": os.path.expanduser("~/.copilot"),
+        "mcp_path": os.path.expanduser("~/.copilot/mcp.json"),
+        "instructions_path": os.path.expanduser("~/.copilot/copilot-instructions.md"),
+        "skills_dir": os.path.expanduser("~/.copilot/skills"),
+        "hook_path": os.path.expanduser("~/.copilot/record-learning.sh"),
+    },
+    "claude": {
+        "label": "Claude Code / Desktop",
+        "description": "Anthropic Claude Code CLI & Desktop Agent integration",
+        "presence_path": os.path.expanduser("~/.claude"),
+        "mcp_path": os.path.expanduser("~/.claude/claude_desktop_config.json"),
+        "instructions_path": os.path.expanduser("~/.claude/CLAUDE.md"),
+        "skills_dir": os.path.expanduser("~/.claude/skills"),
+        "hook_path": os.path.expanduser("~/.claude/record-learning.sh"),
+    },
+    "hermes": {
+        "label": "Hermes Agent",
+        "description": "Hermes autonomous agent execution runtime",
+        "presence_path": os.path.expanduser("~/.hermes"),
+        "mcp_path": os.path.expanduser("~/.hermes/mcp.json"),
+        "instructions_path": os.path.expanduser("~/.hermes/instructions.md"),
+        "skills_dir": os.path.expanduser("~/.hermes/skills/custom"),
+        "hook_path": os.path.expanduser("~/.hermes/record-learning.sh"),
+    },
+    "codex": {
+        "label": "Codex Agent",
+        "description": "Codex CLI & OpenAI developer environment",
+        "presence_path": os.path.expanduser("~/.codex"),
+        "mcp_path": os.path.expanduser("~/.codex/mcp.json"),
+        "instructions_path": os.path.expanduser("~/.codex/instructions.md"),
+        "skills_dir": os.path.expanduser("~/.codex/skills"),
+        "hook_path": os.path.expanduser("~/.codex/record-learning.sh"),
+    },
+}
+
+_LEARNING_PROTOCOL_TEXT = """
+<!-- SAVANT KNOWLEDGE PROTOCOL START -->
+## Savant Knowledge & Memory Persistence Protocol
+You are integrated with Savant Knowledge Graph and Code Intelligence.
+Whenever you:
+1. Fix a bug, identify a non-trivial root cause, or resolve an edge case
+2. Establish an architectural pattern, convention, or design decision
+3. Complete an assigned task or major feature
+
+**You MUST record the durable outcome into Savant Knowledge:**
+- **Via MCP**: Call `savant-knowledge.store` with:
+  - `node_type`: `"insight"` (for design/patterns) or `"issue"` (for bug root causes)
+  - `name`: Clear, concise title
+  - `content`: Problem statement, root cause or architectural decision, and rationale
+  - `workspace_id`: Active Savant workspace ID
+  - `repo` / `files`: Touched files
+  Follow with `savant-knowledge.commit_workspace(workspace_id)` when finalizing.
+- **Via Shell Fallback**: If MCP is unavailable in the current context, execute:
+  `./record-learning.sh --type insight --title "..." --content "..."`
+<!-- SAVANT KNOWLEDGE PROTOCOL END -->
+"""
+
+_HOOK_SCRIPT_CONTENT = """#!/usr/bin/env bash
+# Savant Knowledge Auto-Recorder Hook
+set -e
+
+SAVANT_SERVER_URL="${SAVANT_SERVER_URL:-http://127.0.0.1:8090}"
+API_KEY="${SAVANT_API_KEY:-sk-ahmed-savant-001}"
+APP_NAME="savant-client"
+
+TYPE="insight"
+TITLE=""
+CONTENT=""
+WORKSPACE_ID=""
+
+while [[ "$#" -gt 0 ]]; do
+  case $1 in
+    --type) TYPE="$2"; shift ;;
+    --title) TITLE="$2"; shift ;;
+    --content) CONTENT="$2"; shift ;;
+    --workspace) WORKSPACE_ID="$2"; shift ;;
+    *) echo "Unknown parameter: $1"; exit 1 ;;
+  esac
+  shift
+done
+
+if [[ -z "$TITLE" ]]; then
+  echo "Error: --title is required"
+  exit 1
+fi
+
+PAYLOAD=$(cat <<EOF
+{
+  "title": "$TITLE",
+  "content": "$CONTENT",
+  "node_type": "$TYPE",
+  "workspace_id": "$WORKSPACE_ID"
+}
+EOF
+)
+
+RESPONSE=$(curl -s -w "\\n%{http_code}" -X POST "$SAVANT_SERVER_URL/api/knowledge/nodes" \\
+  -H "Content-Type: application/json" \\
+  -H "X-API-Key: $API_KEY" \\
+  -H "X-App-Name: $APP_NAME" \\
+  -d "$PAYLOAD")
+
+HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+if [[ "$HTTP_CODE" -ge 400 ]]; then
+  curl -s -X POST "$SAVANT_SERVER_URL/api/experiences" \\
+    -H "Content-Type: application/json" \\
+    -H "X-API-Key: $API_KEY" \\
+    -H "X-App-Name: $APP_NAME" \\
+    -d "$PAYLOAD"
+fi
+
+echo "Posted learning to Savant Knowledge: $TITLE"
+"""
+
+
+def _check_agent_setup_status_dict():
+    results = {}
+    for key, profile in _AGENT_SETUP_PROFILES.items():
+        present = os.path.exists(profile["presence_path"])
+
+        # 1. MCP
+        mcp_configured = False
+        if os.path.exists(profile["mcp_path"]):
+            try:
+                with open(profile["mcp_path"], "r", encoding="utf-8") as f:
+                    content = f.read()
+                    if "8094" in content or "savant-knowledge" in content:
+                        mcp_configured = True
+            except Exception:
+                pass
+
+        # 2. Instructions
+        instructions_configured = False
+        if os.path.exists(profile["instructions_path"]):
+            try:
+                with open(profile["instructions_path"], "r", encoding="utf-8") as f:
+                    content = f.read()
+                    if "savant-knowledge" in content or "Savant Knowledge" in content or "SAVANT KNOWLEDGE PROTOCOL" in content:
+                        instructions_configured = True
+            except Exception:
+                pass
+
+        # 3. Skills
+        skills_configured = False
+        target_skill_dir = os.path.join(profile["skills_dir"], "savant-knowledge-commit")
+        if os.path.exists(target_skill_dir):
+            skills_configured = True
+
+        # 4. Hook Script
+        hook_configured = os.path.exists(profile["hook_path"])
+
+        parts = [
+            {
+                "id": "mcp",
+                "label": "MCP Knowledge Bridge",
+                "configured": mcp_configured,
+                "path": profile["mcp_path"],
+                "details": "SSE connection to Savant Knowledge (port 8094) & Context (port 8093)",
+            },
+            {
+                "id": "instructions",
+                "label": "Learning Protocol Instructions",
+                "configured": instructions_configured,
+                "path": profile["instructions_path"],
+                "details": "Mandates posting durable insights & bug root causes to Savant Knowledge",
+            },
+            {
+                "id": "skills",
+                "label": "Savant Default Skills",
+                "configured": skills_configured,
+                "path": profile["skills_dir"],
+                "details": "savant-knowledge-commit, savant-code-analysis, savant-session-workspace",
+            },
+            {
+                "id": "hook",
+                "label": "Fallback Learning Hook",
+                "configured": hook_configured,
+                "path": profile["hook_path"],
+                "details": "CLI curl wrapper for posting learnings directly to Savant Knowledge API",
+            },
+        ]
+
+        all_conf = all(p["configured"] for p in parts)
+        none_conf = all(not p["configured"] for p in parts)
+        status = "configured" if all_conf else ("not_configured" if none_conf else "partial")
+
+        results[key] = {
+            "provider": key,
+            "label": profile["label"],
+            "description": profile["description"],
+            "presencePath": profile["presence_path"],
+            "present": present,
+            "status": status,
+            "parts": parts,
+            "lastChecked": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+
+    agents_list = list(results.values())
+    return {
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "serverUrl": request.host_url.rstrip("/") if request else "http://127.0.0.1:8090",
+        "agents": results,
+        "summary": {
+            "total": len(agents_list),
+            "configured": sum(1 for a in agents_list if a["status"] == "configured"),
+            "partial": sum(1 for a in agents_list if a["status"] == "partial"),
+            "notConfigured": sum(1 for a in agents_list if a["status"] == "not_configured"),
+        },
+    }
+
+
+@jobs_system_bp.route("/api/agents/setup/status", methods=["GET"])
+def api_agent_setup_status():
+    return jsonify(_check_agent_setup_status_dict())
+
+
+@jobs_system_bp.route("/api/agents/setup/trigger", methods=["POST"])
+def api_agent_setup_trigger():
+    data = request.get_json(force=True, silent=True) or {}
+    provider = data.get("provider", "all")
+    targets = list(_AGENT_SETUP_PROFILES.keys()) if provider == "all" else [provider]
+
+    configured_parts = []
+    for p in targets:
+        profile = _AGENT_SETUP_PROFILES.get(p)
+        if not profile:
+            continue
+
+        os.makedirs(profile["presence_path"], exist_ok=True)
+
+        # 1. MCP
+        try:
+            os.makedirs(os.path.dirname(profile["mcp_path"]), exist_ok=True)
+            current_mcp = {"mcpServers": {}}
+            if os.path.exists(profile["mcp_path"]):
+                try:
+                    with open(profile["mcp_path"], "r", encoding="utf-8") as f:
+                        current_mcp = json.load(f)
+                    if "mcpServers" not in current_mcp or not isinstance(current_mcp["mcpServers"], dict):
+                        current_mcp["mcpServers"] = {}
+                except Exception:
+                    pass
+
+            current_mcp["mcpServers"]["savant-knowledge"] = {
+                "type": "sse",
+                "url": "http://127.0.0.1:8094/sse?api_key=sk-ahmed-savant-001&app_name=savant-mcp",
+            }
+            current_mcp["mcpServers"]["savant-context"] = {
+                "type": "sse",
+                "url": "http://127.0.0.1:8093/sse?api_key=sk-ahmed-savant-001&app_name=savant-mcp",
+            }
+            current_mcp["mcpServers"]["savant-workspace"] = {
+                "type": "sse",
+                "url": "http://127.0.0.1:8091/sse?api_key=sk-ahmed-savant-001&app_name=savant-mcp",
+            }
+            with open(profile["mcp_path"], "w", encoding="utf-8") as f:
+                json.dump(current_mcp, f, indent=2)
+            configured_parts.append(f"{p}:mcp")
+        except Exception as e:
+            pass
+
+        # 2. Instructions
+        try:
+            os.makedirs(os.path.dirname(profile["instructions_path"]), exist_ok=True)
+            existing = ""
+            if os.path.exists(profile["instructions_path"]):
+                try:
+                    with open(profile["instructions_path"], "r", encoding="utf-8") as f:
+                        existing = f.read()
+                except Exception:
+                    pass
+
+            if "SAVANT KNOWLEDGE PROTOCOL" not in existing:
+                updated = (existing.strip() + "\n\n" + _LEARNING_PROTOCOL_TEXT.strip() + "\n") if existing else (_LEARNING_PROTOCOL_TEXT.strip() + "\n")
+                with open(profile["instructions_path"], "w", encoding="utf-8") as f:
+                    f.write(updated)
+            configured_parts.append(f"{p}:instructions")
+        except Exception as e:
+            pass
+
+        # 3. Skills
+        try:
+            os.makedirs(profile["skills_dir"], exist_ok=True)
+            skill_dir = os.path.join(profile["skills_dir"], "savant-knowledge-commit")
+            os.makedirs(skill_dir, exist_ok=True)
+            skill_md = os.path.join(skill_dir, "SKILL.md")
+            with open(skill_md, "w", encoding="utf-8") as f:
+                f.write("""---
+name: savant-knowledge-commit
+description: Record workspace-scoped outcomes in the Savant knowledge graph through MCP.
+---
+
+# Savant Knowledge Commit
+Capture durable outcomes in Savant Knowledge using only savant-knowledge MCP tools.
+""")
+            configured_parts.append(f"{p}:skills")
+        except Exception as e:
+            pass
+
+        # 4. Hook Script
+        try:
+            os.makedirs(os.path.dirname(profile["hook_path"]), exist_ok=True)
+            with open(profile["hook_path"], "w", encoding="utf-8") as f:
+                f.write(_HOOK_SCRIPT_CONTENT)
+            os.chmod(profile["hook_path"], 0o755)
+            configured_parts.append(f"{p}:hook")
+        except Exception as e:
+            pass
+
+    report = _check_agent_setup_status_dict()
+    return jsonify({
+        "success": True,
+        "provider": provider,
+        "configuredParts": configured_parts,
+        "report": report,
+    })
+
+
 @jobs_system_bp.route("/health/live", methods=["GET"])
 def health_live():
     from server_version import get_build_info

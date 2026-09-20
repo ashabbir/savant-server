@@ -178,6 +178,17 @@ def create_node():
         return jsonify({"error": "internal error", "detail": str(e)}), 500
 
 
+@knowledge_bp.route("/api/knowledge/experiences", methods=["GET", "POST"])
+@require_savant_app
+def api_knowledge_experiences():
+    """Alias route for experiences / learning nodes under /api/knowledge."""
+    if request.method == "GET":
+        user_id = getattr(g, "user_id", "")
+        exps = ExperienceDB.list_all(user_id=user_id)
+        return jsonify(exps)
+    return create_node()
+
+
 @knowledge_bp.route("/api/knowledge/nodes/<node_id>", methods=["GET"])
 def get_node(node_id):
     """Get a node with its edges."""
