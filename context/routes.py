@@ -274,6 +274,107 @@ def ast_list():
     return jsonify({"ast_count": len(nodes), "nodes": nodes})
 
 
+def _lossless_codegraph_symbols(repo: str, rel_path: str, start_line: int, end_line: int):
+    """Return CodeGraph symbols that overlap an LST range when available."""
+    try:
+        from .db import ContextDB
+        from db.code_intelligence import CodeIntelligenceConfigDB
+
+        record = ContextDB.get_repo_by_identifier(repo)
+        if not record or not CodeIntelligenceConfigDB.get(str(record["id"])):
+            return []
+        from code_intelligence.runtime import build_service
+        listed = build_service().list_symbols(
+            str(record["id"]), _resolve_repo_path(record["path"]),
+            filters={"path": rel_path}, limit=500,
+        )
+        return [{
+            "id": item.id, "kind": item.kind, "name": item.name,
+            "qualified_name": item.qualified_name, "signature": item.signature,
+            "start_line": item.location.start_line, "end_line": item.location.end_line,
+        } for item in listed["items"]
+            if item.location.file_path == rel_path
+            and item.location.end_line >= start_line
+            and item.location.start_line <= end_line]
+    except Exception as exc:
+        logger.debug("CodeGraph links unavailable for %s/%s: %s", repo, rel_path, exc)
+        return []
+
+
+def _lossless_tree_response(artifact, start_line=None, end_line=None, max_nodes=500):
+    """Build a bounded agent-facing LST response with AST and CodeGraph links."""
+    from .db import ContextDB
+    from .lossless_tree import bounded_tree
+
+    result = bounded_tree(artifact, start_line=start_line, end_line=end_line, max_nodes=max_nodes)
+    result["repo"] = artifact["repo"]
+    result["path"] = artifact["rel_path"]
+    result["generated_at"] = artifact.get("generated_at")
+    result["ast_symbols"] = ContextDB.list_file_ast_nodes(artifact["repo"], artifact["rel_path"])
+    # CodeGraph uses the same path/range coordinate system.  Keeping this
+    # explicit lets agents safely combine exact syntax with graph results.
+    result["codegraph_link"] = {
+        "repo": artifact["repo"], "path": artifact["rel_path"],
+        "start_line": result["source_range"]["start_line"],
+        "end_line": result["source_range"]["end_line"],
+    }
+    result["codegraph_symbols"] = _lossless_codegraph_symbols(
+        artifact["repo"], artifact["rel_path"],
+        result["source_range"]["start_line"], result["source_range"]["end_line"],
+    )
+    return result
+
+
+@context_bp.route("/api/context/lossless-tree")
+def lossless_tree():
+    """Return a bounded, exact source slice and concrete syntax tree."""
+    if not _ensure_init():
+        return jsonify({"error": "Context not initialized"}), 503
+    repo = request.args.get("repo", "").strip()
+    path = request.args.get("path", "").strip()
+    if not repo or not path:
+        return jsonify({"error": "repo and path required"}), 400
+    from .db import ContextDB
+    repo_names = [item.strip() for item in repo.split(",") if item.strip()]
+    trees = []
+    for repo_name in repo_names:
+        artifact = ContextDB.get_lossless_tree(repo_name, path)
+        if artifact:
+            trees.append(_lossless_tree_response(
+                artifact,
+                request.args.get("start_line", type=int),
+                request.args.get("end_line", type=int),
+                request.args.get("max_nodes", type=int) or 500,
+            ))
+    if not trees:
+        return jsonify({"error": "lossless tree not found", "results": []}), 404
+    if len(repo_names) == 1:
+        return jsonify(trees[0])
+    return jsonify({"result_count": len(trees), "results": trees, "incomplete": len(trees) != len(repo_names)})
+
+
+@context_bp.route("/api/context/lossless-tree/search")
+def lossless_tree_search():
+    """Search exact indexed source across repositories and return bounded slices."""
+    if not _ensure_init():
+        return jsonify({"error": "Context not initialized"}), 503
+    query = request.args.get("q", "").strip()
+    if not query:
+        return jsonify({"error": "q required", "results": []}), 400
+    repo = request.args.get("repo")
+    repo_filter = repo.split(",") if repo and "," in repo else repo
+    from .db import ContextDB
+    rows = ContextDB.search_lossless_trees(query, repo_filter=repo_filter,
+                                           limit=request.args.get("limit", type=int) or 20)
+    results = []
+    for artifact in rows:
+        source = artifact["source"]
+        offset = max(0, int(artifact.get("match_offset") or 1) - 1)
+        line = source[:offset].count("\n") + 1
+        results.append(_lossless_tree_response(artifact, max(1, line - 3), line + 3, 200))
+    return jsonify({"query": query, "result_count": len(results), "results": results})
+
+
 @context_bp.route("/api/context/analysis", methods=["POST"])
 def analyze():
     if not _ensure_init():
@@ -1360,6 +1461,24 @@ def _exec_memory_search(q: str, repo: str | None, limit: int) -> dict:
     return {"query": q, "result_count": len(trimmed), "results": trimmed}
 
 
+def _exec_lossless_search(q: str, repo: str | None, limit: int) -> dict:
+    """Add exact source evidence to research without returning unbounded trees."""
+    from .db import ContextDB
+    from .lossless_tree import bounded_tree
+
+    repo_filter = repo.split(",") if repo and isinstance(repo, str) and "," in repo else repo
+    rows = ContextDB.search_lossless_trees(q, repo_filter=repo_filter, limit=limit)
+    results = []
+    for artifact in rows:
+        source = artifact["source"]
+        offset = max(0, int(artifact.get("match_offset") or 1) - 1)
+        line = source[:offset].count("\n") + 1
+        item = bounded_tree(artifact, max(1, line - 2), line + 2, 120)
+        item.update({"repo": artifact["repo"], "rel_path": artifact["rel_path"], "match_line": line})
+        results.append(item)
+    return {"query": q, "result_count": len(results), "results": results}
+
+
 def _exec_graph_search(g_query: str, repo_ids: list[str], limit: int) -> dict:
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from code_intelligence.runtime import build_service
@@ -1481,6 +1600,9 @@ def context_research():
             futures["structure_search"] = executor.submit(
                 _exec_structure_search, q, repo, repo_ids, limit, should_exclude_tests
             )
+            futures["lossless_tree_search"] = executor.submit(
+                _exec_lossless_search, q, repo, limit
+            )
 
         if search_type in ("all", "memory"):
             futures["memory_bank_search"] = executor.submit(
@@ -1536,6 +1658,7 @@ def context_research():
     code_cnt = len(results.get("code_search", {}).get("results", [])) if "code_search" in results else 0
     struct_cnt = len(results.get("structure_search", {}).get("results", [])) if "structure_search" in results else 0
     graph_cnt = len(results.get("code_graph_search", {})) if "code_graph_search" in results else 0
+    lossless_cnt = len(results.get("lossless_tree_search", {}).get("results", [])) if "lossless_tree_search" in results else 0
     mb_cnt = len(results.get("memory_bank_search", {}).get("results", [])) if "memory_bank_search" in results else 0
 
     overview_block = {
@@ -1544,7 +1667,8 @@ def context_research():
         "execution": "multithreaded_parallel",
         "summary": (
             f"Parallel research for '{q}' completed. Found {code_cnt} code snippets, {struct_cnt} AST symbol declarations, "
-            f"{graph_cnt} dependency graph nodes, and {mb_cnt} memory bank/documentation excerpts."
+            f"{graph_cnt} dependency graph nodes, {lossless_cnt} exact source-tree matches, "
+            f"and {mb_cnt} memory bank/documentation excerpts."
         ),
         "top_symbols": top_symbols,
         "top_files": sorted(list(top_files))[:8],
@@ -1556,7 +1680,7 @@ def context_research():
         "overview": overview_block,
         "impact_surface": impact_surface_block,
     }
-    for key in ("code_search", "structure_search", "code_graph_search", "memory_bank_search"):
+    for key in ("code_search", "structure_search", "lossless_tree_search", "code_graph_search", "memory_bank_search"):
         if key in results:
             final_payload[key] = results[key]
 

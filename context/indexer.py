@@ -492,6 +492,11 @@ class Indexer:
             if suffix == ".py":
                 self._extract_python_native_ast(file_id, file_rel_path, content, conn=conn)
 
+    def _store_lossless_tree(self, file_id: int, file_rel_path: str, content: str, conn=None):
+        """Persist exact source plus a compact concrete syntax tree for MCP use."""
+        from .lossless_tree import build_lossless_tree
+        ContextDB.upsert_lossless_tree(file_id, build_lossless_tree(file_rel_path, content), conn=conn)
+
     def _ast_node_name(self, node, content_bytes: bytes) -> str:
         name_types = {
             "identifier", "type_identifier", "constant", "scope_resolution",
@@ -555,6 +560,7 @@ class Indexer:
         )
         if replace_generated:
             ContextDB.clear_file_generated_data(file_id, conn=conn)
+        self._store_lossless_tree(file_id, str(file_rel_path), content, conn=conn)
         self._extract_and_store_ast(file_id, str(file_rel_path), content, conn=conn)
         chunk_count = 0
         for chunk_index, chunk_text in self.chunker.chunk_with_metadata(content):
@@ -580,6 +586,8 @@ class Indexer:
         )
         if replace_generated:
             ContextDB.clear_file_ast_data(file_id, conn=conn)
+            ContextDB.clear_file_lossless_tree_data(file_id, conn=conn)
+        self._store_lossless_tree(file_id, str(file_rel_path), content, conn=conn)
         self._extract_and_store_ast(file_id, str(file_rel_path), content, conn=conn)
         return True
 
@@ -812,6 +820,66 @@ class Indexer:
             release_connection(conn)
             _clear_cancel(repo_name)
             _schedule_status_cleanup(repo_name)
+
+    def sync_lossless_trees_for_repository(self, repo_path: Path, repo_name: Optional[str] = None,
+                                            clear: bool = False,
+                                            job_progress_cb: Optional[Callable] = None) -> Dict[str, Any]:
+        """Refresh source-faithful trees without changing index or graph status.
+
+        CodeGraph sync jobs use this method so repositories that rely on the
+        structural provider still receive the exact syntax context exposed by
+        Context MCP.
+        """
+        repo_path = Path(repo_path).resolve()
+        if not repo_path.is_dir():
+            raise NotADirectoryError(f"Path does not exist or is not a directory: {repo_path}")
+        repo_name = repo_name or repo_path.name
+        conn = get_connection()
+        try:
+            repo = ContextDB.get_repo(repo_name, conn=conn)
+            if not repo:
+                repo = ContextDB.add_repo(repo_name, str(repo_path), conn=conn)
+            repo_id = repo["id"]
+            if clear:
+                ContextDB.clear_lossless_tree_data(repo_id, conn=conn)
+
+            files = list(FileWalker(repo_path, tracked_only=True).walk())
+            stored = 0
+            skipped = 0
+            errors = 0
+            for index, file_rel_path in enumerate(files, 1):
+                if MemoryBankDetector.should_skip_in_memory_dir(str(file_rel_path)):
+                    skipped += 1
+                    continue
+                path = repo_path / file_rel_path
+                try:
+                    if path.stat().st_size > 5_000_000:
+                        skipped += 1
+                        continue
+                    content = path.read_text(encoding="utf-8", errors="ignore")
+                    if "\x00" in content:
+                        skipped += 1
+                        continue
+                    language, is_memory_bank = self._detect_language(str(file_rel_path))
+                    if is_memory_bank:
+                        skipped += 1
+                        continue
+                    file_id = ContextDB.insert_file(
+                        repo_id, str(file_rel_path), language, False,
+                        int(path.stat().st_mtime_ns), datetime.now(timezone.utc).isoformat(), conn=conn,
+                    )
+                    self._store_lossless_tree(file_id, str(file_rel_path), content, conn=conn)
+                    stored += 1
+                    if job_progress_cb and (index % 10 == 0 or index == len(files)):
+                        job_progress_cb(int(index / len(files) * 100) if files else 100,
+                                        "Lossless source tree", str(file_rel_path))
+                except Exception as exc:
+                    logger.error("Error generating lossless tree for %s: %s", file_rel_path, exc)
+                    errors += 1
+            return {"repo_name": repo_name, "files_processed": stored,
+                    "files_skipped": skipped, "errors": errors}
+        finally:
+            release_connection(conn)
 
     def index_in_background(self, repo_path: Path, repo_name: Optional[str] = None):
         def _run():

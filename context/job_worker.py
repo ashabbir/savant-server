@@ -328,6 +328,7 @@ def _run_code_intelligence_sync(job_id: str, target: str, progress_cb) -> dict:
     """Run structural create/sync without changing semantic repository status."""
     from code_intelligence.runtime import build_service
     from db.code_intelligence import CodeIntelligenceConfigDB
+    from context.indexer import Indexer
 
     repo_path, repo_name = _resolve_repo(target)
     # Preserve the stable repository identifier used by the caller. Converting
@@ -339,6 +340,13 @@ def _run_code_intelligence_sync(job_id: str, target: str, progress_cb) -> dict:
     try:
         result = build_service().ensure_index(
             provider_repo_id, repo_path, mode="create_or_sync", request_id=job_id
+        )
+        progress_cb(70, "Lossless source tree", "Refreshing exact syntax context")
+        lossless_result = Indexer().sync_lossless_trees_for_repository(
+            repo_path, repo_name=repo_name,
+            job_progress_cb=lambda pct, phase, message: progress_cb(
+                70 + int(pct * .25), phase, message
+            ),
         )
         progress_cb(95, "Finalizing", "Recording structural graph state")
         health = build_service().health(provider_repo_id, repo_path)
@@ -352,7 +360,9 @@ def _run_code_intelligence_sync(job_id: str, target: str, progress_cb) -> dict:
             last_error_code=None,
             last_error_at=None,
         )
-        return result.model_dump(mode="json") if hasattr(result, "model_dump") else dict(result)
+        payload = result.model_dump(mode="json") if hasattr(result, "model_dump") else dict(result)
+        payload["lossless_tree_result"] = lossless_result
+        return payload
     except Exception as exc:
         CodeIntelligenceConfigDB.upsert(
             provider_repo_id, freshness="stale", last_error_code=getattr(getattr(exc, "category", None), "value", "internal"),

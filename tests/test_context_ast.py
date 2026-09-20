@@ -327,6 +327,64 @@ def test_context_mcp_structure_search_accepts_q_alias(monkeypatch):
     assert captured["params"]["repo"] == "repo-overview"
 
 
+def test_lossless_tree_preserves_source_and_links_ast(client, tmp_path, monkeypatch):
+    from context.db import ContextDB, init_context_schema
+    from context.indexer import Indexer
+
+    assert init_context_schema()
+
+    class _FakeEmbedder:
+        def embed_one(self, _text):
+            return [0.0] * 768
+
+    monkeypatch.setattr(Indexer, "_get_embedder", lambda self: _FakeEmbedder())
+    repo_dir = _seed_python_repo(tmp_path, "repo-lossless")
+    ContextDB.add_repo("repo-lossless", str(repo_dir))
+    Indexer().index_repository(repo_dir, repo_name="repo-lossless")
+
+    response = client.get(
+        "/api/context/lossless-tree?repo=repo-lossless&path=sample.py&start_line=1&end_line=5"
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert "class Service:" in payload["source"]
+    assert payload["source_hash"]
+    assert payload["tree"]["parser"] in {"tree-sitter", "source-only"}
+    assert payload["nodes"]
+    assert {symbol["name"] for symbol in payload["ast_symbols"]} >= {"Service", "run", "helper"}
+    assert payload["codegraph_link"] == {
+        "repo": "repo-lossless", "path": "sample.py", "start_line": 1, "end_line": 5,
+    }
+
+
+def test_lossless_tree_search_supports_multi_repo(client, tmp_path, monkeypatch):
+    from context.db import ContextDB, init_context_schema
+    from context.indexer import Indexer
+
+    assert init_context_schema()
+
+    class _FakeEmbedder:
+        def embed_one(self, _text):
+            return [0.0] * 768
+
+    monkeypatch.setattr(Indexer, "_get_embedder", lambda self: _FakeEmbedder())
+    first = _seed_python_repo(tmp_path, "repo-lossless-a")
+    second = _seed_python_repo(tmp_path, "repo-lossless-b")
+    (second / "sample.py").write_text("def special_context():\n    return 'shared-lst-token'\n")
+    subprocess.run(["git", "-C", str(second), "add", "sample.py"], check=True, capture_output=True)
+    for repo_name, repo_dir in (("repo-lossless-a", first), ("repo-lossless-b", second)):
+        ContextDB.add_repo(repo_name, str(repo_dir))
+        Indexer().index_repository(repo_dir, repo_name=repo_name)
+
+    response = client.get(
+        "/api/context/lossless-tree/search?q=shared-lst-token&repo=repo-lossless-a,repo-lossless-b"
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["result_count"] == 1
+    assert payload["results"][0]["repo"] == "repo-lossless-b"
+
+
 def test_context_analysis_by_class_name(monkeypatch):
     from context.analysis import AnalysisTarget, analyze_code
 

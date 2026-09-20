@@ -280,6 +280,38 @@ class ContextDB:
                 )
                 cur.execute("DELETE FROM ctx_chunks WHERE file_id = %s", (file_id,))
                 cur.execute("DELETE FROM ctx_ast_nodes WHERE file_id = %s", (file_id,))
+                cur.execute("DELETE FROM ctx_lossless_trees WHERE file_id = %s", (file_id,))
+            conn.commit()
+        finally:
+            if local_conn:
+                release_connection(conn)
+
+    @staticmethod
+    def clear_lossless_tree_data(repo_id: int, conn=None):
+        """Delete lossless tree artifacts for a repository."""
+        local_conn = False
+        if conn is None:
+            conn = get_connection()
+            local_conn = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""DELETE FROM ctx_lossless_trees
+                               WHERE file_id IN (SELECT id FROM ctx_files WHERE repo_id = %s)""", (repo_id,))
+            conn.commit()
+        finally:
+            if local_conn:
+                release_connection(conn)
+
+    @staticmethod
+    def clear_file_lossless_tree_data(file_id: int, conn=None):
+        """Delete one file's lossless tree before an incremental replacement."""
+        local_conn = False
+        if conn is None:
+            conn = get_connection()
+            local_conn = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM ctx_lossless_trees WHERE file_id = %s", (file_id,))
             conn.commit()
         finally:
             if local_conn:
@@ -525,6 +557,100 @@ class ContextDB:
         finally:
             if local_conn:
                 release_connection(conn)
+
+    @staticmethod
+    def upsert_lossless_tree(file_id: int, artifact: Dict[str, Any], conn=None) -> None:
+        """Persist the one source-faithful tree artifact associated with a file."""
+        local_conn = False
+        if conn is None:
+            conn = get_connection()
+            local_conn = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO ctx_lossless_trees
+                       (file_id, source_hash, grammar, schema_version, source, tree, generated_at)
+                       VALUES (%s, %s, %s, %s, %s, %s::jsonb, CURRENT_TIMESTAMP)
+                       ON CONFLICT (file_id) DO UPDATE SET
+                         source_hash = EXCLUDED.source_hash,
+                         grammar = EXCLUDED.grammar,
+                         schema_version = EXCLUDED.schema_version,
+                         source = EXCLUDED.source,
+                         tree = EXCLUDED.tree,
+                         generated_at = CURRENT_TIMESTAMP""",
+                    (file_id, artifact["source_hash"], artifact["grammar"], artifact["schema_version"],
+                     artifact["source"], json.dumps(artifact["tree"])),
+                )
+            conn.commit()
+        finally:
+            if local_conn:
+                release_connection(conn)
+
+    @staticmethod
+    def get_lossless_tree(repo: str, rel_path: str) -> Optional[Dict[str, Any]]:
+        """Load one persisted LST by canonical repository name and relative path."""
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT t.source_hash, t.grammar, t.schema_version, t.source, t.tree,
+                              t.generated_at, f.rel_path, r.name AS repo
+                         FROM ctx_lossless_trees t
+                         JOIN ctx_files f ON f.id = t.file_id
+                         JOIN ctx_repos r ON r.id = f.repo_id
+                         WHERE LOWER(r.name) = LOWER(%s) AND f.rel_path = %s""",
+                    (repo, rel_path),
+                )
+                row = cur.fetchone()
+            return dict(row) if row else None
+        finally:
+            release_connection(conn)
+
+    @staticmethod
+    def search_lossless_trees(query: str, repo_filter: Optional[Union[str, List[str]]] = None,
+                              limit: int = 20) -> List[Dict[str, Any]]:
+        """Find exact source matches across one or more repositories."""
+        conn = get_connection()
+        try:
+            sql = """SELECT t.source_hash, t.grammar, t.schema_version, t.source, t.tree,
+                             f.rel_path, r.name AS repo,
+                             POSITION(LOWER(%s) IN LOWER(t.source)) AS match_offset
+                        FROM ctx_lossless_trees t
+                        JOIN ctx_files f ON f.id = t.file_id
+                        JOIN ctx_repos r ON r.id = f.repo_id
+                        WHERE LOWER(t.source) LIKE '%%' || LOWER(%s) || '%%'"""
+            params: list[Any] = [query, query]
+            if repo_filter:
+                repo_list = repo_filter if isinstance(repo_filter, list) else [repo_filter]
+                sql += " AND LOWER(r.name) = ANY(%s)"
+                params.append(_normalized_repo_names(repo_list))
+            sql += " ORDER BY r.name, f.rel_path LIMIT %s"
+            params.append(max(1, min(int(limit), 50)))
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                rows = cur.fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            release_connection(conn)
+
+    @staticmethod
+    def list_file_ast_nodes(repo: str, rel_path: str) -> List[Dict[str, Any]]:
+        """Return legacy declaration projections that overlap an LST file."""
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT a.id, a.node_type, a.name, a.start_line, a.end_line
+                         FROM ctx_ast_nodes a
+                         JOIN ctx_files f ON f.id = a.file_id
+                         JOIN ctx_repos r ON r.id = f.repo_id
+                         WHERE LOWER(r.name) = LOWER(%s) AND f.rel_path = %s
+                         ORDER BY a.start_line, a.end_line, a.id""",
+                    (repo, rel_path),
+                )
+                return [dict(row) for row in cur.fetchall()]
+        finally:
+            release_connection(conn)
 
     # ------------------------------------------------------------------
     # Search

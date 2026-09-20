@@ -56,8 +56,10 @@ mcp = FastMCP(
         "      • 'memory': Use when looking specifically for architectural decisions, project design docs, or memory bank history (excludes code).\n"
         "  - Scope lookup with 'repo' (e.g., repo='savant-server' or repo=['savant-client', 'savant-server']).\n\n"
         "Tools:\n"
-        "  - research(q, repo, type, limit): Primary codebase & memory research tool for AI agents.\n"
+        "  - research(q, repo, type, limit): Primary codebase, lossless-source, graph, and memory research tool for AI agents.\n"
         "  - structure_search(q, repo): AST structural match to pinpoint class/function definitions.\n"
+        "  - get_lossless_tree(repo, path, start_line, end_line): Exact source plus concrete syntax nodes and AST/CodeGraph coordinates.\n"
+        "  - search_lossless_tree(q, repo): Exact multi-repository source search with bounded syntax context.\n"
         "  - analyze_code(repo, path, uri, name, class_name, symbol, node_type, diff, code): Detailed code analysis tool.\n\n"
         "ANALYZE_CODE USAGE:\n"
         "  - Standalone review: pass code='<complete file source>' with no repo/path/diff. This is read-only and reports complexity, findings, and refactor targets.\n"
@@ -195,6 +197,42 @@ def structure_search(
         raw["result_count"] = len(items)
 
     return raw
+
+
+@mcp.tool()
+def get_lossless_tree(
+    repo: str | list[str],
+    path: str,
+    start_line: int | None = None,
+    end_line: int | None = None,
+    max_nodes: int = 500,
+) -> dict:
+    """Get exact source, concrete syntax, AST declarations, and CodeGraph coordinates.
+
+    Use this before an edit where comments, formatting, delimiters, or exact
+    source ranges matter. Results are bounded; request a narrower line range
+    for large files.
+    """
+    params = {"repo": ",".join(repo) if isinstance(repo, list) else repo, "path": path,
+              "max_nodes": max_nodes}
+    if start_line is not None:
+        params["start_line"] = start_line
+    if end_line is not None:
+        params["end_line"] = end_line
+    return _get("/api/context/lossless-tree", params)
+
+
+@mcp.tool()
+def search_lossless_tree(
+    q: str,
+    repo: str | list[str] = None,
+    limit: int = 20,
+) -> dict:
+    """Find exact source matches across repositories with concrete syntax context."""
+    params = {"q": q, "limit": limit}
+    if repo:
+        params["repo"] = ",".join(repo) if isinstance(repo, list) else repo
+    return _get("/api/context/lossless-tree/search", params)
 
 
 @mcp.tool()

@@ -52,7 +52,7 @@ def _isolated_db(tmp_path, monkeypatch, request):
     try:
         with conn.cursor() as cur:
             require_test_database(cur)
-            cur.execute("TRUNCATE experiences, kg_nodes, kg_edges, kg_maintenance_runs, notes, tasks, task_ended_days, workspaces, notebooks, jira_tickets, jira_notes, merge_requests, mr_notes, jobs, ctx_repos, ctx_files, ctx_chunks, ctx_ast_nodes, ctx_vec_chunks, ctx_repo_sync_logs, ctx_periodic_sync_logs, workspace_session_links, reminders, notifications, code_intelligence_config, users RESTART IDENTITY CASCADE;")
+            cur.execute("TRUNCATE experiences, kg_nodes, kg_edges, kg_maintenance_runs, notes, tasks, task_ended_days, workspaces, notebooks, jira_tickets, jira_notes, merge_requests, mr_notes, jobs, ctx_repos, ctx_files, ctx_chunks, ctx_ast_nodes, ctx_lossless_trees, ctx_vec_chunks, ctx_repo_sync_logs, ctx_periodic_sync_logs, workspace_session_links, reminders, notifications, code_intelligence_config, users RESTART IDENTITY CASCADE;")
         conn.commit()
     finally:
         release_connection(conn)

@@ -737,6 +737,19 @@ CREATE TABLE IF NOT EXISTS ctx_ast_nodes (
 );
 CREATE INDEX IF NOT EXISTS idx_ctx_ast_file ON ctx_ast_nodes(file_id);
 
+-- Source-faithful concrete tree.  One artifact per file prevents a row-per-
+-- token explosion while retaining exact source, comments, and trivia.
+CREATE TABLE IF NOT EXISTS ctx_lossless_trees (
+    file_id        INTEGER PRIMARY KEY REFERENCES ctx_files(id) ON DELETE CASCADE,
+    source_hash    TEXT NOT NULL,
+    grammar        TEXT NOT NULL,
+    schema_version INTEGER NOT NULL,
+    source         TEXT NOT NULL,
+    tree           JSONB NOT NULL,
+    generated_at   TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_ctx_lossless_hash ON ctx_lossless_trees(source_hash);
+
 -- pgvector embedding table (replaces sqlite-vec ctx_vec_chunks virtual table)
 CREATE TABLE IF NOT EXISTS ctx_vec_chunks (
     chunk_id    INTEGER PRIMARY KEY REFERENCES ctx_chunks(id) ON DELETE CASCADE,
@@ -1223,6 +1236,20 @@ _SCHEMA_MIGRATIONS = (
         "add durable task comments for execution and review evidence",
         (
             "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS comments JSONB NOT NULL DEFAULT '[]'::jsonb",
+        ),
+    ),
+    (
+        12,
+        "add lossless source trees for Context MCP",
+        (
+            """CREATE TABLE IF NOT EXISTS ctx_lossless_trees (
+                file_id INTEGER PRIMARY KEY REFERENCES ctx_files(id) ON DELETE CASCADE,
+                source_hash TEXT NOT NULL, grammar TEXT NOT NULL,
+                schema_version INTEGER NOT NULL, source TEXT NOT NULL,
+                tree JSONB NOT NULL,
+                generated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )""",
+            "CREATE INDEX IF NOT EXISTS idx_ctx_lossless_hash ON ctx_lossless_trees(source_hash)",
         ),
     ),
 )
