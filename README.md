@@ -102,6 +102,121 @@ examples. Use `mcp-config.streamable-http.json` or
 The transport is intentionally isolated by port: an SSE reconnect or a slow
 legacy client cannot consume the Streamable HTTP listener's connection pool.
 
+#### Configure Streamable HTTP clients
+
+Use the Streamable HTTP endpoint (`/mcp`), not `/sse`, for every new client.
+Each client must send its Savant API key on every MCP request so the bridge can
+forward the caller identity to Flask:
+
+```text
+X-API-Key: <your SAVANT_API_KEY>
+X-App-Name: <client-name>
+```
+
+Keep these credentials in a user-level configuration or secret store; do not
+commit them. `127.0.0.1` works only when the client and Savant Server run on
+the same machine. For another machine, terminate TLS in a reverse proxy and
+use its `https://` hostname rather than exposing the raw `8191–8195` ports.
+
+| MCP server | Streamable URL |
+| --- | --- |
+| `savant-workspace` | `http://127.0.0.1:8191/mcp` |
+| `savant-abilities` | `http://127.0.0.1:8192/mcp` |
+| `savant-context` | `http://127.0.0.1:8193/mcp` |
+| `savant-knowledge` | `http://127.0.0.1:8194/mcp` |
+| `savant-reminders` | `http://127.0.0.1:8195/mcp` |
+
+**GitHub Copilot CLI** — add each server to `~/.copilot/mcp-config.json` with
+`type: "http"` (Copilot's name for Streamable HTTP), or use the CLI:
+
+```bash
+copilot mcp add --transport http \
+  --header "X-API-Key: $SAVANT_API_KEY" \
+  --header "X-App-Name: copilot" \
+  savant-context http://127.0.0.1:8193/mcp
+```
+
+```json
+{
+  "mcpServers": {
+    "savant-context": {
+      "type": "http",
+      "url": "http://127.0.0.1:8193/mcp",
+      "headers": {
+        "X-API-Key": "YOUR_SAVANT_API_KEY",
+        "X-App-Name": "copilot"
+      },
+      "tools": ["*"]
+    }
+  }
+}
+```
+
+**Claude Code** — use a user-scoped remote HTTP server (or replace `user`
+with `project` to write `.mcp.json` in the repository):
+
+```bash
+claude mcp add --scope user --transport http \
+  --header "X-API-Key: $SAVANT_API_KEY" \
+  --header "X-App-Name: claude" \
+  savant-context http://127.0.0.1:8193/mcp
+claude mcp get savant-context
+```
+
+**Codex CLI, IDE extension, and ChatGPT desktop** share `~/.codex/config.toml`.
+Add a table per Savant server; `http_headers` are static local values, so keep
+this file private:
+
+```toml
+[mcp_servers.savant_context]
+url = "http://127.0.0.1:8193/mcp"
+http_headers = { "X-API-Key" = "YOUR_SAVANT_API_KEY", "X-App-Name" = "codex" }
+
+[mcp_servers.savant_knowledge]
+url = "http://127.0.0.1:8194/mcp"
+http_headers = { "X-API-Key" = "YOUR_SAVANT_API_KEY", "X-App-Name" = "codex" }
+
+[mcp_servers.savant_workspace]
+url = "http://127.0.0.1:8191/mcp"
+http_headers = { "X-API-Key" = "YOUR_SAVANT_API_KEY", "X-App-Name" = "codex" }
+
+[mcp_servers.savant_abilities]
+url = "http://127.0.0.1:8192/mcp"
+http_headers = { "X-API-Key" = "YOUR_SAVANT_API_KEY", "X-App-Name" = "codex" }
+
+[mcp_servers.savant_reminders]
+url = "http://127.0.0.1:8195/mcp"
+http_headers = { "X-API-Key" = "YOUR_SAVANT_API_KEY", "X-App-Name" = "codex" }
+```
+
+**Hermes** — the Savant profile reads `~/.hermes/mcp.json`; use the same JSON
+remote-server structure as Copilot. **AGY** — this repository discovers AGY
+sessions under `~/.agy`, but does not define an AGY-native MCP configuration
+contract. If your AGY installation reads `~/.agy/mcp.json`, use the same JSON
+structure; otherwise use its native MCP configuration command. Set `type` to
+`"http"`, the URL from the table above, `tools` to `["*"]`, and set
+`X-App-Name` to `hermes` or `agy`. For example:
+
+```json
+{
+  "mcpServers": {
+    "savant-context": {
+      "type": "http",
+      "url": "http://127.0.0.1:8193/mcp",
+      "headers": {
+        "X-API-Key": "YOUR_SAVANT_API_KEY",
+        "X-App-Name": "hermes"
+      },
+      "tools": ["*"]
+    }
+  }
+}
+```
+
+After adding a server, use the client's MCP status command (`copilot mcp list`,
+`claude mcp list`, or `codex mcp list`) and then invoke a read-only tool such
+as `savant-context.research` to verify both transport and API-key forwarding.
+
 Each server remains a thin bridge:
 
 ```python

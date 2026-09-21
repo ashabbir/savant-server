@@ -80,7 +80,10 @@ def _bind_request_value(value: str, session_id: str, context_var, session_values
 def _capture_scope_context(scope: dict, server_name: str) -> None:
     headers = dict(scope.get("headers", []))
     params = parse_qs(scope.get("query_string", b"").decode(errors="replace"))
-    session_id = _first_param(params, "session_id")
+    session_id = (
+        headers.get(b"mcp-session-id", b"").decode(errors="replace")
+        or _first_param(params, "session_id")
+    )
     api_key = headers.get(b"x-api-key", b"").decode(errors="replace") or _first_param(params, "api_key")
     app_name = (
         headers.get(b"x-app-name", b"").decode(errors="replace")
@@ -97,34 +100,52 @@ def _capture_scope_context(scope: dict, server_name: str) -> None:
     _bind_request_value(mcp_server, session_id, _mcp_server_var, _session_mcp_servers)
 
 
-def install_header_capture(mcp_instance):
-    """Wrap the FastMCP SSE app to capture and persist API keys, app names, & MCP server names per session."""
-    original_sse_app = mcp_instance.sse_app
-    server_name = getattr(mcp_instance, "name", "savant-mcp")
-
-    def patched_sse_app(mount_path=None):
-        inner_app = original_sse_app(mount_path)
+def _capture_http_app(original_app, server_name: str, safe_sse_start: bool = False):
+    """Wrap an MCP ASGI app with Savant client-context capture."""
+    def patched_app(*args, **kwargs):
+        inner_app = original_app(*args, **kwargs)
 
         async def wrapper(scope, receive, send):
-            if scope["type"] == "http":
-                _capture_scope_context(scope, server_name)
-                # MCP SDK 1.25.0 bug: SSE handle_sse() returns Response() after
-                # connect_sse() already sent http.response.start, causing a double-
-                # start that crashes uvicorn. Drop the second http.response.start.
-                response_started = False
-
-                async def safe_send(message):
-                    nonlocal response_started
-                    if message["type"] == "http.response.start":
-                        if response_started:
-                            return
-                        response_started = True
-                    await send(message)
-
-                await inner_app(scope, receive, safe_send)
-            else:
+            if scope["type"] != "http":
                 await inner_app(scope, receive, send)
+                return
+
+            _capture_scope_context(scope, server_name)
+            if not safe_sse_start:
+                await inner_app(scope, receive, send)
+                return
+
+            # MCP SDK 1.25.0 SSE can return a second response start after
+            # connect_sse() already emitted one; do not pass it to uvicorn.
+            response_started = False
+
+            async def safe_send(message):
+                nonlocal response_started
+                if message["type"] == "http.response.start":
+                    if response_started:
+                        return
+                    response_started = True
+                await send(message)
+
+            await inner_app(scope, receive, safe_send)
 
         return wrapper
 
-    mcp_instance.sse_app = patched_sse_app
+    return patched_app
+
+
+def install_header_capture(mcp_instance):
+    """Capture client headers for both legacy SSE and Streamable HTTP MCP apps."""
+    original_sse_app = mcp_instance.sse_app
+    original_streamable_http_app = getattr(mcp_instance, "streamable_http_app", None)
+    server_name = getattr(mcp_instance, "name", "savant-mcp")
+    mcp_instance.sse_app = _capture_http_app(
+        original_sse_app,
+        server_name,
+        safe_sse_start=True,
+    )
+    if callable(original_streamable_http_app):
+        mcp_instance.streamable_http_app = _capture_http_app(
+            original_streamable_http_app,
+            server_name,
+        )
