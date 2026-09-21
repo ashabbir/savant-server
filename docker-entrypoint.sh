@@ -37,19 +37,30 @@ until node /app/codegraph_bridge/src/healthcheck.js; do
   sleep 1
 done
 
-# Start MCP servers on server-side ports
-# Use SSE transport for compatibility with Copilot CLI; override with MCP_TRANSPORT env var
-MCP_TRANSPORT="${MCP_TRANSPORT:-sse}"
-python /app/mcp/server.py --transport "$MCP_TRANSPORT" --host 0.0.0.0 --port "${SAVANT_MCP_WORKSPACE_PORT:-8091}" &
-MCP_PIDS="$!"
-python /app/mcp/abilities_server.py --transport "$MCP_TRANSPORT" --host 0.0.0.0 --port "${SAVANT_MCP_ABILITIES_PORT:-8092}" &
-MCP_PIDS="$MCP_PIDS $!"
-python /app/mcp/context_server.py --transport "$MCP_TRANSPORT" --host 0.0.0.0 --port "${SAVANT_MCP_CONTEXT_PORT:-8093}" --flask-url "${SAVANT_API_BASE}" &
-MCP_PIDS="$MCP_PIDS $!"
-python /app/mcp/knowledge_server.py --transport "$MCP_TRANSPORT" --host 0.0.0.0 --port "${SAVANT_MCP_KNOWLEDGE_PORT:-8094}" &
-MCP_PIDS="$MCP_PIDS $!"
-python /app/mcp/reminders_server.py --transport "$MCP_TRANSPORT" --host 0.0.0.0 --port "${SAVANT_MCP_REMINDERS_PORT:-8095}" &
-MCP_PIDS="$MCP_PIDS $!"
+# Run both MCP transports as independent supervised listeners.  SSE remains
+# available for long-running legacy clients; modern clients use /mcp over
+# Streamable HTTP.  Separate ports avoid changing either wire contract.
+MCP_PIDS=""
+start_mcp() {
+  python "$@" &
+  MCP_PIDS="$MCP_PIDS $!"
+}
+
+if [ "${SAVANT_MCP_SSE_ENABLED:-true}" = "true" ]; then
+  start_mcp /app/mcp/server.py --transport sse --host 0.0.0.0 --port "${SAVANT_MCP_WORKSPACE_PORT:-8091}"
+  start_mcp /app/mcp/abilities_server.py --transport sse --host 0.0.0.0 --port "${SAVANT_MCP_ABILITIES_PORT:-8092}"
+  start_mcp /app/mcp/context_server.py --transport sse --host 0.0.0.0 --port "${SAVANT_MCP_CONTEXT_PORT:-8093}" --flask-url "${SAVANT_API_BASE}"
+  start_mcp /app/mcp/knowledge_server.py --transport sse --host 0.0.0.0 --port "${SAVANT_MCP_KNOWLEDGE_PORT:-8094}"
+  start_mcp /app/mcp/reminders_server.py --transport sse --host 0.0.0.0 --port "${SAVANT_MCP_REMINDERS_PORT:-8095}"
+fi
+
+if [ "${SAVANT_MCP_STREAMABLE_HTTP_ENABLED:-true}" = "true" ]; then
+  start_mcp /app/mcp/server.py --transport streamable-http --host 0.0.0.0 --port "${SAVANT_MCP_STREAMABLE_WORKSPACE_PORT:-8191}"
+  start_mcp /app/mcp/abilities_server.py --transport streamable-http --host 0.0.0.0 --port "${SAVANT_MCP_STREAMABLE_ABILITIES_PORT:-8192}"
+  start_mcp /app/mcp/context_server.py --transport streamable-http --host 0.0.0.0 --port "${SAVANT_MCP_STREAMABLE_CONTEXT_PORT:-8193}" --flask-url "${SAVANT_API_BASE}"
+  start_mcp /app/mcp/knowledge_server.py --transport streamable-http --host 0.0.0.0 --port "${SAVANT_MCP_STREAMABLE_KNOWLEDGE_PORT:-8194}"
+  start_mcp /app/mcp/reminders_server.py --transport streamable-http --host 0.0.0.0 --port "${SAVANT_MCP_STREAMABLE_REMINDERS_PORT:-8195}"
+fi
 
 CHILD_PIDS="$CHILD_PIDS $MCP_PIDS"
 

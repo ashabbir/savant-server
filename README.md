@@ -81,9 +81,28 @@ Flask app (`app.py`) with feature modules as Blueprints:
 - Pydantic v2 models in `models.py` (use `ConfigDict`, not class-based `Config`)
 - Timestamps: ISO 8601 UTC strings
 
-### MCP Pattern
+### MCP transports
 
-Each MCP server is a thin SSE bridge that proxies tool calls to Flask REST endpoints:
+Each MCP server is a thin bridge that proxies tool calls to Flask REST endpoints.
+Both transports run by default: SSE is retained for existing clients and
+Streamable HTTP is the preferred endpoint for new deployed clients.
+
+| Server | SSE | Streamable HTTP |
+| --- | --- | --- |
+| workspace | `http://127.0.0.1:8091/sse` | `http://127.0.0.1:8191/mcp` |
+| abilities | `http://127.0.0.1:8092/sse` | `http://127.0.0.1:8192/mcp` |
+| context | `http://127.0.0.1:8093/sse` | `http://127.0.0.1:8193/mcp` |
+| knowledge | `http://127.0.0.1:8094/sse` | `http://127.0.0.1:8194/mcp` |
+| reminders | `http://127.0.0.1:8095/sse` | `http://127.0.0.1:8195/mcp` |
+
+`mcp-config.json` and `mcp_servers.toml` remain the compatibility SSE
+examples. Use `mcp-config.streamable-http.json` or
+`mcp_servers.streamable-http.toml` for new clients.
+
+The transport is intentionally isolated by port: an SSE reconnect or a slow
+legacy client cannot consume the Streamable HTTP listener's connection pool.
+
+Each server remains a thin bridge:
 
 ```python
 @mcp.tool()
@@ -173,7 +192,8 @@ Seed data is embedded in `abilities/bootstrap.py`. On first startup, abilities a
 - `GET /health/ready` — PostgreSQL dependency is reachable; returns `503` with
   a non-secret dependency diagnostic when it is not. It is intentionally
   distinct from liveness.
-- `GET /api/mcp/health` — probes the MCP SSE servers on ports 8091-8095 and
+- `GET /api/mcp/health` — probes both MCP transports on ports 8091-8095 and
+  8191-8195 and
   returns `503` when any configured server is unreachable.
 
 ### Knowledge Graph Maintenance

@@ -32,6 +32,7 @@ from typing import Any, Optional
 
 import requests
 from mcp.server.fastmcp import FastMCP
+from starlette.responses import JSONResponse
 
 # ---------------------------------------------------------------------------
 # Config
@@ -50,7 +51,7 @@ from auth import auth_headers, install_header_capture
 # ---------------------------------------------------------------------------
 
 _parser = argparse.ArgumentParser(description="savant-knowledge MCP server")
-_parser.add_argument("--transport", choices=["stdio", "sse"], default="stdio")
+_parser.add_argument("--transport", choices=["stdio", "sse", "streamable-http"], default="stdio")
 _parser.add_argument("--port", type=int, default=8094)
 _parser.add_argument("--host", default="127.0.0.1")
 _args, _ = _parser.parse_known_args()
@@ -86,6 +87,12 @@ mcp = FastMCP(
     host=_args.host,
     port=_args.port,
 )
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health_check(_request):
+    """Liveness endpoint for the dedicated Streamable HTTP listener."""
+    return JSONResponse({"status": "ok", "server": "savant-knowledge"})
 
 install_header_capture(mcp)
 

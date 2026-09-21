@@ -8,7 +8,7 @@ This file provides guidance to Claude Code when working in this repository.
 
 ## What this app is
 
-**Savant Server** is a Flask REST API + MCP backend for the Savant developer AI assistant system. It manages workspaces, tasks, code context (semantic search), a knowledge graph, reminders, and prompt abilities — all exposed via both REST and five MCP servers (SSE bridges on ports 8091–8095).
+**Savant Server** is a Flask REST API + MCP backend for the Savant developer AI assistant system. It manages workspaces, tasks, code context (semantic search), a knowledge graph, reminders, and prompt abilities — all exposed via REST and five MCP servers over SSE (8091–8095) and Streamable HTTP (8191–8195).
 
 ## Quick start
 
@@ -49,7 +49,7 @@ db/                     Database layer — static-method classes only
   users.py              UserDB (API key auth)
   workspace_session_links.py  Session ↔ workspace mapping
 
-mcp/                    MCP servers (SSE, never touch DB directly)
+mcp/                    MCP servers (SSE + Streamable HTTP, never touch DB directly)
   server.py             savant-workspace  port 8091
   abilities_server.py   savant-abilities  port 8092
   context_server.py     savant-context    port 8093
@@ -69,13 +69,13 @@ utils/                  auth.py (admin_required decorator)
 
 | Server             | Port | File                      | Tool count | Manages                                      |
 |--------------------|------|---------------------------|------------|----------------------------------------------|
-| savant-workspace   | 8091 | mcp/server.py             | 32         | workspaces, tasks, notes, MRs, Jira tickets  |
-| savant-abilities   | 8092 | mcp/abilities_server.py   | 13         | prompt assets (personas, rules, policies)    |
-| savant-context     | 8093 | mcp/context_server.py     | 6          | code search, AST, memory bank, code graph    |
-| savant-knowledge   | 8094 | mcp/knowledge_server.py   | 16         | KG nodes, edges, staging, search             |
-| savant-reminders   | 8095 | mcp/reminders_server.py   | 9          | personal reminders                           |
+| savant-workspace   | 8091 / 8191 | mcp/server.py             | 32         | workspaces, tasks, notes, MRs, Jira tickets  |
+| savant-abilities   | 8092 / 8192 | mcp/abilities_server.py   | 13         | prompt assets (personas, rules, policies)    |
+| savant-context     | 8093 / 8193 | mcp/context_server.py     | 6          | code search, AST, memory bank, code graph    |
+| savant-knowledge   | 8094 / 8194 | mcp/knowledge_server.py   | 16         | KG nodes, edges, staging, search             |
+| savant-reminders   | 8095 / 8195 | mcp/reminders_server.py   | 9          | personal reminders                           |
 
-Config: `mcp_servers.toml` / `mcp-config.json`
+Config: `mcp_servers.toml` / `mcp-config.json` for SSE compatibility; `mcp_servers.streamable-http.toml` / `mcp-config.streamable-http.json` for Streamable HTTP.
 
 ### savant-context agent tools: What to Use When Best
 
@@ -110,7 +110,7 @@ Use `resolve_abilities` only when a persona plus its applicable rules/policies m
 
 - **Pydantic v2:** Use `ConfigDict` not `class Config`. Use `model_dump()` not `.dict()`.
 - **DB layer:** All DB access through static-method classes in `db/`. Timestamps are ISO 8601 UTC strings. Use `get_connection()` from `postgres_client.py` (not sqlite_client for new code).
-- **MCP servers:** Thin SSE bridges only — proxy to Flask REST endpoints, never touch DB directly.
+- **MCP servers:** Thin SSE and Streamable HTTP bridges — proxy to Flask REST endpoints, never touch DB directly.
 - **No client imports:** Server communicates with savant-client over HTTP/SSE only.
 - **TDD:** `pytest` with `pytest-cov`. Write failing test first, then implement, then refactor.
 - **Testing:** `pytest tests/ -v`. File naming: `tests/test_<module>.py`.

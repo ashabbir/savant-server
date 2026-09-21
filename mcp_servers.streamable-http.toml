@@ -1,0 +1,24 @@
+[mcp_servers.savant-workspace]
+transport = "streamable-http"
+url = "http://127.0.0.1:8191/mcp?api_key=sk-ahmed-savant-001&app_name=savant-mcp"
+tools = ["*"]
+
+[mcp_servers.savant-abilities]
+transport = "streamable-http"
+url = "http://127.0.0.1:8192/mcp?api_key=sk-ahmed-savant-001&app_name=savant-mcp"
+tools = ["*"]
+
+[mcp_servers.savant-context]
+transport = "streamable-http"
+url = "http://127.0.0.1:8193/mcp?api_key=sk-ahmed-savant-001&app_name=savant-mcp"
+tools = ["*"]
+
+[mcp_servers.savant-knowledge]
+transport = "streamable-http"
+url = "http://127.0.0.1:8194/mcp?api_key=sk-ahmed-savant-001&app_name=savant-mcp"
+tools = ["*"]
+
+[mcp_servers.savant-reminders]
+transport = "streamable-http"
+url = "http://127.0.0.1:8195/mcp?api_key=sk-ahmed-savant-001&app_name=savant-mcp"
+tools = ["*"]

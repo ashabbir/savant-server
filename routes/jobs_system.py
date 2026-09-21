@@ -30,52 +30,43 @@ def _list_mcp_tools(server_name=None):
     if app_mod and hasattr(app_mod, "_list_mcp_tools") and getattr(app_mod, "_list_mcp_tools") != _list_mcp_tools:
         return getattr(app_mod, "_list_mcp_tools")(server_name)
 
-    rows = [
-        {
-            "name": "workspace",
-            "url": "http://127.0.0.1:8091/sse",
-            "port": 8091,
-            "status": "ok",
-            "tool_count": 2,
-            "tools": [{"name": "list_workspaces"}, {"name": "create_workspace"}],
-        },
-        {
-            "name": "abilities",
-            "url": "http://127.0.0.1:8092/sse",
-            "port": 8092,
-            "status": "ok",
-            "tool_count": 1,
-            "tools": [{"name": "list_personas"}],
-        },
-        {
-            "name": "context",
-            "url": "http://127.0.0.1:8093/sse",
-            "port": 8093,
-            "status": "ok",
-            "tool_count": 3,
-            "tools": [
-                {"name": "research", "description": "Search Savant Context code and memory bank"},
-                {"name": "structure_search", "description": "AST/code graph search for symbols and definitions"},
-                {"name": "analyze_code", "description": "Analyze code for complexity, findings, and refactor targets"},
-            ],
-        },
-        {
-            "name": "knowledge",
-            "url": "http://127.0.0.1:8094/sse",
-            "port": 8094,
-            "status": "ok",
-            "tool_count": 3,
-            "tools": [{"name": "search"}, {"name": "store"}, {"name": "connect"}],
-        },
-        {
-            "name": "reminders",
-            "url": "http://127.0.0.1:8095/sse",
-            "port": 8095,
-            "status": "ok",
-            "tool_count": 2,
-            "tools": [{"name": "set_reminder"}, {"name": "list_reminders"}],
-        },
+    specs = [
+        ("workspace", "SAVANT_MCP_WORKSPACE_PORT", 8091, "SAVANT_MCP_STREAMABLE_WORKSPACE_PORT", 8191, 2,
+         [{"name": "list_workspaces"}, {"name": "create_workspace"}]),
+        ("abilities", "SAVANT_MCP_ABILITIES_PORT", 8092, "SAVANT_MCP_STREAMABLE_ABILITIES_PORT", 8192, 1,
+         [{"name": "list_personas"}]),
+        ("context", "SAVANT_MCP_CONTEXT_PORT", 8093, "SAVANT_MCP_STREAMABLE_CONTEXT_PORT", 8193, 3,
+         [
+             {"name": "research", "description": "Search Savant Context code and memory bank"},
+             {"name": "structure_search", "description": "AST/code graph search for symbols and definitions"},
+             {"name": "analyze_code", "description": "Analyze code for complexity, findings, and refactor targets"},
+         ]),
+        ("knowledge", "SAVANT_MCP_KNOWLEDGE_PORT", 8094, "SAVANT_MCP_STREAMABLE_KNOWLEDGE_PORT", 8194, 3,
+         [{"name": "search"}, {"name": "store"}, {"name": "connect"}]),
+        ("reminders", "SAVANT_MCP_REMINDERS_PORT", 8095, "SAVANT_MCP_STREAMABLE_REMINDERS_PORT", 8195, 2,
+         [{"name": "set_reminder"}, {"name": "list_reminders"}]),
     ]
+    rows = []
+    for name, sse_env, sse_default, http_env, http_default, tool_count, tools in specs:
+        sse_port = _port_from_environment(sse_env, sse_default)
+        http_port = _port_from_environment(http_env, http_default)
+        streamable_http = {
+            "transport": "streamable-http",
+            "url": f"http://127.0.0.1:{http_port}/mcp",
+            "health_url": f"http://127.0.0.1:{http_port}/health",
+            "port": http_port,
+        }
+        rows.append({
+            "name": name,
+            # Existing clients and callers continue to use these SSE fields.
+            "url": f"http://127.0.0.1:{sse_port}/sse",
+            "port": sse_port,
+            "transport": "sse",
+            "streamable_http": streamable_http,
+            "status": "ok",
+            "tool_count": tool_count,
+            "tools": tools,
+        })
     if server_name:
         return [r for r in rows if r["name"] == server_name]
     return rows
@@ -84,21 +75,44 @@ def _list_mcp_tools(server_name=None):
 def _probe_mcp_server(server):
     """Return a copy of an MCP server descriptor with its live health state."""
     result = dict(server)
-    try:
-        response = requests.get(server["url"], timeout=1, stream=True)
-        try:
-            if 200 <= response.status_code < 400:
-                result.update(status="ok", diagnostic="reachable")
-            else:
-                result.update(status="unavailable", diagnostic=f"HTTP {response.status_code}")
-        finally:
-            response.close()
-    except requests.RequestException:
-        result.update(status="unavailable", diagnostic="connection failed")
-    except OSError:
-        # Some test and deployment adapters raise OSError directly.
-        result.update(status="unavailable", diagnostic="connection failed")
+    endpoints = {
+        "sse": {"url": server["url"], "port": server["port"]},
+        "streamable-http": {
+            "url": server["streamable_http"]["health_url"],
+            "port": server["streamable_http"]["port"],
+        },
+    }
+    transport_status = {
+        transport: _probe_mcp_endpoint(endpoint)
+        for transport, endpoint in endpoints.items()
+    }
+
+    result["transport_status"] = transport_status
+    unavailable = next((item for item in transport_status.values() if item["status"] != "ok"), None)
+    if unavailable:
+        result.update(status="unavailable", diagnostic=unavailable["diagnostic"])
+    else:
+        result.update(status="ok", diagnostic="reachable")
     return result
+
+
+def _probe_mcp_endpoint(endpoint):
+    """Probe one listener while keeping network diagnostics safe for API output."""
+    try:
+        response = requests.get(endpoint["url"], timeout=1, stream=True)
+    except (requests.RequestException, OSError):
+        return {"status": "unavailable", "diagnostic": "connection failed", **endpoint}
+
+    try:
+        if 200 <= response.status_code < 400:
+            return {"status": "ok", "diagnostic": "reachable", **endpoint}
+        return {
+            "status": "unavailable",
+            "diagnostic": f"HTTP {response.status_code}",
+            **endpoint,
+        }
+    finally:
+        response.close()
 
 
 def _postgres_readiness():

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "workspace": {"url": "http://127.0.0.1:8191/mcp?api_key=sk-ahmed-savant-001&app_name=savant-mcp", "tools": ["*"]},
+    "abilities": {"url": "http://127.0.0.1:8192/mcp?api_key=sk-ahmed-savant-001&app_name=savant-mcp", "tools": ["*"]},
+    "context": {"url": "http://127.0.0.1:8193/mcp?api_key=sk-ahmed-savant-001&app_name=savant-mcp", "tools": ["*"]},
+    "knowledge": {"url": "http://127.0.0.1:8194/mcp?api_key=sk-ahmed-savant-001&app_name=savant-mcp", "tools": ["*"]},
+    "reminders": {"url": "http://127.0.0.1:8195/mcp?api_key=sk-ahmed-savant-001&app_name=savant-mcp", "tools": ["*"]}
+  }
+}

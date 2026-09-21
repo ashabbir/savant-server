@@ -20,6 +20,13 @@ from typing import Literal
 
 import requests
 from mcp.server.fastmcp import FastMCP
+from starlette.responses import JSONResponse
+
+# Running this file directly makes Python place only ``mcp/`` on sys.path.
+# The Context service package is a sibling of that directory.
+SERVER_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if SERVER_ROOT not in sys.path:
+    sys.path.insert(0, SERVER_ROOT)
 from context.impact import build_impact_surface
 
 logging.basicConfig(level=logging.INFO, format="%(name)s %(levelname)s %(message)s")
@@ -30,7 +37,7 @@ _parser = argparse.ArgumentParser(description="Savant Context MCP Server")
 _parser.add_argument("--host", default="127.0.0.1")
 _parser.add_argument("--port", type=int, default=8093)
 _parser.add_argument("--flask-url", default="http://127.0.0.1:8090")
-_parser.add_argument("--transport", default="sse", choices=["sse", "stdio"])
+_parser.add_argument("--transport", default="sse", choices=["sse", "stdio", "streamable-http"])
 _args, _ = _parser.parse_known_args()
 
 # Default Flask URL (overridden by --flask-url)
@@ -78,6 +85,12 @@ mcp = FastMCP(
 )
 
 install_header_capture(mcp)
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health_check(_request):
+    """Liveness endpoint for the dedicated Streamable HTTP listener."""
+    return JSONResponse({"status": "ok", "server": "savant-context"})
 
 
 def _get(path: str, params: dict = None) -> dict:

@@ -42,6 +42,11 @@ services:
       - "8093:8093"
       - "8094:8094"
       - "8095:8095"
+      - "8191:8191"
+      - "8192:8192"
+      - "8193:8193"
+      - "8194:8194"
+      - "8195:8195"
     environment:
       RUNNING_IN_DOCKER: 'true'
       # Points at the compose-managed savant-db container.

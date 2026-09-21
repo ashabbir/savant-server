@@ -12,6 +12,7 @@ from typing import Any, Optional
 
 import requests
 from mcp.server.fastmcp import FastMCP
+from starlette.responses import JSONResponse
 
 # ---------------------------------------------------------------------------
 # Config
@@ -52,6 +53,12 @@ mcp = FastMCP(
 )
 
 install_header_capture(mcp)
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health_check(_request):
+    """Liveness endpoint for the dedicated Streamable HTTP listener."""
+    return JSONResponse({"status": "ok", "server": "savant-reminders"})
 
 # ---------------------------------------------------------------------------
 # Helpers

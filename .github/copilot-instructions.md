@@ -2,7 +2,7 @@
 
 ## What This Is
 
-Savant Server is a **Flask API + MCP backend** that provides centralized persistence, knowledge graph, context ingestion, and AI tool servers for the Savant ecosystem. It communicates with `savant-client` over HTTP/SSE — never import client code.
+Savant Server is a **Flask API + MCP backend** that provides centralized persistence, knowledge graph, context ingestion, and AI tool servers for the Savant ecosystem. It communicates with `savant-client` over HTTP, SSE, and Streamable HTTP — never import client code.
 
 ## Build & Run
 
@@ -55,7 +55,7 @@ context/                  ← Context/code-indexing feature module + routes
 knowledge/                ← Knowledge graph feature module + routes
 reminders/                ← Reminders feature module + routes
 
-mcp/                      ← MCP server implementations (SSE bridges)
+mcp/                      ← MCP server implementations (SSE + Streamable HTTP bridges)
 ├── server.py             ← savant-workspace (port 8091)
 ├── abilities_server.py   ← savant-abilities (port 8092)
 ├── context_server.py     ← savant-context (port 8093)
@@ -107,7 +107,7 @@ Routes live under `/api/<feature>/*`. Every feature gets a `/api/<feature>/healt
 
 ### MCP server pattern
 
-MCP servers are **thin SSE bridges** that proxy tool calls to Flask REST endpoints. They never touch the DB or filesystem directly.
+MCP servers are **thin transport bridges** that proxy tool calls to Flask REST endpoints. SSE (`8091–8095`) and Streamable HTTP (`8191–8195`, `/mcp`) run side by side; they never touch the DB or filesystem directly.
 
 | MCP name | Port | Server file |
 |----------|------|-------------|

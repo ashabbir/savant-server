@@ -74,7 +74,7 @@ def test_mcp_health_checks_every_configured_port_and_reports_failures(client, mo
 
     def fake_get(url, **_kwargs):
         checked_urls.append(url)
-        if ":8094/" in url:
+        if ":8194/" in url:
             raise OSError("offline")
         return _Response()
 
@@ -89,7 +89,9 @@ def test_mcp_health_checks_every_configured_port_and_reports_failures(client, mo
     failed = next(server for server in payload["servers"] if server["port"] == 8094)
     assert failed["status"] == "unavailable"
     assert failed["diagnostic"] == "connection failed"
-    assert len(checked_urls) == 5
+    assert failed["transport_status"]["sse"]["status"] == "ok"
+    assert failed["transport_status"]["streamable-http"]["status"] == "unavailable"
+    assert len(checked_urls) == 10
 
 
 def test_single_mcp_health_uses_live_probe(client, monkeypatch):
