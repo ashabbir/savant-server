@@ -110,7 +110,7 @@ forward the caller identity to Flask:
 
 ```text
 X-API-Key: <your SAVANT_API_KEY>
-X-App-Name: <client-name>
+X-App-Name: savant-mcp
 ```
 
 Keep these credentials in a user-level configuration or secret store; do not
@@ -132,7 +132,7 @@ use its `https://` hostname rather than exposing the raw `8191–8195` ports.
 ```bash
 copilot mcp add --transport http \
   --header "X-API-Key: $SAVANT_API_KEY" \
-  --header "X-App-Name: copilot" \
+  --header "X-App-Name: savant-mcp" \
   savant-context http://127.0.0.1:8193/mcp
 ```
 
@@ -144,7 +144,7 @@ copilot mcp add --transport http \
       "url": "http://127.0.0.1:8193/mcp",
       "headers": {
         "X-API-Key": "YOUR_SAVANT_API_KEY",
-        "X-App-Name": "copilot"
+        "X-App-Name": "savant-mcp"
       },
       "tools": ["*"]
     }
@@ -158,7 +158,7 @@ with `project` to write `.mcp.json` in the repository):
 ```bash
 claude mcp add --scope user --transport http \
   --header "X-API-Key: $SAVANT_API_KEY" \
-  --header "X-App-Name: claude" \
+  --header "X-App-Name: savant-mcp" \
   savant-context http://127.0.0.1:8193/mcp
 claude mcp get savant-context
 ```
@@ -170,23 +170,23 @@ this file private:
 ```toml
 [mcp_servers.savant_context]
 url = "http://127.0.0.1:8193/mcp"
-http_headers = { "X-API-Key" = "YOUR_SAVANT_API_KEY", "X-App-Name" = "codex" }
+http_headers = { "X-API-Key" = "YOUR_SAVANT_API_KEY", "X-App-Name" = "savant-mcp" }
 
 [mcp_servers.savant_knowledge]
 url = "http://127.0.0.1:8194/mcp"
-http_headers = { "X-API-Key" = "YOUR_SAVANT_API_KEY", "X-App-Name" = "codex" }
+http_headers = { "X-API-Key" = "YOUR_SAVANT_API_KEY", "X-App-Name" = "savant-mcp" }
 
 [mcp_servers.savant_workspace]
 url = "http://127.0.0.1:8191/mcp"
-http_headers = { "X-API-Key" = "YOUR_SAVANT_API_KEY", "X-App-Name" = "codex" }
+http_headers = { "X-API-Key" = "YOUR_SAVANT_API_KEY", "X-App-Name" = "savant-mcp" }
 
 [mcp_servers.savant_abilities]
 url = "http://127.0.0.1:8192/mcp"
-http_headers = { "X-API-Key" = "YOUR_SAVANT_API_KEY", "X-App-Name" = "codex" }
+http_headers = { "X-API-Key" = "YOUR_SAVANT_API_KEY", "X-App-Name" = "savant-mcp" }
 
 [mcp_servers.savant_reminders]
 url = "http://127.0.0.1:8195/mcp"
-http_headers = { "X-API-Key" = "YOUR_SAVANT_API_KEY", "X-App-Name" = "codex" }
+http_headers = { "X-API-Key" = "YOUR_SAVANT_API_KEY", "X-App-Name" = "savant-mcp" }
 ```
 
 **Hermes** — the Savant profile reads `~/.hermes/mcp.json`; use the same JSON
@@ -195,7 +195,7 @@ sessions under `~/.agy`, but does not define an AGY-native MCP configuration
 contract. If your AGY installation reads `~/.agy/mcp.json`, use the same JSON
 structure; otherwise use its native MCP configuration command. Set `type` to
 `"http"`, the URL from the table above, `tools` to `["*"]`, and set
-`X-App-Name` to `hermes` or `agy`. For example:
+`X-App-Name` to `savant-mcp`. For example:
 
 ```json
 {
@@ -205,7 +205,7 @@ structure; otherwise use its native MCP configuration command. Set `type` to
       "url": "http://127.0.0.1:8193/mcp",
       "headers": {
         "X-API-Key": "YOUR_SAVANT_API_KEY",
-        "X-App-Name": "hermes"
+        "X-App-Name": "savant-mcp"
       },
       "tools": ["*"]
     }
