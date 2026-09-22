@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-DOCKERHUB_REPO="${DOCKERHUB_REPO:-ashabbir/savant-server}"
+DOCKERHUB_REPO="${DOCKERHUB_REPO:-ahmedshabbir/savant-server}"
 RELEASE_TAG="${RELEASE_TAG:-$(python3 -c 'import json; print(json.load(open("build-info.json"))["version"])')}"
 LOCAL_IMAGE_TAG="${SERVER_IMAGE_TAG:-${DOCKERHUB_REPO}:${RELEASE_TAG}}"
 

@@ -17,7 +17,7 @@ services:
       start_period: 15s
 
   savant-server:
-    image: ${SAVANT_SERVER_IMAGE:-ashabbir/savant-server:latest}
+    image: ${SAVANT_SERVER_IMAGE:-ahmedshabbir/savant-server:latest}
     build:
       context: .
       dockerfile: Dockerfile
