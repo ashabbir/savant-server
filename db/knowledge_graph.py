@@ -23,20 +23,27 @@ def _row_to_dict(row):
     return _base_row(row, json_fields={"metadata": {}})
 
 
-def _fetch_graph_nodes(cur, columns: str, node_type: str, limit: int, include_staged: bool):
-    status_clause = "" if include_staged else " AND status = 'committed'"
+def _fetch_graph_nodes(
+    cur,
+    columns: str,
+    node_type: str,
+    limit: int,
+    include_staged: bool,
+    exclude_types: list[str] | None = None,
+):
+    where = [] if include_staged else ["status = 'committed'"]
+    params: list = []
     if node_type:
-        cur.execute(
-            f"SELECT {columns} FROM kg_nodes WHERE node_type = %s{status_clause} "
-            "ORDER BY created_at DESC LIMIT %s",
-            (node_type, limit),
-        )
-    else:
-        status_where = "" if include_staged else " WHERE status = 'committed'"
-        cur.execute(
-            f"SELECT {columns} FROM kg_nodes{status_where} ORDER BY created_at DESC LIMIT %s",
-            (limit,),
-        )
+        where.append("node_type = %s")
+        params.append(node_type)
+    elif exclude_types:
+        where.append("node_type != ALL(%s)")
+        params.append(list(exclude_types))
+    where_sql = f" WHERE {' AND '.join(where)}" if where else ""
+    cur.execute(
+        f"SELECT {columns} FROM kg_nodes{where_sql} ORDER BY created_at DESC LIMIT %s",
+        (*params, limit),
+    )
     return list(cur.fetchall())
 
 
@@ -538,12 +545,20 @@ class KnowledgeGraphDB:
     # -----------------------------------------------------------------------
 
     @staticmethod
-    def get_full_graph(node_type: str = "", limit: int = 500, include_staged: bool = False, slim: bool = False) -> dict:
+    def get_full_graph(
+        node_type: str = "",
+        limit: int = 500,
+        include_staged: bool = False,
+        slim: bool = False,
+        exclude_types: list[str] | None = None,
+    ) -> dict:
         conn = get_connection()
         try:
             node_cols = "node_id, node_type, title, status, created_at" if slim else "*"
             with conn.cursor() as cur:
-                nodes = _fetch_graph_nodes(cur, node_cols, node_type, limit, include_staged)
+                nodes = _fetch_graph_nodes(
+                    cur, node_cols, node_type, limit, include_staged, exclude_types
+                )
                 node_ids = {dict(node)["node_id"] for node in nodes}
                 edges = _fetch_graph_edges(cur, node_ids, include_connected=bool(node_type))
                 if node_type:

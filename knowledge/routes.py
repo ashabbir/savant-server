@@ -511,13 +511,18 @@ def get_graph():
     available on demand via GET /api/knowledge/nodes/<node_id>.
     """
     node_type = request.args.get("node_type", "")
-    limit = _safe_int(request.args.get("limit", 2000), default=2000, min_val=1, max_val=5000)
+    limit = _safe_int(request.args.get("limit", 2000), default=2000, min_val=1, max_val=20000)
+    exclude_types = [t for t in request.args.get("exclude_types", "").split(",") if t.strip()]
+    if any(t not in VALID_NODE_TYPES for t in exclude_types):
+        return jsonify({"error": "invalid exclude_types"}), 400
     include_staged = request.args.get("include_staged", "").lower() in ("true", "1", "yes")
     slim = request.args.get("slim", "").lower() in ("true", "1", "yes")
     workspace_id = request.args.get("workspace_id", "")
     if workspace_id:
-        # Workspace filter always fetches full graph (needs metadata.workspaces to filter)
-        graph = KnowledgeGraphDB.get_full_graph(limit=limit, include_staged=include_staged)
+        # Workspace filter always fetches full rows (needs metadata.workspaces to filter)
+        graph = KnowledgeGraphDB.get_full_graph(
+            limit=limit, include_staged=include_staged, exclude_types=exclude_types
+        )
         ws_nodes = [n for n in graph["nodes"]
                     if workspace_id in (n.get("metadata") or {}).get("workspaces", [])]
         ws_node_ids = {n["node_id"] for n in ws_nodes}
@@ -530,7 +535,13 @@ def get_graph():
                 for n in ws_nodes
             ]
         return jsonify({"nodes": ws_nodes, "edges": ws_edges})
-    graph = KnowledgeGraphDB.get_full_graph(node_type=node_type, limit=limit, include_staged=include_staged, slim=slim)
+    graph = KnowledgeGraphDB.get_full_graph(
+        node_type=node_type,
+        limit=limit,
+        include_staged=include_staged,
+        slim=slim,
+        exclude_types=exclude_types,
+    )
     return jsonify(graph)
 
 
@@ -548,8 +559,11 @@ def get_neighbors(node_id):
 
 @knowledge_bp.route("/api/knowledge/concepts", methods=["GET"])
 def list_concepts():
-    """List all concept nodes (for autocomplete/tagging)."""
-    nodes = KnowledgeGraphDB.list_nodes(node_type="concept", limit=500)
+    """List knowledge nodes by type (defaults to 'concept' for backwards compat)."""
+    node_type = request.args.get("node_type", "concept")
+    if node_type and node_type not in VALID_NODE_TYPES:
+        return jsonify({"error": f"invalid node_type '{node_type}'"}), 400
+    nodes = KnowledgeGraphDB.list_nodes(node_type=node_type, limit=500)
     return jsonify(nodes)
 
 

@@ -361,12 +361,22 @@ def neighbors(node_id: str, depth: int = 1, edge_type: str = "") -> dict[str, An
 
 
 @mcp.tool()
-def list_concepts() -> list[dict[str, Any]]:
-    """List all concept nodes in the knowledge graph.
-    Returns node_id, title, and metadata for each concept entry.
-    Useful for discovering abstract architecture patterns and finding node IDs to wire connections to.
+def list_concepts(node_type: str = "concept") -> list[dict[str, Any]]:
+    """List knowledge graph nodes by type.
+    Returns node_id, title, and metadata for each entry.
+
+    node_type: concept | domain | service | client | library | technology | insight | issue | project | repo | session | person | organization | operation
+    Defaults to 'concept' for backwards compatibility. Pass node_type='domain' to list all domain nodes.
     """
-    return _api("GET", "/api/knowledge/concepts")
+    return _api("GET", "/api/knowledge/concepts", params={"node_type": node_type})
+
+
+@mcp.tool()
+def list_domains() -> list[dict[str, Any]]:
+    """List all domain nodes in the knowledge graph (Auth/SSO, Holdings, Offerings, etc.).
+    Returns node_id, title, and metadata for each domain entry.
+    """
+    return _api("GET", "/api/knowledge/concepts", params={"node_type": "domain"})
 
 
 @mcp.tool()
