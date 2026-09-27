@@ -78,11 +78,21 @@ def _process_next_job():
     # next_queued() already claimed this row atomically.
 
     started_at = perf_counter()
+    payload = job.get("result") or {}
+    user_id = ""
+    if isinstance(payload, dict):
+        user_id = str(payload.get("user_id") or payload.get("actor_id") or "")
+
     try:
-        result = _execute_job(job_id, job_type, target, job.get("result") or {})
+        result = _execute_job(job_id, job_type, target, payload)
         JobDB.set_done(job_id, result)
         _record_job_activity(job_type, target, "success", result, started_at)
         logger.info(f"Job {job_id} completed: {job_type} → {target}")
+        try:
+            from db.notifications import NotificationDB
+            NotificationDB.notify_job_success(job_id, job_type, target, result=result, user_id=user_id)
+        except Exception as notif_err:
+            logger.warning("Failed to emit job success notification for %s: %s", job_id, notif_err)
     except _CancelledError:
         from db.jobs import JobDB as JDB
         JDB.set_cancelled(job_id)
@@ -96,6 +106,18 @@ def _process_next_job():
         logger.error(f"Job {job_id} failed: {e}")
         JobDB.set_failed(job_id, str(e)[:2000])
         _record_job_activity(job_type, target, "failed", {}, started_at, str(e))
+        try:
+            from db.notifications import NotificationDB
+            NotificationDB.notify_job_failure(
+                job_id=job_id,
+                job_type=job_type,
+                target=target,
+                error=str(e),
+                user_id=user_id,
+                payload=payload if isinstance(payload, dict) else {},
+            )
+        except Exception as notif_err:
+            logger.warning("Failed to emit job failure notification for %s: %s", job_id, notif_err)
 
 
 def _record_job_activity(

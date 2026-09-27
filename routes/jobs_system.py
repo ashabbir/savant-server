@@ -143,7 +143,15 @@ def api_jobs_submit():
     existing = JobDB.find_active(job_type, target)
     if existing:
         return jsonify({"job_id": existing["id"], "status": existing["status"], "reused": True})
-    created = JobDB.create_job(job_type, target)
+    payload = data.get("payload") or {}
+    if not isinstance(payload, dict):
+        payload = {}
+    user_id = getattr(g, "user_id", "") or data.get("user_id") or ""
+    if user_id and "user_id" not in payload:
+        payload["user_id"] = user_id
+    if user_id and "actor_id" not in payload:
+        payload["actor_id"] = user_id
+    created = JobDB.create_job(job_type, target, payload=payload)
     return jsonify({"job_id": created["id"], "status": created["status"]})
 
 

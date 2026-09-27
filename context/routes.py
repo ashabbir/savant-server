@@ -918,7 +918,8 @@ def trigger_differential_sync(name):
     if existing:
         return jsonify({"started": True, "name": name, "job_id": existing["id"], "reused": True})
 
-    job = JobDB.create_job("differential_sync", name)
+    user_id = getattr(g, "user_id", "") or "ahmed"
+    job = JobDB.create_job("differential_sync", name, payload={"user_id": user_id, "actor_id": user_id})
     return jsonify({"started": True, "name": name, "job_id": job["id"]})
 
 
@@ -1050,7 +1051,8 @@ def generate_ast():
         if existing:
             return jsonify({"started": True, "name": name, "type": "codegraph",
                             "provider": "codegraph", "job_id": existing["id"], "reused": True})
-        job = JobDB.create_job("codegraph_sync", name)
+        user_id = getattr(g, "user_id", "") or "ahmed"
+        job = JobDB.create_job("codegraph_sync", name, payload={"user_id": user_id, "actor_id": user_id})
         return jsonify({"started": True, "name": name, "type": "codegraph",
                         "provider": "codegraph", "job_id": job["id"]})
     existing = JobDB.find_active("ast", name)
@@ -1058,7 +1060,8 @@ def generate_ast():
         return jsonify({"started": True, "name": name, "type": "ast",
                         "job_id": existing["id"], "reused": True})
 
-    job = JobDB.create_job("ast", name)
+    user_id = getattr(g, "user_id", "") or "ahmed"
+    job = JobDB.create_job("ast", name, payload={"user_id": user_id, "actor_id": user_id})
     return jsonify({"started": True, "name": name, "type": "ast",
                     "job_id": job["id"]})
 
@@ -1120,7 +1123,8 @@ def index_repo():
         return jsonify({"started": True, "name": name,
                         "job_id": existing["id"], "reused": True})
 
-    job = JobDB.create_job("index", name)
+    user_id = getattr(g, "user_id", "") or "ahmed"
+    job = JobDB.create_job("index", name, payload={"user_id": user_id, "actor_id": user_id})
     return jsonify({"started": True, "name": name, "job_id": job["id"]})
 
 
@@ -1156,7 +1160,8 @@ def reindex_repo():
         return jsonify({"started": True, "name": name, "reindex": True,
                         "job_id": existing["id"], "reused": True})
 
-    job = JobDB.create_job("reindex", name)
+    user_id = getattr(g, "user_id", "") or "ahmed"
+    job = JobDB.create_job("reindex", name, payload={"user_id": user_id, "actor_id": user_id})
     return jsonify({"started": True, "name": name, "reindex": True,
                     "job_id": job["id"]})
 @context_bp.route("/api/context/repos/index-all", methods=["POST"])
@@ -1177,7 +1182,8 @@ def index_all():
         return jsonify({"started": True, "count": len(to_index),
                         "job_id": existing["id"], "reused": True})
 
-    job = JobDB.create_job("index-all", "__all__")
+    user_id = getattr(g, "user_id", "") or "ahmed"
+    job = JobDB.create_job("index-all", "__all__", payload={"user_id": user_id, "actor_id": user_id})
     return jsonify({"started": True, "count": len(to_index),
                     "projects": [r["name"] for r in to_index],
                     "job_id": job["id"]})
@@ -1200,7 +1206,8 @@ def reindex_all():
         return jsonify({"started": True, "count": len(repos),
                         "job_id": existing["id"], "reused": True})
 
-    job = JobDB.create_job("index-all", "__all__")
+    user_id = getattr(g, "user_id", "") or "ahmed"
+    job = JobDB.create_job("index-all", "__all__", payload={"user_id": user_id, "actor_id": user_id})
     return jsonify({"started": True, "count": len(repos),
                     "projects": [r["name"] for r in repos],
                     "job_id": job["id"]})
@@ -1525,20 +1532,37 @@ def _exec_graph_search(g_query: str, repo_ids: list[str], limit: int) -> dict:
                 incomplete = True
                 continue
             def _slim_symbol(s):
-                loc = s.location
+                if hasattr(s, "model_dump"):
+                    data = s.model_dump()
+                    loc = data.get("location") or {}
+                    return {
+                        "id": data.get("id"), "kind": data.get("kind"), "name": data.get("name"),
+                        "qualified_name": _clip(data.get("qualified_name")), "signature": _clip(data.get("signature")),
+                        "file_path": loc.get("file_path") if isinstance(loc, dict) else getattr(loc, "file_path", None),
+                        "start_line": loc.get("start_line") if isinstance(loc, dict) else getattr(loc, "start_line", None),
+                        "end_line": loc.get("end_line") if isinstance(loc, dict) else getattr(loc, "end_line", None),
+                        "repo_id": loc.get("repo_id") if isinstance(loc, dict) else getattr(loc, "repo_id", None),
+                    }
+                loc = getattr(s, "location", None)
                 return {
-                    "id": s.id, "kind": s.kind, "name": s.name,
-                    "qualified_name": _clip(s.qualified_name), "signature": _clip(s.signature),
-                    "file_path": loc.file_path if loc else None,
-                    "start_line": loc.start_line if loc else None,
-                    "end_line": loc.end_line if loc else None,
-                    "repo_id": loc.repo_id if loc else None,
+                    "id": getattr(s, "id", None), "kind": getattr(s, "kind", None), "name": getattr(s, "name", None),
+                    "qualified_name": _clip(getattr(s, "qualified_name", None)), "signature": _clip(getattr(s, "signature", None)),
+                    "file_path": getattr(loc, "file_path", None) if loc else None,
+                    "start_line": getattr(loc, "start_line", None) if loc else None,
+                    "end_line": getattr(loc, "end_line", None) if loc else None,
+                    "repo_id": getattr(loc, "repo_id", None) if loc else None,
                 }
 
             def _slim_edge(e):
+                if hasattr(e, "model_dump"):
+                    data = e.model_dump()
+                    return {
+                        "kind": data.get("kind"), "provenance": data.get("provenance"),
+                        "source_id": data.get("source_id"), "target_id": data.get("target_id"),
+                    }
                 return {
-                    "kind": e.kind, "provenance": e.provenance,
-                    "source_id": e.source_id, "target_id": e.target_id,
+                    "kind": getattr(e, "kind", None), "provenance": getattr(e, "provenance", None),
+                    "source_id": getattr(e, "source_id", None), "target_id": getattr(e, "target_id", None),
                 }
 
             sym_limit = min(limit, 5)

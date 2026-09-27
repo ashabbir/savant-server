@@ -19,6 +19,14 @@ EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "768"))
 REPO_ID = os.getenv("EMBEDDING_REPO_ID", "sentence-transformers/stsb-distilbert-base")
 REVISION = os.getenv("EMBEDDING_REVISION", "main")
 
+# Bound OpenMP/BLAS thread pools to prevent CPU starvation of web workers
+_EMBED_NUM_THREADS = str(max(1, min(2, (os.cpu_count() or 4) // 2)))
+os.environ.setdefault("OMP_NUM_THREADS", _EMBED_NUM_THREADS)
+os.environ.setdefault("MKL_NUM_THREADS", _EMBED_NUM_THREADS)
+os.environ.setdefault("OPENBLAS_NUM_THREADS", _EMBED_NUM_THREADS)
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", _EMBED_NUM_THREADS)
+os.environ.setdefault("NUMEXPR_NUM_THREADS", _EMBED_NUM_THREADS)
+
 
 def default_model_dir() -> Path:
     override = os.getenv("EMBEDDING_MODEL_DIR")
@@ -115,6 +123,15 @@ class EmbeddingModel:
             )
 
         logger.info(f"Loading embedding model from {model_dir} (CPU)")
+        try:
+            import torch
+            num_threads = max(1, min(2, (os.cpu_count() or 4) // 2))
+            torch.set_num_threads(num_threads)
+            if hasattr(torch, "set_num_interop_threads"):
+                torch.set_num_interop_threads(1)
+        except Exception:
+            pass
+
         self._model = SentenceTransformer(str(model_dir), device="cpu")
         self._np = _np
 

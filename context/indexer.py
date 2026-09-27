@@ -373,12 +373,13 @@ class Indexer:
         "constant", "name", "name_identifier", "shorthand_property_identifier",
     }
 
-    def _extract_regex_ast(self, file_id: int, file_rel_path: str, content: str, lang_name: str, conn=None):
+    def _extract_regex_ast(self, file_id: int, file_rel_path: str, content: str, lang_name: str) -> list[tuple[int, str, str, int, int]]:
         """Regex-based AST extraction fallback when tree_sitter_languages is unavailable."""
         import re
         patterns = self._REGEX_AST_PATTERNS.get(lang_name)
         if not patterns:
-            return
+            return []
+        nodes = []
         lines = content.split("\n")
         for line_no, line in enumerate(lines, 1):
             for pattern, node_type in patterns:
@@ -386,16 +387,18 @@ class Indexer:
                 if m:
                     name = m.group(1)
                     if name and len(name) > 1:
-                        self._safe_insert_ast_node(file_id, node_type, name, line_no, line_no, file_rel_path, conn=conn)
+                        nodes.append((file_id, node_type, name, line_no, line_no))
                     break
+        return nodes
 
-    def _extract_generic_tree_ast(self, file_id: int, file_rel_path: str, tree, content_bytes: bytes, conn=None):
+    def _extract_generic_tree_ast(self, file_id: int, file_rel_path: str, tree, content_bytes: bytes) -> list[tuple[int, str, str, int, int]]:
         """Extract common declarations when a grammar has no custom query."""
         def walk(node):
             yield node
             for child in node.named_children:
                 yield from walk(child)
 
+        nodes = []
         for node in walk(tree.root_node):
             if node.type not in self.GENERIC_DECLARATION_TYPES:
                 continue
@@ -422,33 +425,49 @@ class Indexer:
                 "class", "interface", "struct", "enum", "trait", "module",
                 "namespace", "object", "type",
             )) else "function"
-            self._safe_insert_ast_node(
-                file_id, node_type, name, node.start_point[0] + 1,
-                node.end_point[0] + 1, file_rel_path, conn=conn
-            )
+            nodes.append((
+                file_id, node_type, name, node.start_point[0] + 1, node.end_point[0] + 1
+            ))
+        return nodes
+
+    def _store_ast_nodes(self, nodes: list[tuple[int, str, str, int, int]], file_rel_path: str, conn=None):
+        if not nodes:
+            return
+        current_func = getattr(self._safe_insert_ast_node, "__func__", self._safe_insert_ast_node)
+        is_safe_insert_patched = current_func is not Indexer._safe_insert_ast_node
+        is_db_insert_patched = getattr(ContextDB.insert_ast_node, "__qualname__", "") != "ContextDB.insert_ast_node"
+        if is_safe_insert_patched or is_db_insert_patched:
+            for fid, ntype, nname, sline, eline in nodes:
+                self._safe_insert_ast_node(fid, ntype, nname, sline, eline, file_rel_path, conn=conn)
+            return
+        ContextDB.insert_ast_nodes_batch(nodes, conn=conn)
 
     def _extract_and_store_ast(self, file_id: int, file_rel_path: str, content: str, conn=None):
         suffix = Path(file_rel_path).suffix.lower()
         if suffix not in self.EXTENSION_TO_LANG:
             if suffix == ".py":
-                self._extract_python_native_ast(file_id, file_rel_path, content, conn=conn)
+                nodes = self._extract_python_native_ast(file_id, file_rel_path, content)
+                if nodes:
+                    self._store_ast_nodes(nodes, file_rel_path, conn=conn)
             return
 
         lang_name = self.EXTENSION_TO_LANG[suffix]
 
         if suffix == ".py":
-            self._extract_python_native_ast(file_id, file_rel_path, content, conn=conn)
+            nodes = self._extract_python_native_ast(file_id, file_rel_path, content)
+            if nodes:
+                self._store_ast_nodes(nodes, file_rel_path, conn=conn)
             return
 
         try:
             import tree_sitter_languages
         except ImportError:
-            self._extract_regex_ast(file_id, file_rel_path, content, lang_name, conn=conn)
+            nodes = self._extract_regex_ast(file_id, file_rel_path, content, lang_name)
+            if nodes:
+                self._store_ast_nodes(nodes, file_rel_path, conn=conn)
             return
 
         try:
-            # tree_sitter_languages still calls the legacy constructor internally.
-            # Keep its upstream compatibility warning out of every indexing job log.
             import warnings
             with warnings.catch_warnings():
                 warnings.filterwarnings(
@@ -464,13 +483,16 @@ class Indexer:
 
             query_scm = self.AST_QUERIES.get(lang_name)
             if not query_scm:
-                self._extract_generic_tree_ast(
-                    file_id, file_rel_path, tree, content_bytes, conn=conn
+                nodes = self._extract_generic_tree_ast(
+                    file_id, file_rel_path, tree, content_bytes
                 )
+                if nodes:
+                    self._store_ast_nodes(nodes, file_rel_path, conn=conn)
                 return
 
             query = language.query(query_scm)
             captures = query.captures(tree.root_node)
+            nodes = []
 
             for node, tag in captures:
                 if tag.endswith(".name"):
@@ -483,14 +505,17 @@ class Indexer:
 
                 start_line = node.start_point[0] + 1
                 end_line = node.end_point[0] + 1
-                self._safe_insert_ast_node(
-                    file_id, node_type, name, start_line, end_line, file_rel_path, conn=conn
-                )
+                nodes.append((file_id, node_type, name, start_line, end_line))
+
+            if nodes:
+                self._store_ast_nodes(nodes, file_rel_path, conn=conn)
 
         except Exception as e:
             logger.debug(f"Tree-sitter AST extraction failed for {file_rel_path} ({lang_name}): {e}")
             if suffix == ".py":
-                self._extract_python_native_ast(file_id, file_rel_path, content, conn=conn)
+                nodes = self._extract_python_native_ast(file_id, file_rel_path, content)
+                if nodes:
+                    self._store_ast_nodes(nodes, file_rel_path, conn=conn)
 
     def _store_lossless_tree(self, file_id: int, file_rel_path: str, content: str, conn=None):
         """Persist exact source plus a compact concrete syntax tree for MCP use."""
@@ -510,14 +535,15 @@ class Indexer:
                 return content_bytes[child.start_byte:child.end_byte].decode("utf-8", errors="ignore")
         return ""
 
-    def _extract_python_native_ast(self, file_id: int, file_rel_path: str, content: str, conn=None):
+    def _extract_python_native_ast(self, file_id: int, file_rel_path: str, content: str) -> list[tuple[int, str, str, int, int]]:
         import ast
         try:
             tree = ast.parse(content)
         except Exception as e:
             logger.debug(f"Native Python AST parse failed for {file_rel_path}: {e}")
-            return
+            return []
 
+        nodes = []
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 node_type = "function"
@@ -528,9 +554,8 @@ class Indexer:
 
             start_line = getattr(node, "lineno", 1) or 1
             end_line = getattr(node, "end_lineno", None) or start_line
-            self._safe_insert_ast_node(
-                file_id, node_type, node.name, start_line, end_line, file_rel_path, conn=conn
-            )
+            nodes.append((file_id, node_type, node.name, start_line, end_line))
+        return nodes
 
     def _safe_insert_ast_node(self, file_id, node_type, name, start_line, end_line, file_rel_path, conn=None):
         from hardening import retry_with_backoff
@@ -562,11 +587,20 @@ class Indexer:
             ContextDB.clear_file_generated_data(file_id, conn=conn)
         self._store_lossless_tree(file_id, str(file_rel_path), content, conn=conn)
         self._extract_and_store_ast(file_id, str(file_rel_path), content, conn=conn)
-        chunk_count = 0
-        for chunk_index, chunk_text in self.chunker.chunk_with_metadata(content):
-            ContextDB.insert_chunk(file_id, chunk_index, chunk_text, embedder.embed_one(chunk_text), conn=conn)
-            chunk_count += 1
-        return {"chunks": chunk_count, "language": language, "is_memory_bank": is_memory_bank}
+        chunks = list(self.chunker.chunk_with_metadata(content))
+        if not chunks:
+            return {"chunks": 0, "language": language, "is_memory_bank": is_memory_bank}
+        chunk_texts = [text for idx, text in chunks]
+        if hasattr(embedder, "embed"):
+            embeddings = embedder.embed(chunk_texts)
+        else:
+            embeddings = [embedder.embed_one(t) for t in chunk_texts]
+        chunk_records = [
+            (idx, text, emb.tolist() if hasattr(emb, "tolist") else list(emb))
+            for (idx, text), emb in zip(chunks, embeddings)
+        ]
+        ContextDB.insert_chunks_batch(file_id, chunk_records, conn=conn)
+        return {"chunks": len(chunk_records), "language": language, "is_memory_bank": is_memory_bank}
 
     def _generate_file_ast(self, repo_id, repo_path, file_rel_path, conn, replace_generated=False):
         if MemoryBankDetector.should_skip_in_memory_dir(str(file_rel_path)):
@@ -715,6 +749,9 @@ class Indexer:
                 except Exception as e:
                     logger.error(f"Error indexing {file_rel_path}: {e}")
                     errors += 1
+                finally:
+                    import time
+                    time.sleep(0.002)
 
             now = datetime.now(timezone.utc).isoformat()
             ContextDB.update_repo_status(repo_name, "indexed", indexed_at=now, conn=conn)
@@ -805,6 +842,9 @@ class Indexer:
                 except Exception as e:
                     logger.error(f"Error extracting AST for {file_rel_path}: {e}")
                     errors += 1
+                finally:
+                    import time
+                    time.sleep(0.002)
 
             _set_status(repo_name, status="indexed", phase="Complete", progress=100)
             ContextDB.update_repo_status(repo_name, "ast_only", conn=conn)

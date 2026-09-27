@@ -574,6 +574,49 @@ class ContextDB:
                 release_connection(conn)
 
     @staticmethod
+    def insert_chunks_batch(file_id: int, chunks: List[tuple[int, str, List[float]]], conn=None) -> List[int]:
+        """Batch insert chunks and embeddings for a file in a single transaction."""
+        if not chunks:
+            return []
+        local_conn = False
+        if conn is None:
+            conn = get_connection()
+            local_conn = True
+        try:
+            try:
+                with conn.cursor() as cur:
+                    from psycopg2.extras import execute_values
+                    execute_values(
+                        cur,
+                        "INSERT INTO ctx_chunks (file_id, chunk_index, content) VALUES %s RETURNING id, chunk_index",
+                        [(file_id, idx, text) for idx, text, _ in chunks],
+                    )
+                    rows = cur.fetchall()
+                    chunk_id_by_index = {row["chunk_index"]: row["id"] for row in rows}
+                    vec_data = [(chunk_id_by_index[idx], _coerce_vec(emb)) for idx, text, emb in chunks if idx in chunk_id_by_index]
+                    if vec_data:
+                        execute_values(
+                            cur,
+                            "INSERT INTO ctx_vec_chunks (chunk_id, embedding) VALUES %s",
+                            vec_data,
+                            template="(%s, %s::vector)",
+                        )
+                conn.commit()
+                return [row["id"] for row in rows]
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                ids = []
+                for idx, text, emb in chunks:
+                    ids.append(ContextDB.insert_chunk(file_id, idx, text, emb, conn=conn))
+                return ids
+        finally:
+            if local_conn:
+                release_connection(conn)
+
+    @staticmethod
     def insert_ast_node(file_id: int, node_type: str, name: str, start_line: int, end_line: int, conn=None) -> int:
         local_conn = False
         if conn is None:
@@ -600,6 +643,42 @@ class ContextDB:
                 row = cur.fetchone()
             conn.commit()
             return row["id"] if row else 0
+        finally:
+            if local_conn:
+                release_connection(conn)
+
+    @staticmethod
+    def insert_ast_nodes_batch(nodes: List[tuple[int, str, str, int, int]], conn=None) -> int:
+        """Batch insert AST nodes in a single transaction."""
+        if not nodes:
+            return 0
+        local_conn = False
+        if conn is None:
+            conn = get_connection()
+            local_conn = True
+        try:
+            try:
+                with conn.cursor() as cur:
+                    from psycopg2.extras import execute_values
+                    execute_values(
+                        cur,
+                        """INSERT INTO ctx_ast_nodes (file_id, node_type, name, start_line, end_line, content)
+                           VALUES %s""",
+                        [(fid, ntype, nname, sline, eline, "") for fid, ntype, nname, sline, eline in nodes],
+                    )
+                conn.commit()
+                return len(nodes)
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                count = 0
+                for file_id, node_type, name, start_line, end_line in nodes:
+                    nid = ContextDB.insert_ast_node(file_id, node_type, name, start_line, end_line, conn=conn)
+                    if nid:
+                        count += 1
+                return count
         finally:
             if local_conn:
                 release_connection(conn)
@@ -697,7 +776,6 @@ class ContextDB:
                 return [dict(row) for row in cur.fetchall()]
         finally:
             release_connection(conn)
-
     # ------------------------------------------------------------------
     # Search
     # ------------------------------------------------------------------

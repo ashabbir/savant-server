@@ -153,6 +153,7 @@ cython_debug/
 data/*.db
 data/*.db-shm
 data/*.db-wal
+data/tools/
 build-info.json
 models/
 node_modules/

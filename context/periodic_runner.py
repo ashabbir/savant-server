@@ -268,6 +268,18 @@ def _execute_sync_pass_for_all_repos(
                 **git_details,
             )
 
+            if summary_status in ("partial", "failed") and activity_errors:
+                try:
+                    from db.notifications import NotificationDB
+                    NotificationDB.notify_sync_failure(
+                        repo_name=repo_name,
+                        error="; ".join(activity_errors),
+                        errors=activity_errors,
+                        user_id=actor_id if actor_id != "system" else "",
+                    )
+                except Exception:
+                    pass
+
             results.append({
                 "repo_name": repo_name,
                 "status": summary_status,
@@ -292,6 +304,15 @@ def _execute_sync_pass_for_all_repos(
                 error=str(exc),
                 details=str(exc),
             )
+            try:
+                from db.notifications import NotificationDB
+                NotificationDB.notify_sync_failure(
+                    repo_name=repo_name,
+                    error=str(exc),
+                    user_id=actor_id if actor_id != "system" else "",
+                )
+            except Exception:
+                pass
             results.append({"repo_name": repo_name, "status": "failed", "error": str(exc)})
 
     return {"count": len(results), "timestamp": datetime.now(timezone.utc).isoformat(), "results": results}

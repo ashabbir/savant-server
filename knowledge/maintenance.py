@@ -221,6 +221,16 @@ def run_maintenance_now(trigger: str = "manual") -> dict:
         except Exception:
             conn.rollback()
         failure["error"] = str(exc)
+        try:
+            from db.notifications import NotificationDB
+            NotificationDB.notify(
+                message=f"Knowledge graph maintenance failed: {str(exc)[:300]}",
+                event_type="kg_maintenance_failed",
+                level="warning",
+                detail={"error": str(exc), "trigger": trigger, "summary": summary},
+            )
+        except Exception:
+            pass
         return failure
     finally:
         release_connection(conn)
