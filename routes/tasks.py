@@ -14,7 +14,7 @@ tasks_bp = Blueprint("tasks", __name__)
 COLOSSEUM_PROVIDERS = {"hermes", "codex", "claude", "copilot", "agy"}
 
 
-def _validate_colosseum_config(data):
+def _validate_colosseum_config(data: dict) -> tuple[dict | None, str | None]:
     config = data.get("config") if isinstance(data, dict) else None
     if not isinstance(config, dict):
         return None, "config must be an object"
