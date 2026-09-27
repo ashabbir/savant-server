@@ -15,7 +15,8 @@ data/*
 !data/default_skills/
 !data/default_skills/**
 .env
-node_modules
-models
+models/*
+!models/bge-reranker-base/
+!models/bge-reranker-base/**
 .codegraph
 .tmp

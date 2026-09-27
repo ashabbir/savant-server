@@ -153,6 +153,7 @@ def search():
     repo = request.args.get("repo")
     limit = min(100, max(1, int(request.args.get("limit", 10))))
     exclude_mb = request.args.get("exclude_memory_bank", "").lower() in ("1", "true")
+    should_rerank = request.args.get("rerank", "1").lower() in ("1", "true", "yes")
 
     try:
         from .embeddings import EmbeddingModel
@@ -161,10 +162,18 @@ def search():
 
         from .db import ContextDB
         repo_filter = repo.split(",") if repo and "," in repo else repo
+        fetch_limit = max(limit * 3, 20) if should_rerank else limit
         results = ContextDB.vector_search(
-            qvec, limit=limit, repo_filter=repo_filter,
+            qvec, limit=fetch_limit, repo_filter=repo_filter,
             exclude_memory_bank=exclude_mb,
         )
+        if should_rerank:
+            from .reranker import RerankerModel
+            reranker = RerankerModel.get()
+            if reranker:
+                results = reranker.rerank(q, results, text_key="content", top_k=limit)
+            else:
+                results = results[:limit]
         return jsonify({"query": q, "result_count": len(results), "results": results})
     except Exception as e:
         logger.error(f"Search failed: {e}")
@@ -1376,18 +1385,27 @@ def _parse_repo_ids(repo) -> list[str]:
 def _exec_code_search(q: str, repo: str | None, limit: int, should_exclude_tests: bool) -> dict:
     from .db import ContextDB
     from .embeddings import EmbeddingModel
+    from .reranker import RerankerModel
     embedder = EmbeddingModel.get()
     qvec = embedder.embed_one(q)
     repo_filter = repo.split(",") if repo and isinstance(repo, str) and "," in repo else repo
+    candidate_limit = max(limit * 3, 20)
     res = ContextDB.vector_search(
-        qvec, limit=limit * 2 if should_exclude_tests else limit, repo_filter=repo_filter,
+        qvec, limit=candidate_limit, repo_filter=repo_filter,
         exclude_memory_bank=True,
     )
     if should_exclude_tests:
         res = [r for r in res if not (r.get("rel_path", "").lower().startswith("test") or "/test" in r.get("rel_path", "").lower())]
+
+    reranker = RerankerModel.get()
+    if reranker is not None:
+        res = reranker.rerank(q, res, text_key="content", top_k=limit)
+    else:
+        res = res[:limit]
+
     MAX_CONTENT = 600
     trimmed = []
-    for r in res[:limit]:
+    for r in res:
         if r.get("content") and len(r["content"]) > MAX_CONTENT:
             r = {**r, "content": r["content"][:MAX_CONTENT] + "…"}
         trimmed.append(r)

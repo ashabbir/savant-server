@@ -59,6 +59,7 @@ services:
       SAVANT_SERVER_DATA_DIR: /data/savant
       SAVANT_COLOSSEUM_WORKTREES_DIR: /data/colosseum/worktrees
       EMBEDDING_MODEL_DIR: /data/savant/models-v1
+      RERANKER_MODEL_DIR: /app/models/bge-reranker-base/v1
       BASE_CODE_DIR: /base-code
       SAVANT_CODEGRAPH_SOCKET: /run/savant/codegraph.sock
       SAVANT_API_ONLY: "1"
