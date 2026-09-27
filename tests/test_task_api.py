@@ -655,3 +655,64 @@ class TestTaskApiGraph:
     def test_graph_requires_workspace_id(self, client):
         resp = client.get("/api/tasks/graph")
         assert resp.status_code == 400
+
+
+class TestColosseumArmingAndValidation:
+    """WP-1: Drag-to-Ready arming, repository fallback hardening, provider validation."""
+
+    def test_drag_to_ready_arms_task_with_valid_config(self, client, ws):
+        task = _create_task(client, ws, title="Configured task").get_json()
+        tid = task["task_id"]
+        client.put(f"/api/tasks/{tid}/colosseum-metadata", json={
+            "provider": "codex",
+            "repository": "/tmp/test-repo",
+            "work_type": "development",
+        })
+
+        resp = client.put(f"/api/tasks/{tid}", json={"status": "ready"})
+        assert resp.status_code == 200
+        assert resp.get_json()["colosseum_ready"] is True
+
+    def test_drag_to_ready_disarms_task_without_repository(self, client, ws):
+        task = _create_task(client, ws, title="No repo task").get_json()
+        tid = task["task_id"]
+        client.put(f"/api/tasks/{tid}/colosseum-metadata", json={
+            "provider": "codex",
+            "work_type": "development",
+        })
+
+        resp = client.put(f"/api/tasks/{tid}", json={"status": "ready"})
+        assert resp.status_code == 200
+        assert resp.get_json()["colosseum_ready"] is False
+
+    def test_drag_to_ready_disarms_bare_card(self, client, ws):
+        task = _create_task(client, ws, title="Bare task").get_json()
+        tid = task["task_id"]
+
+        resp = client.put(f"/api/tasks/{tid}", json={"status": "ready"})
+        assert resp.status_code == 200
+        assert resp.get_json()["colosseum_ready"] is False
+
+    def test_colosseum_metadata_rejects_unknown_provider(self, client, ws):
+        task = _create_task(client, ws, title="Provider check task").get_json()
+        tid = task["task_id"]
+
+        bad = client.put(f"/api/tasks/{tid}/colosseum-metadata", json={"provider": "gemini"})
+        assert bad.status_code == 400
+
+        good = client.put(f"/api/tasks/{tid}/colosseum-metadata", json={"provider": "codex"})
+        assert good.status_code == 200
+
+    def test_next_colosseum_task_skips_development_task_without_repository_and_never_falls_back_to_cwd(self, client, ws):
+        task = _create_task(client, ws, title="Repo-less dev task", status="ready").get_json()
+        tid = task["task_id"]
+        # Force colosseum_ready=True on a dev task without repository
+        client.put(f"/api/tasks/{tid}/colosseum-metadata", json={"provider": "codex", "work_type": "development"})
+        client.post(f"/api/tasks/{tid}/colosseum-ready-state", json={"ready": True})
+
+        resp = client.get(f"/api/tasks/colosseum/next?workspace_id={ws}")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        # Must not offer the repo-less task
+        assert data.get("task_id") != tid
+

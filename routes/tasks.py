@@ -40,6 +40,18 @@ def _validate_colosseum_config(data):
     }, None
 
 
+def _has_usable_colosseum_config(task: dict) -> bool:
+    config = task.get("colosseum_config") or {}
+    provider = str(config.get("provider") or "").strip().lower()
+    if provider not in COLOSSEUM_PROVIDERS:
+        return False
+    repo = str(config.get("repository") or task.get("repository") or "").strip()
+    work_type = str(config.get("work_type") or ("development" if repo else "research")).strip().lower()
+    if work_type == "development" and not repo:
+        return False
+    return True
+
+
 def _comment(task: dict, text: str, author: str, role: str) -> tuple[dict, list[dict]]:
     comment = {
         "id": f"c-{uuid.uuid4().hex[:8]}",
@@ -134,6 +146,16 @@ def api_task_detail(task_id):
 
     data = request.get_json(force=True, silent=True) or {}
     updated = TaskDB.update(task_id, data, user_id=user_id)
+    if not updated:
+        return jsonify({"error": "Task not found"}), 404
+
+    if "status" in data:
+        should_arm = bool(
+            data.get("status") in {"ready", "approved"}
+            and _has_usable_colosseum_config(updated)
+        )
+        updated = TaskDB.set_colosseum_ready_state(task_id, should_arm, user_id=user_id) or updated
+
     return jsonify(updated)
 
 
@@ -206,6 +228,17 @@ def api_next_colosseum_task():
             for task in TaskDB.list_all(workspace_id=workspace_id, user_id="", status=phase)
             if task.get("colosseum_ready")
         ]
+
+    def _is_offerable(task: dict) -> bool:
+        cfg = task.get("colosseum_config") or {}
+        repo = str(cfg.get("repository") or task.get("repository") or "").strip()
+        work_type = str(cfg.get("work_type") or ("development" if repo else "research")).strip().lower()
+        if work_type == "development" and not repo:
+            return False
+        return True
+
+    all_colosseum_tasks = [t for t in all_colosseum_tasks if _is_offerable(t)]
+
     if not all_colosseum_tasks:
         return jsonify({"message": "No queued Colosseum task", "workspace_id": workspace_id}), 200
     phase_rank = {phase: index for index, phase in enumerate(phases)}
@@ -213,7 +246,7 @@ def api_next_colosseum_task():
     selected = all_colosseum_tasks[0]
     config = dict(selected.get("colosseum_config") or {})
     if not config.get("repository"):
-        config["repository"] = selected.get("repository") or os.getcwd()
+        config["repository"] = selected.get("repository") or ""
     settings_key = "colosseum:review-settings" if selected.get("status") == "review" else "colosseum:ready-settings"
     phase_settings = get_user_preference(settings_key, {})
     config["provider"] = config.get("provider") or phase_settings.get("provider") or "codex"
@@ -245,6 +278,10 @@ def api_task_colosseum_metadata(task_id):
     data = request.get_json(force=True, silent=True) or {}
     if not isinstance(data, dict):
         return jsonify({"error": "metadata must be an object"}), 400
+    if "provider" in data:
+        provider = str(data.get("provider") or "").strip().lower()
+        if provider not in COLOSSEUM_PROVIDERS:
+            return jsonify({"error": f"Unknown provider: {provider}. Must be one of {sorted(COLOSSEUM_PROVIDERS)}"}), 400
     updated = TaskDB.patch_colosseum_config(task_id, data, user_id=user_id)
     if not updated:
         return jsonify({"error": "Task not found"}), 404
