@@ -1,4 +1,4 @@
-# Savant Server (Version 15.0.0 - Major Release)
+# Savant Server (Version 17.0.0 - Major Release)
 
 License Owned by Project X. This repository is private and proprietary.
 
