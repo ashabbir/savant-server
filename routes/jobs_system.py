@@ -364,6 +364,55 @@ _AGENT_SETUP_PROFILES = {
     },
 }
 
+_AGENT_MCP_TRANSPORTS = {"streamable-http", "sse"}
+_AGENT_MCP_SERVERS = (
+    ("savant-workspace", "SAVANT_MCP_WORKSPACE_PORT", 8091, "SAVANT_MCP_STREAMABLE_WORKSPACE_PORT", 8191),
+    ("savant-context", "SAVANT_MCP_CONTEXT_PORT", 8093, "SAVANT_MCP_STREAMABLE_CONTEXT_PORT", 8193),
+    ("savant-knowledge", "SAVANT_MCP_KNOWLEDGE_PORT", 8094, "SAVANT_MCP_STREAMABLE_KNOWLEDGE_PORT", 8194),
+)
+
+
+def _agent_mcp_entries(transport):
+    """Build the agent-facing MCP entries for one supported transport."""
+    if not isinstance(transport, str) or transport not in _AGENT_MCP_TRANSPORTS:
+        raise ValueError("transport must be one of: streamable-http, sse")
+
+    entries = {}
+    for name, sse_env, sse_default, http_env, http_default in _AGENT_MCP_SERVERS:
+        if transport == "streamable-http":
+            port = _port_from_environment(http_env, http_default)
+            path = "mcp"
+        else:
+            port = _port_from_environment(sse_env, sse_default)
+            path = "sse"
+        entries[name] = {
+            "type": transport,
+            "url": (
+                f"http://127.0.0.1:{port}/{path}"
+                "?api_key=sk-ahmed-savant-001&app_name=savant-mcp"
+            ),
+        }
+    return entries
+
+
+def _configured_agent_mcp_transport(content):
+    """Return the configured transport when a complete Savant MCP config is present."""
+    try:
+        servers = json.loads(content).get("mcpServers", {})
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return "sse" if "savant-knowledge" in str(content) and "8094" in str(content) else None
+
+    if not isinstance(servers, dict):
+        return None
+
+    entries = [servers.get(name) for name, *_ in _AGENT_MCP_SERVERS]
+    if not all(isinstance(entry, dict) for entry in entries):
+        return None
+    transports = {entry.get("type") for entry in entries}
+    if len(transports) == 1 and transports <= _AGENT_MCP_TRANSPORTS:
+        return transports.pop()
+    return None
+
 _LEARNING_PROTOCOL_TEXT = """
 <!-- SAVANT KNOWLEDGE PROTOCOL START -->
 ## Savant Knowledge & Memory Persistence Protocol
@@ -450,15 +499,20 @@ def _check_agent_setup_status_dict():
         present = os.path.exists(profile["presence_path"])
 
         # 1. MCP
-        mcp_configured = False
+        mcp_transport = None
         if os.path.exists(profile["mcp_path"]):
             try:
                 with open(profile["mcp_path"], "r", encoding="utf-8") as f:
-                    content = f.read()
-                    if "8094" in content or "savant-knowledge" in content:
-                        mcp_configured = True
+                    mcp_transport = _configured_agent_mcp_transport(f.read())
             except Exception:
                 pass
+        mcp_configured = mcp_transport is not None
+        mcp_details = (
+            f"{mcp_transport.replace('-', ' ').title()} connection to Savant Knowledge "
+            f"& Context ({'ports 8194 / 8193' if mcp_transport == 'streamable-http' else 'ports 8094 / 8093'})"
+            if mcp_transport
+            else "Savant MCP connection is not configured"
+        )
 
         # 2. Instructions
         instructions_configured = False
@@ -486,7 +540,7 @@ def _check_agent_setup_status_dict():
                 "label": "MCP Knowledge Bridge",
                 "configured": mcp_configured,
                 "path": profile["mcp_path"],
-                "details": "SSE connection to Savant Knowledge (port 8094) & Context (port 8093)",
+                "details": mcp_details,
             },
             {
                 "id": "instructions",
@@ -523,6 +577,7 @@ def _check_agent_setup_status_dict():
             "present": present,
             "status": status,
             "parts": parts,
+            "mcpTransport": mcp_transport,
             "lastChecked": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
 
@@ -549,6 +604,11 @@ def api_agent_setup_status():
 def api_agent_setup_trigger():
     data = request.get_json(force=True, silent=True) or {}
     provider = data.get("provider", "all")
+    transport = data.get("transport", "streamable-http")
+    if not isinstance(transport, str) or transport not in _AGENT_MCP_TRANSPORTS:
+        return jsonify({"error": "transport must be one of: streamable-http, sse"}), 400
+    if provider != "all" and provider not in _AGENT_SETUP_PROFILES:
+        return jsonify({"error": f"Unknown agent provider: {provider}"}), 400
     targets = list(_AGENT_SETUP_PROFILES.keys()) if provider == "all" else [provider]
 
     configured_parts = []
@@ -572,18 +632,7 @@ def api_agent_setup_trigger():
                 except Exception:
                     pass
 
-            current_mcp["mcpServers"]["savant-knowledge"] = {
-                "type": "sse",
-                "url": "http://127.0.0.1:8094/sse?api_key=sk-ahmed-savant-001&app_name=savant-mcp",
-            }
-            current_mcp["mcpServers"]["savant-context"] = {
-                "type": "sse",
-                "url": "http://127.0.0.1:8093/sse?api_key=sk-ahmed-savant-001&app_name=savant-mcp",
-            }
-            current_mcp["mcpServers"]["savant-workspace"] = {
-                "type": "sse",
-                "url": "http://127.0.0.1:8091/sse?api_key=sk-ahmed-savant-001&app_name=savant-mcp",
-            }
+            current_mcp["mcpServers"].update(_agent_mcp_entries(transport))
             with open(profile["mcp_path"], "w", encoding="utf-8") as f:
                 json.dump(current_mcp, f, indent=2)
             configured_parts.append(f"{p}:mcp")
