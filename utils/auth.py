@@ -44,6 +44,10 @@ def check_domain_write_access(user_id: str, node_id: str | None = None, is_domai
     if not user:
         return False, "Authentication required."
 
+    # Guest users have read-only access (no add, edit, or delete)
+    if user.get("role") == "guest":
+        return False, "Access denied. Guest users have read-only search access."
+
     # Rule 1: ONLY admins can create node_type == 'domain'
     if is_domain_creation:
         if user.get("role") == "admin":

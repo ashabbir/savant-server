@@ -9,7 +9,11 @@ SSE flow:
 """
 
 import contextvars
+import os
+import threading
+import time
 from urllib.parse import parse_qs
+import requests
 
 # Session-level key storage: MCP session_id -> api_key
 # Populated on GET /sse, read on POST /messages/
@@ -21,6 +25,91 @@ _session_mcp_servers: dict[str, str] = {}
 _api_key_var: contextvars.ContextVar[str] = contextvars.ContextVar("savant_api_key", default="")
 _app_name_var: contextvars.ContextVar[str] = contextvars.ContextVar("savant_app_name", default="")
 _mcp_server_var: contextvars.ContextVar[str] = contextvars.ContextVar("savant_mcp_server", default="")
+_in_http_context: contextvars.ContextVar[bool] = contextvars.ContextVar("savant_in_http", default=False)
+
+# Role cache: api_key -> (role, expire_timestamp)
+_role_cache: dict[str, tuple[str, float]] = {}
+_ROLE_CACHE_TTL = 30.0  # seconds
+
+
+def clear_role_cache() -> None:
+    """Clear cached role lookups (useful for tests)."""
+    _role_cache.clear()
+
+
+def is_knowledge_server(server_name: str) -> bool:
+    """Return True if the server is the knowledge graph MCP server."""
+    norm = (server_name or "").strip().lower()
+    return norm in ("savant-knowledge", "knowledge")
+
+
+def get_user_role(api_key: str) -> str:
+    """Resolve the role for an API key. Returns 'guest', 'user', 'operator', 'admin', etc."""
+    if not api_key:
+        return "guest"
+
+    now = time.time()
+    cached = _role_cache.get(api_key)
+    if cached and now < cached[1]:
+        return cached[0]
+
+    role = None
+    # 1. Try direct DB lookup if DB is configured and accessible
+    try:
+        from db.users import UserDB
+        user = UserDB.get_by_api_key(api_key)
+        if user:
+            role = user.get("role", "user")
+    except Exception:
+        pass
+
+    # 2. Try HTTP lookup to Flask API (/api/auth/validate)
+    if not role:
+        try:
+            base = os.environ.get("SAVANT_API_BASE", "http://127.0.0.1:8090").rstrip("/")
+            resp = requests.get(
+                f"{base}/api/auth/validate",
+                headers={"X-API-Key": api_key, "X-App-Name": "savant-mcp"},
+                timeout=3,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                role = data.get("role", "user")
+            elif resp.status_code in (401, 403, 404):
+                role = "guest"
+        except Exception:
+            pass
+
+    if not role:
+        role = "guest"
+
+    _role_cache[api_key] = (role, now + _ROLE_CACHE_TTL)
+    return role
+
+
+def get_caller_api_key(context=None, mcp_instance=None) -> str:
+    """Resolve the calling client's API key for authorization."""
+    key = ""
+    if context is not None:
+        key = _usage_api_key(context)
+    if not key and mcp_instance is not None:
+        try:
+            ctx = mcp_instance.get_context()
+            key = _usage_api_key(ctx)
+        except Exception:
+            pass
+    if not key:
+        key = _api_key_var.get("")
+    if not key and not _in_http_context.get(False):
+        key = os.environ.get("SAVANT_API_KEY", "")
+    return key
+
+
+def is_guest_caller(context=None, mcp_instance=None) -> bool:
+    """Return True if the calling client has the 'guest' role."""
+    key = get_caller_api_key(context=context, mcp_instance=mcp_instance)
+    role = get_user_role(key)
+    return role.lower() == "guest"
 
 
 def get_api_key() -> str:
@@ -110,6 +199,7 @@ def _capture_http_app(original_app, server_name: str, safe_sse_start: bool = Fal
                 await inner_app(scope, receive, send)
                 return
 
+            _in_http_context.set(True)
             _capture_scope_context(scope, server_name)
             if not safe_sse_start:
                 await inner_app(scope, receive, send)
@@ -195,15 +285,34 @@ def _post_usage(api_key: str, server_name: str, tool_name: str, details: dict | 
 
 
 def install_usage_tracking(mcp_instance, server_name: str) -> None:
-    """Count every tools/call per user; tracking must never delay or fail a tool."""
+    """Enforce guest access controls and record tool usage."""
     import threading
 
     manager = getattr(mcp_instance, "_tool_manager", None)
     if manager is None:
         return
     original_call_tool = manager.call_tool
+    original_list_tools = manager.list_tools
+
+    def list_tools():
+        tools = original_list_tools()
+        if is_guest_caller(mcp_instance=mcp_instance):
+            if not is_knowledge_server(server_name):
+                return []
+            return [t for t in tools if getattr(t, "name", "") == "search"]
+        return tools
 
     async def call_tool(name, arguments, context=None, **kwargs):
+        if is_guest_caller(context=context, mcp_instance=mcp_instance):
+            if not is_knowledge_server(server_name):
+                raise PermissionError(
+                    f"Access denied: guest users do not have access to {server_name}."
+                )
+            if name != "search":
+                raise PermissionError(
+                    "Access denied: guest users only have access to knowledge graph search."
+                )
+
         try:
             key = _usage_api_key(context)
             if key:
@@ -216,7 +325,48 @@ def install_usage_tracking(mcp_instance, server_name: str) -> None:
             pass
         return await original_call_tool(name, arguments, context=context, **kwargs)
 
+    manager.list_tools = list_tools
     manager.call_tool = call_tool
+
+    resource_mgr = getattr(mcp_instance, "_resource_manager", None)
+    if resource_mgr is not None:
+        orig_list_res = resource_mgr.list_resources
+        orig_get_res = resource_mgr.get_resource
+
+        def list_resources():
+            if is_guest_caller(mcp_instance=mcp_instance):
+                return []
+            return orig_list_res()
+
+        def get_resource(uri, context=None):
+            if is_guest_caller(context=context, mcp_instance=mcp_instance):
+                raise PermissionError(
+                    f"Access denied: guest users do not have access to resources on {server_name}."
+                )
+            return orig_get_res(uri, context=context)
+
+        resource_mgr.list_resources = list_resources
+        resource_mgr.get_resource = get_resource
+
+    prompt_mgr = getattr(mcp_instance, "_prompt_manager", None)
+    if prompt_mgr is not None:
+        orig_list_p = prompt_mgr.list_prompts
+        orig_get_p = prompt_mgr.get_prompt
+
+        def list_prompts():
+            if is_guest_caller(mcp_instance=mcp_instance):
+                return []
+            return orig_list_p()
+
+        def get_prompt(name):
+            if is_guest_caller(mcp_instance=mcp_instance):
+                raise PermissionError(
+                    f"Access denied: guest users do not have access to prompts on {server_name}."
+                )
+            return orig_get_p(name)
+
+        prompt_mgr.list_prompts = list_prompts
+        prompt_mgr.get_prompt = get_prompt
 
 
 def install_header_capture(mcp_instance):
