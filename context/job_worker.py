@@ -155,10 +155,9 @@ def _record_job_activity(
             before_commit=result.get("before_commit"),
             after_commit=result.get("after_commit"),
             files_changed=result.get("files_changed"),
-            indexed=job_type in {"index", "reindex", "index-all", "differential_sync", "initial_repo_sync", "initial_repo_processing"} and status == "success",
+            indexed=job_type in {"index", "reindex", "index-all"} and status == "success",
             graphed=job_type in {
-                "ast", "ast-all", "lst", "codegraph_index", "codegraph_sync", "differential_sync",
-                "initial_repo_sync", "initial_repo_processing"
+                "ast", "ast-all", "lst", "codegraph_index", "codegraph_sync"
             } and status == "success",
             duration_ms=int((perf_counter() - started_at) * 1000),
             error=error, details=json.dumps(result, default=str)[:10000],
@@ -246,19 +245,20 @@ def _execute_job(job_id: str, job_type: str, target: str, payload: dict | None =
 
 
 def _run_initial_repo_sync(target: str, payload: dict, progress_cb) -> dict:
-    """Clone a newly registered remote, then index and analyze it in one job."""
+    """Clone a newly registered remote repository (initial git sync)."""
     from context.ingestion import ingest_repo
     from context.db import ContextDB
     started_at = perf_counter()
     url = str(payload.get("url") or "")
     if not url:
         raise ValueError("Initial repository sync is missing its remote URL")
-    progress_cb(2, "Downloading repository", "Preparing first checkout")
+    progress_cb(10, "Downloading repository", "Preparing first checkout")
     ingested = ingest_repo(url, branch=payload.get("branch") or None)
     if ingested.name != target:
         raise RuntimeError(f"Registered repository name changed from {target} to {ingested.name}")
     ContextDB.add_repo(ingested.name, ingested.path)
     ContextDB.mark_repo_fetched(ingested.name)
+    ContextDB.update_repo_status(ingested.name, "ready")
     ContextDB.record_repo_sync_log(
         repo_name=ingested.name, operation=ingested.operation or "clone", trigger="project_add",
         provider=ingested.provider, branch=ingested.branch, status="success",
@@ -267,84 +267,71 @@ def _run_initial_repo_sync(target: str, payload: dict, progress_cb) -> dict:
         actor_id=str(payload.get("actor_id") or "user"),
         source_app=str(payload.get("source_app") or ""),
     )
-    return _run_initial_repo_processing(target, progress_cb, clone_result={
-        "operation": ingested.operation, "after_commit": ingested.after_commit,
-    })
+    progress_cb(100, "Complete", "Initial repository clone completed")
+    return {
+        "repo_name": ingested.name,
+        "operation": ingested.operation,
+        "after_commit": ingested.after_commit,
+        "status": "success",
+    }
 
 
 def _run_initial_repo_processing(target: str, progress_cb, clone_result: dict | None = None) -> dict:
-    """Build semantic index and AST analysis after the checkout is available."""
-    from context.indexer import Indexer
-    repo_path, repo_name = _resolve_repo(target)
-    indexer = Indexer()
-    progress_cb(20, "Indexing codebase", "Building semantic code index")
-    index_result = indexer.index_repository(repo_path, repo_name=repo_name, clear=True,
-                                             job_progress_cb=lambda pct, phase, message: progress_cb(20 + int(pct * .55), f"Indexing: {phase}", message))
-    progress_cb(76, "Analyzing codebase", "Extracting source structure")
-    analysis_result = indexer.generate_ast_for_repository(repo_path, repo_name=repo_name, clear=True,
-        job_progress_cb=lambda pct, phase, message: progress_cb(76 + int(pct * .23), f"Analysis: {phase}", message))
-    # The standalone AST endpoint uses ``ast_only`` to indicate no semantic
-    # index exists. This combined setup job has completed both stages.
+    """Mark initial registration ready for directory projects."""
     from context.db import ContextDB
-    ContextDB.update_repo_status(repo_name, "indexed")
-    progress_cb(100, "Complete", "Repository download, indexing, and analysis completed")
-    return {"repo_name": repo_name, "clone": clone_result or {}, "index_result": index_result,
-            "analysis_result": analysis_result}
+    repo_path, repo_name = _resolve_repo(target)
+    ContextDB.update_repo_status(repo_name, "ready")
+    progress_cb(100, "Complete", "Repository registration completed")
+    return {"repo_name": repo_name, "status": "ready"}
 
 
 def _run_differential_sync(job_id: str, target: str, progress_cb) -> dict:
-    """Run differential semantic index update and structural graph sync for a single repo."""
-    progress_cb(5, "Preparing", f"Starting differential sync for {target}")
+    """Pull latest code from remote for an existing checkout (git differential sync)."""
+    progress_cb(10, "Pulling Git Origin", f"Fetching latest commits from remote for {target}")
 
-    from context.indexer import Indexer
     from context.db import ContextDB
-    repo_path, repo_name = _resolve_repo(target)
-    indexer = Indexer()
-
-    # Use the latest real Git transition. A later no-change refresh must not
-    # hide the commit range that still needs differential repair.
-    logs = ContextDB.list_repo_sync_logs(repo_name, limit=100)
-    before_commit = None
-    after_commit = None
-    for log in logs:
-        candidate_before = log.get("before_commit")
-        candidate_after = log.get("after_commit")
-        if (
-            log.get("status") == "success"
-            and log.get("operation") in ("refresh", "periodic_refresh")
-            and candidate_before
-            and candidate_after
-            and candidate_before != candidate_after
-        ):
-            before_commit = candidate_before
-            after_commit = candidate_after
-            break
-    if not before_commit or not after_commit:
-        raise RuntimeError(
-            f"No successful changed Git commit range is available for {repo_name}"
-        )
-
-    progress_cb(15, "Differential Indexing", "doing differential index")
-    index_res = indexer.index_repository(
-        repo_path, repo_name=repo_name, clear=False, differential=True,
-        before_commit=before_commit, after_commit=after_commit,
-        job_progress_cb=progress_cb
-    )
-
-    progress_cb(60, "Differential Graph Sync", "doing differential analysis")
-    graph_res = _run_code_intelligence_sync(job_id, target, progress_cb)
+    from context.ingestion import refresh_repo, IngestionError
     from context.activity import collect_git_change_details
-    git_details = collect_git_change_details(repo_path, before_commit, after_commit)
 
-    progress_cb(100, "Complete", "Differential sync completed successfully")
+    repo_path, repo_name = _resolve_repo(target)
+    started_at = perf_counter()
+
+    if not (repo_path / ".git").is_dir():
+        progress_cb(100, "Complete", "Not a Git repository; differential sync skipped")
+        return {"repo_name": repo_name, "status": "skipped", "message": "Not a Git repository"}
+
+    try:
+        refreshed = refresh_repo(str(repo_path))
+    except IngestionError as exc:
+        ContextDB.record_repo_sync_log(
+            repo_name=repo_name, operation="differential_sync", trigger="user",
+            status="failed", error=str(exc), duration_ms=int((perf_counter() - started_at) * 1000),
+            details="Repository git differential pull failed",
+        )
+        raise
+
+    ContextDB.add_repo(refreshed.name, refreshed.path)
+    ContextDB.mark_repo_fetched(refreshed.name)
+    git_details = collect_git_change_details(
+        repo_path, refreshed.before_commit, refreshed.after_commit
+    )
+    ContextDB.record_repo_sync_log(
+        repo_name=refreshed.name, operation="differential_sync", trigger="user",
+        provider=refreshed.provider, branch=refreshed.branch, status="success",
+        before_commit=refreshed.before_commit, after_commit=refreshed.after_commit,
+        fetched=True, code_changed=refreshed.changed,
+        duration_ms=int((perf_counter() - started_at) * 1000),
+        details=f"Git differential sync completed (changed={refreshed.changed})",
+        **git_details,
+    )
+    progress_cb(100, "Complete", f"Git differential sync completed (commits: {refreshed.before_commit[:7] if refreshed.before_commit else 'none'} -> {refreshed.after_commit[:7] if refreshed.after_commit else 'none'})")
     return {
         "repo_name": repo_name,
-        "before_commit": before_commit,
-        "after_commit": after_commit,
+        "status": "success",
+        "changed": refreshed.changed,
+        "before_commit": refreshed.before_commit,
+        "after_commit": refreshed.after_commit,
         "files_changed": git_details.get("files_changed", {}),
-        "index_result": index_res,
-        "graph_result": graph_res,
-        "mode": "differential",
     }
 
 
@@ -435,11 +422,8 @@ def _run_lst(target: str, progress_cb) -> dict:
     lossless_result = indexer.sync_lossless_trees_for_repository(
         repo_path,
         repo_name=repo_name,
-        progress_cb=lambda done, total: progress_cb(
-            10 + int((done / max(total, 1)) * 85),
-            "Extracting LST",
-            f"Parsed {done}/{total} files",
-        ),
+        clear=True,
+        job_progress_cb=progress_cb,
     )
     progress_cb(100, "Complete", f"Lossless Syntax Tree generated for {repo_name}")
     return {"repo_name": repo_name, "lossless_result": lossless_result}

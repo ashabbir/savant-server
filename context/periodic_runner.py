@@ -83,11 +83,11 @@ def stop_periodic_runner():
         logger.info("Stopping periodic sync runner")
 
 
-def run_periodic_sync_now(actor_id: str = "user", source_app: str = "savant-olympus") -> dict:
-    """Manually trigger a sync pass for all projects immediately."""
-    logger.info("Manual trigger of periodic 2-hour sync runner for all projects")
+def run_periodic_sync_now(actor_id: str = "user", source_app: str = "savant-olympus", target_repo: str | None = None) -> dict:
+    """Manually trigger a sync pass for all projects (or a specific project) immediately."""
+    logger.info("Manual trigger of periodic sync runner (run all)")
     return _execute_sync_pass_for_all_repos(
-        trigger="manual", actor_id=actor_id, source_app=source_app
+        trigger="manual", actor_id=actor_id, source_app=source_app, target_repo=target_repo
     )
 
 
@@ -121,27 +121,26 @@ def _periodic_sync_loop():
 
 def _execute_sync_pass_for_all_repos(
     trigger: str = "scheduled", actor_id: str = "system",
-    source_app: str = "savant-server",
+    source_app: str = "savant-server", target_repo: str | None = None,
 ) -> dict:
-    """Iterate over all registered projects and perform sync (fetch + index + graph)."""
+    """Enqueue Run All pipeline (diff sync -> ast -> lst -> code graph -> index) for registered projects."""
     from context.db import ContextDB
-    from context.ingestion import IngestionError, refresh_repo, inspect_project_source
-    from context.indexer import Indexer
-    from db.code_intelligence import CodeIntelligenceConfigDB
+    from db.jobs import JobDB
 
     try:
         repos = ContextDB.list_repos()
+        if target_repo:
+            repos = [r for r in repos if r.get("name") == target_repo]
     except Exception as exc:
         logger.error(f"Failed to list repos for periodic sync: {exc}")
         return {"error": str(exc), "count": 0}
 
-    logger.info(f"Starting 2-hour periodic sync pass for {len(repos)} registered projects")
+    logger.info(f"Starting periodic sync pass (Run All) for {len(repos)} registered projects")
     results = []
 
     for repo in repos:
         sync_started_at = perf_counter()
         repo_name = repo.get("name")
-        repo_id = repo.get("id")
         repo_path_str = repo.get("path", "")
         repo_path = Path(repo_path_str)
 
@@ -149,84 +148,38 @@ def _execute_sync_pass_for_all_repos(
             logger.warning(f"Skipping periodic sync for invalid/missing project path: {repo_name} ({repo_path_str})")
             continue
 
-        fetched = False
-        code_changed = False
-        indexed = False
-        graphed = False
         details = []
-        activity_errors = []
-        refreshed = None
-        idx_res = {}
+        made_progress = False
 
         try:
-            # 1. Fetch latest code if Git repo
-            if (repo_path / ".git").is_dir():
-                try:
-                    refreshed = refresh_repo(repo_path_str)
-                    fetched = True
-                    code_changed = getattr(refreshed, "changed", False)
-                    details.append(f"Fetched origin (code_changed={code_changed})")
-                    ContextDB.mark_repo_fetched(repo_name)
-                except IngestionError as exc:
-                    details.append(f"Fetch skipped/failed: {exc}")
-                    activity_errors.append(f"fetch: {exc}")
-
-            # 2. Check if index or graph sync is needed
-            is_unindexed = (repo.get("status") in {"added", "error", None}) or (repo.get("file_count", 0) == 0)
-            config = CodeIntelligenceConfigDB.get(repo_name) or CodeIntelligenceConfigDB.get(str(repo_id))
-            graph_freshness = config.get("freshness") if config else None
-            graph_missing_on_disk = not (repo_path / ".codegraph" / "codegraph.db").exists()
-            is_graph_stale = graph_freshness in {"stale", "pending_sync", None} or not config or graph_missing_on_disk
-
-            needs_sync = code_changed or is_unindexed or is_graph_stale
-
-            # 3. Submit job to the persistent queue for savant-jobs container to process
-            if needs_sync:
-                from db.jobs import JobDB
-                active_job = JobDB.find_active_types(
-                    ["differential_sync", "index", "reindex", "codegraph_sync", "initial_repo_sync"],
-                    repo_name,
-                )
-                if not active_job:
-                    job_type = "index" if is_unindexed else "differential_sync"
-                    job = JobDB.create_job(
-                        job_type,
-                        repo_name,
-                        payload={"trigger": "scheduled", "actor_id": "scheduler", "code_changed": code_changed},
-                    )
-                    details.append(f"Enqueued {job_type} job {job['id']}")
-                    made_progress = True
-                else:
-                    details.append(f"Job already in progress ({active_job['job_type']}: {active_job['id']})")
-            if activity_errors:
-                summary_status = "partial" if made_progress else "failed"
-            else:
-                summary_status = "success" if made_progress else "skipped"
-            log_detail_str = "; ".join(details) if details else "No updates needed"
-            logger.info(f"Periodic sync [{repo_name}]: {summary_status} — {log_detail_str}")
-            from context.activity import collect_git_change_details
-            git_details = collect_git_change_details(
-                repo_path,
-                getattr(refreshed, "before_commit", "") if refreshed else "",
-                getattr(refreshed, "after_commit", "") if refreshed else "",
+            active_job = JobDB.find_active_types(
+                ["differential_sync", "ast", "lst", "codegraph_sync", "codegraph_index", "index", "reindex", "initial_repo_sync"],
+                repo_name,
             )
-            if indexed:
-                git_details["change_stats"].update({
-                    "files_indexed": int(idx_res.get("files_indexed", 0)),
-                    "files_skipped": int(idx_res.get("files_skipped", 0)),
-                    "files_removed_from_index": int(idx_res.get("files_removed", 0)),
-                    "chunks_indexed": int(idx_res.get("chunks_indexed", 0)),
-                    "index_errors": int(idx_res.get("errors", 0)),
-                })
-            changed_files = git_details["files_changed"]
-            if graphed:
-                git_details["change_stats"].update({
-                    "codegraph_accepted": bool(getattr(ci_res, "accepted", False)),
-                    "codegraph_result": getattr(ci_res, "result", {}),
-                    "codegraph_changed_files": (
-                        changed_files["added"] + changed_files["modified"] + changed_files["deleted"]
-                    ),
-                })
+            if active_job:
+                details.append(f"Job already in progress ({active_job['job_type']}: {active_job['id']})")
+                summary_status = "skipped"
+            else:
+                pipeline_ids = []
+                is_git = (repo_path / ".git").is_dir()
+                if is_git:
+                    j_diff = JobDB.create_job("differential_sync", repo_name, payload={"trigger": trigger, "actor_id": actor_id})
+                    pipeline_ids.append(f"diff:{j_diff['id']}")
+                j_ast = JobDB.create_job("ast", repo_name, payload={"trigger": trigger, "actor_id": actor_id})
+                pipeline_ids.append(f"ast:{j_ast['id']}")
+                j_lst = JobDB.create_job("lst", repo_name, payload={"trigger": trigger, "actor_id": actor_id})
+                pipeline_ids.append(f"lst:{j_lst['id']}")
+                j_graph = JobDB.create_job("codegraph_sync", repo_name, payload={"trigger": trigger, "actor_id": actor_id})
+                pipeline_ids.append(f"graph:{j_graph['id']}")
+                j_idx = JobDB.create_job("index", repo_name, payload={"trigger": trigger, "actor_id": actor_id})
+                pipeline_ids.append(f"index:{j_idx['id']}")
+
+                details.append(f"Enqueued Run All pipeline: {', '.join(pipeline_ids)}")
+                made_progress = True
+                summary_status = "success"
+
+            log_detail_str = "; ".join(details)
+            logger.info(f"Periodic sync [{repo_name}]: {summary_status} — {log_detail_str}")
 
             _record_sync_activity(ContextDB,
                 repo_name=repo_name,
@@ -234,40 +187,14 @@ def _execute_sync_pass_for_all_repos(
                 trigger=trigger,
                 actor_id=actor_id,
                 source_app=source_app,
-                provider=getattr(refreshed, "provider", "") if refreshed else "",
-                branch=getattr(refreshed, "branch", "") if refreshed else "",
                 status=summary_status,
-                before_commit=getattr(refreshed, "before_commit", "") if refreshed else "",
-                after_commit=getattr(refreshed, "after_commit", "") if refreshed else "",
-                fetched=fetched,
-                code_changed=code_changed,
-                indexed=indexed,
-                graphed=graphed,
                 duration_ms=int((perf_counter() - sync_started_at) * 1000),
-                error="; ".join(activity_errors),
                 details=log_detail_str,
-                **git_details,
             )
-
-            if summary_status in ("partial", "failed") and activity_errors:
-                try:
-                    from db.notifications import NotificationDB
-                    NotificationDB.notify_sync_failure(
-                        repo_name=repo_name,
-                        error="; ".join(activity_errors),
-                        errors=activity_errors,
-                        user_id=actor_id if actor_id != "system" else "",
-                    )
-                except Exception:
-                    pass
 
             results.append({
                 "repo_name": repo_name,
                 "status": summary_status,
-                "fetched": fetched,
-                "code_changed": code_changed,
-                "indexed": indexed,
-                "graphed": graphed,
                 "details": log_detail_str,
             })
 
@@ -285,15 +212,6 @@ def _execute_sync_pass_for_all_repos(
                 error=str(exc),
                 details=str(exc),
             )
-            try:
-                from db.notifications import NotificationDB
-                NotificationDB.notify_sync_failure(
-                    repo_name=repo_name,
-                    error=str(exc),
-                    user_id=actor_id if actor_id != "system" else "",
-                )
-            except Exception:
-                pass
             results.append({"repo_name": repo_name, "status": "failed", "error": str(exc)})
 
     return {"count": len(results), "timestamp": datetime.now(timezone.utc).isoformat(), "results": results}

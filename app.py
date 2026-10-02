@@ -42,6 +42,7 @@ from routes import (
     jobs_system_bp,
     sessions_bp,
     notebooks_bp,
+    app_variables_bp,
 )
 from routes.tasks import _next_available_workday
 from routes.jobs_system import _list_mcp_tools
@@ -143,6 +144,7 @@ app.register_blueprint(preferences_bp)
 app.register_blueprint(jobs_system_bp)
 app.register_blueprint(sessions_bp)
 app.register_blueprint(notebooks_bp)
+app.register_blueprint(app_variables_bp)
 
 # Seed default users on startup
 try:

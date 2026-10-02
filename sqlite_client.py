@@ -376,6 +376,12 @@ CREATE TABLE IF NOT EXISTS meta (
     value   TEXT NOT NULL
 );
 
+-- App variables key-value store (GITHUB_TOKEN, GITLAB_TOKEN, etc.)
+CREATE TABLE IF NOT EXISTS app_variables (
+    key     TEXT PRIMARY KEY,
+    value   TEXT NOT NULL
+);
+
 -- Experiences (legacy — kept for backward compat, migrated to kg_nodes in v4)
 CREATE TABLE IF NOT EXISTS experiences (
     experience_id   TEXT PRIMARY KEY,
@@ -898,6 +904,20 @@ class SQLiteClient:
             # v14 tables are created idempotently by _SCHEMA_SQL.
             self._stamp_version(conn, 14)
             logger.info("Migration v14: collaborative notebook domain added")
+
+        if current < 15:
+            try:
+                conn.executescript("""
+                    CREATE TABLE IF NOT EXISTS app_variables (
+                        key   TEXT PRIMARY KEY,
+                        value TEXT NOT NULL
+                    );
+                """)
+                conn.commit()
+                self._stamp_version(conn, 15)
+                logger.info("Migration v15: app_variables key-value store added")
+            except Exception as e:
+                logger.warning(f"Migration v15 skipped: {e}")
 
     def get_connection(self) -> sqlite3.Connection:
         """Return this thread's private connection, creating one if needed."""

@@ -8,6 +8,7 @@ from routes.preferences import preferences_bp
 from routes.jobs_system import jobs_system_bp
 from routes.sessions import sessions_bp
 from routes.notebooks import notebooks_bp
+from routes.app_variables import app_variables_bp
 
 __all__ = [
     "users_bp",
@@ -18,4 +19,5 @@ __all__ = [
     "jobs_system_bp",
     "sessions_bp",
     "notebooks_bp",
+    "app_variables_bp",
 ]

@@ -144,7 +144,7 @@ def api_jobs_submit():
     job_type = (data.get("job_type") or data.get("type") or "").strip()
     target = (data.get("target") or "").strip()
     allowed = {"index", "reindex", "ast", "lst", "index-all", "ast-all",
-               "codegraph_index", "codegraph_sync", "differential_sync"}
+               "codegraph_index", "codegraph_sync", "differential_sync", "initial_repo_sync"}
     if not job_type or not target:
         return jsonify({"error": "job_type and target are required"}), 400
     if job_type not in allowed:

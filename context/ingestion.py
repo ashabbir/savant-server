@@ -151,9 +151,12 @@ def _detect_base_host_dir(base_dir: str) -> Optional[str]:
 def get_source_availability() -> SourceAvailability:
     base_dir = os.environ.get("BASE_CODE_DIR", "").strip() or None
     base_host_dir = _detect_base_host_dir(base_dir) if base_dir else None
+    from db.app_variables import AppVariablesDB
+    github_token = AppVariablesDB.get_effective_variable("GITHUB_TOKEN")
+    gitlab_token = AppVariablesDB.get_effective_variable("GITLAB_TOKEN")
     return SourceAvailability(
-        github=bool(os.environ.get("GITHUB_TOKEN", "").strip()),
-        gitlab=bool(os.environ.get("GITLAB_TOKEN", "").strip()),
+        github=bool(github_token),
+        gitlab=bool(gitlab_token),
         directory=bool(base_dir),
         base_dir=base_dir,
         base_host_dir=base_host_dir,
@@ -322,10 +325,11 @@ def _repo_slug_from_url(path: str) -> Optional[str]:
 
 
 def _token_for_provider(provider: str) -> str:
+    from db.app_variables import AppVariablesDB
     if provider == "github":
-        return os.environ.get("GITHUB_TOKEN", "").strip()
+        return AppVariablesDB.get_effective_variable("GITHUB_TOKEN")
     if provider == "gitlab":
-        return os.environ.get("GITLAB_TOKEN", "").strip()
+        return AppVariablesDB.get_effective_variable("GITLAB_TOKEN")
     return ""
 
 
@@ -486,7 +490,19 @@ _repository_sync_service = RepositorySyncService()
 
 def _sanitize_git_error(message: str, *extra_secrets: str) -> str:
     out = message
-    secrets = [os.environ.get(key, "").strip() for key in ("GITHUB_TOKEN", "GITLAB_TOKEN")]
+    from db.app_variables import AppVariablesDB
+    secrets = [
+        AppVariablesDB.get_effective_variable("GITHUB_TOKEN"),
+        AppVariablesDB.get_effective_variable("GITLAB_TOKEN"),
+        os.environ.get("GITHUB_TOKEN", "").strip(),
+        os.environ.get("GITLAB_TOKEN", "").strip(),
+    ]
+    db_gh = AppVariablesDB.get("GITHUB_TOKEN")
+    if db_gh:
+        secrets.append(db_gh.strip())
+    db_gl = AppVariablesDB.get("GITLAB_TOKEN")
+    if db_gl:
+        secrets.append(db_gl.strip())
     secrets.extend(secret.strip() for secret in extra_secrets)
     for token in secrets:
         if token:

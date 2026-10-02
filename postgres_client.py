@@ -562,6 +562,12 @@ CREATE TABLE IF NOT EXISTS meta (
     value   TEXT NOT NULL
 );
 
+-- App variables key-value store (GITHUB_TOKEN, GITLAB_TOKEN, etc.)
+CREATE TABLE IF NOT EXISTS app_variables (
+    key     TEXT PRIMARY KEY,
+    value   TEXT NOT NULL
+);
+
 -- Applied database migrations
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version     INTEGER PRIMARY KEY,
@@ -1314,6 +1320,16 @@ _SCHEMA_MIGRATIONS = (
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )""",
             "CREATE INDEX IF NOT EXISTS idx_mcp_query_log_user_created ON mcp_query_log(user_id, created_at DESC)",
+        ),
+    ),
+    (
+        15,
+        "create app_variables key-value store",
+        (
+            """CREATE TABLE IF NOT EXISTS app_variables (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )""",
         ),
     ),
 )

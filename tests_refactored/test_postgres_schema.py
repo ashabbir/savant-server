@@ -45,10 +45,11 @@ def test_current_postgres_schema_initializes_notebook_tables():
     assert any("CREATE TABLE IF NOT EXISTS engram_items" in sql for sql in statements)
     assert any("CREATE TABLE IF NOT EXISTS engram_snapshots" in sql for sql in statements)
     assert any("CREATE TABLE IF NOT EXISTS conversation_compactions" in sql for sql in statements)
+    assert any("CREATE TABLE IF NOT EXISTS app_variables" in sql for sql in statements)
 
 
 def test_applied_migrations_are_skipped():
-    cursor = FakeCursor(applied_versions=(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11))
+    cursor = FakeCursor(applied_versions=(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15))
 
     applied = _run_pending_migrations(cursor)
 
@@ -61,13 +62,14 @@ def test_existing_deployments_receive_pending_schema_migrations():
 
     applied = _run_pending_migrations(cursor)
 
-    assert applied == [5, 7, 8, 9, 10, 11]
+    assert applied == [5, 7, 8, 9, 10, 11, 8, 12, 13, 14, 15]
     assert any("DROP CONSTRAINT IF EXISTS kg_nodes_node_type_check" in sql for sql, _ in cursor.executed)
     assert any("ADD CONSTRAINT kg_nodes_node_type_check" in sql for sql, _ in cursor.executed)
     assert any("idx_notebook_memberships_user" in sql for sql, _ in cursor.executed)
     assert any("reject_engram_immutable_update" in sql for sql, _ in cursor.executed)
     assert any("notebook_artifact_renditions" in sql for sql, _ in cursor.executed)
     assert any(params == (5, "enforce knowledge graph node types") for _, params in cursor.executed)
+    assert any(params == (15, "create app_variables key-value store") for _, params in cursor.executed)
 
 
 def test_schema_reconciliation_repairs_drift_even_after_migrations_are_stamped():

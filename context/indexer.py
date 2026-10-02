@@ -863,13 +863,16 @@ class Indexer:
 
     def sync_lossless_trees_for_repository(self, repo_path: Path, repo_name: Optional[str] = None,
                                             clear: bool = False,
-                                            job_progress_cb: Optional[Callable] = None) -> Dict[str, Any]:
+                                            job_progress_cb: Optional[Callable] = None,
+                                            progress_cb: Optional[Callable] = None,
+                                            **kwargs) -> Dict[str, Any]:
         """Refresh source-faithful trees without changing index or graph status.
 
         CodeGraph sync jobs use this method so repositories that rely on the
         structural provider still receive the exact syntax context exposed by
         Context MCP.
         """
+        job_progress_cb = job_progress_cb or progress_cb
         repo_path = Path(repo_path).resolve()
         if not repo_path.is_dir():
             raise NotADirectoryError(f"Path does not exist or is not a directory: {repo_path}")

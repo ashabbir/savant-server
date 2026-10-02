@@ -740,15 +740,17 @@ def repository_sync_logs(name):
 @context_bp.route("/api/context/repos/periodic-sync/run", methods=["POST"])
 @admin_required
 def trigger_periodic_sync_all():
-    """Manually trigger an immediate periodic sync pass for all registered projects."""
+    """Manually trigger an immediate periodic sync pass for all registered projects (or a specific project)."""
     if not _ensure_init():
         return jsonify({"error": "Context not initialized"}), 503
     from .periodic_runner import run_periodic_sync_now
+    data = request.get_json(force=True, silent=True) or {}
+    target_repo = (data.get("name") or data.get("repo_name") or "").strip() or None
     source_app = (
         request.headers.get("X-App-Name") or request.headers.get("X-Savant-App") or "savant-olympus"
     ).strip().lower()
     res = run_periodic_sync_now(
-        actor_id=getattr(g, "user_id", "") or "user", source_app=source_app
+        actor_id=getattr(g, "user_id", "") or "user", source_app=source_app, target_repo=target_repo
     )
     return jsonify(res)
 
@@ -913,14 +915,6 @@ def trigger_differential_sync(name):
     provider = source_info.get("source")
     if provider not in {"github", "gitlab", "git"}:
         return jsonify({"error": "Differential sync is only supported for Git repositories"}), 400
-
-    is_indexed = (repo.get("status") in {"indexed", "ast_only"}) or bool(repo.get("indexed_at"))
-    from db.code_intelligence import CodeIntelligenceConfigDB
-    config = CodeIntelligenceConfigDB.get(name) or CodeIntelligenceConfigDB.get(str(repo.get("id")))
-    is_graphed = bool(config and config.get("provider") == "codegraph")
-
-    if not (is_indexed and is_graphed):
-        return jsonify({"error": "Repository must be already indexed and graphed before differential sync can run"}), 400
 
     from db.jobs import JobDB
     existing = JobDB.find_active("differential_sync", name)

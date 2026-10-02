@@ -51,6 +51,45 @@ def test_sources_endpoint_no_sources(client, monkeypatch):
     assert all(not item["enabled"] for item in data["sources"].values())
 
 
+def test_sources_endpoint_reflects_db_over_env(client, monkeypatch):
+    from context import routes
+    from db.app_variables import AppVariablesDB
+
+    monkeypatch.setattr(routes, "_ensure_init", lambda: True)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GITLAB_TOKEN", raising=False)
+    monkeypatch.delenv("BASE_CODE_DIR", raising=False)
+
+    # Empty initially
+    resp = client.get("/api/context/repos/sources")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["sources"]["github"]["enabled"] is False
+    assert data["sources"]["gitlab"]["enabled"] is False
+
+    # Set in DB -> enabled becomes True
+    AppVariablesDB.set("GITHUB_TOKEN", "ghp_db_token")
+    AppVariablesDB.set("GITLAB_TOKEN", "glpat_db_token")
+
+    resp = client.get("/api/context/repos/sources")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["sources"]["github"]["enabled"] is True
+    assert data["sources"]["gitlab"]["enabled"] is True
+    assert data["any_enabled"] is True
+
+    # Test preference: DB value overrides ENV value
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_env_fallback")
+    import context.ingestion as ingestion
+    assert ingestion._token_for_provider("github") == "ghp_db_token"
+
+    AppVariablesDB.delete("GITHUB_TOKEN")
+    AppVariablesDB.delete("GITLAB_TOKEN")
+
+    # Now falls back to ENV value
+    assert ingestion._token_for_provider("github") == "ghp_env_fallback"
+
+
 def test_ingest_directory_valid(tmp_path, monkeypatch):
     base = tmp_path / "repos"
     target = base / "apps" / "api"
