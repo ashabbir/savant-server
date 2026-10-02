@@ -34,6 +34,22 @@ DATABASE_URL: str = os.getenv(
 
 _POOL: ThreadedConnectionPool | None = None
 _POOL_LOCK = threading.Lock()
+_INHERITED_POOLS: list[ThreadedConnectionPool] = []
+
+
+def _reset_pool_after_fork() -> None:
+    # gunicorn --preload opens the pool in the master; forked workers must not
+    # share those sockets. Keep the inherited pool referenced (never closed or
+    # GC'd) because PQfinish in the child would terminate the parent's sessions.
+    global _POOL, _POOL_LOCK
+    if _POOL is not None:
+        _INHERITED_POOLS.append(_POOL)
+    _POOL = None
+    _POOL_LOCK = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_pool_after_fork)
 
 # ---------------------------------------------------------------------------
 # Pool management
@@ -1250,6 +1266,54 @@ _SCHEMA_MIGRATIONS = (
                 generated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
             )""",
             "CREATE INDEX IF NOT EXISTS idx_ctx_lossless_hash ON ctx_lossless_trees(source_hash)",
+        ),
+    ),
+    (
+        13,
+        "track user last login and daily MCP tool usage",
+        (
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ",
+            """CREATE TABLE IF NOT EXISTS mcp_tool_usage (
+                user_id TEXT NOT NULL,
+                mcp_server TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                day DATE NOT NULL,
+                calls INTEGER NOT NULL DEFAULT 0,
+                last_called_at TIMESTAMPTZ NOT NULL,
+                PRIMARY KEY (user_id, mcp_server, tool_name, day)
+            )""",
+            "CREATE INDEX IF NOT EXISTS idx_mcp_tool_usage_user_day ON mcp_tool_usage(user_id, day)",
+        ),
+    ),
+    (
+        14,
+        "track logins per day, MCP project usage, and MCP query log",
+        (
+            """CREATE TABLE IF NOT EXISTS user_login_days (
+                user_id TEXT NOT NULL,
+                day DATE NOT NULL,
+                logins INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (user_id, day)
+            )""",
+            """CREATE TABLE IF NOT EXISTS mcp_project_usage (
+                user_id TEXT NOT NULL,
+                project_type TEXT NOT NULL,
+                project TEXT NOT NULL,
+                day DATE NOT NULL,
+                calls INTEGER NOT NULL DEFAULT 0,
+                last_used_at TIMESTAMPTZ NOT NULL,
+                PRIMARY KEY (user_id, project_type, project, day)
+            )""",
+            """CREATE TABLE IF NOT EXISTS mcp_query_log (
+                id BIGSERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                mcp_server TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                query TEXT NOT NULL,
+                repo TEXT NOT NULL DEFAULT '',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )""",
+            "CREATE INDEX IF NOT EXISTS idx_mcp_query_log_user_created ON mcp_query_log(user_id, created_at DESC)",
         ),
     ),
 )

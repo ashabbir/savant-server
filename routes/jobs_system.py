@@ -24,6 +24,15 @@ def _port_from_environment(name, default):
         return default
 
 
+def _deployment_mode():
+    """Best-effort guess at where this process is running, for client-side endpoint suggestions."""
+    if os.environ.get("KUBERNETES_SERVICE_HOST"):
+        return "kubernetes"
+    if os.path.isfile("/.dockerenv") or os.environ.get("RUNNING_IN_DOCKER"):
+        return "docker"
+    return "local"
+
+
 def _list_mcp_tools(server_name=None):
     """Return configured/discovered MCP tools. Dynamically respects app monkeypatching in tests."""
     app_mod = sys.modules.get("app")
@@ -304,7 +313,7 @@ def api_mcp_wrong_port():
 def api_mcp_tools():
     server_name = request.args.get("server")
     mcp_tools = _list_mcp_tools(server_name)
-    return jsonify({"servers": mcp_tools})
+    return jsonify({"servers": mcp_tools, "deployment": _deployment_mode()})
 
 
 @jobs_system_bp.route("/api/mcp/tools/<server_name>", methods=["GET"])

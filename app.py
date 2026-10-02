@@ -180,6 +180,22 @@ def _use_test_fallback() -> bool:
     return False
 
 
+_LAST_LOGIN_TOUCH_SECONDS = 300
+_last_login_touched: dict[str, float] = {}
+
+
+def _touch_last_login(user_id: str) -> None:
+    import time
+    now = time.monotonic()
+    if now - _last_login_touched.get(user_id, float("-inf")) < _LAST_LOGIN_TOUCH_SECONDS:
+        return
+    _last_login_touched[user_id] = now
+    try:
+        UserDB.touch_last_login(user_id, min_interval_minutes=_LAST_LOGIN_TOUCH_SECONDS // 60)
+    except Exception:
+        logger.warning("Failed to record last login for %s", user_id, exc_info=True)
+
+
 def _validate_api_key(api_key: str):
     """Resolve API key to a user or return an error tuple."""
     user = UserDB.get_by_api_key(api_key)
@@ -211,6 +227,7 @@ def _authenticate():
         return None if _use_test_fallback() else err
 
     g.user_id = user["user_id"]
+    _touch_last_login(g.user_id)
     return None
 
 

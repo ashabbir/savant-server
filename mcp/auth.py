@@ -134,11 +134,97 @@ def _capture_http_app(original_app, server_name: str, safe_sse_start: bool = Fal
     return patched_app
 
 
+def _usage_api_key(context) -> str:
+    """Resolve the calling client's key for usage attribution.
+
+    Deliberately never falls back to SAVANT_API_KEY or the process-wide last
+    key: those would credit every anonymous call to the pod's default user.
+    """
+    request = None
+    try:
+        request = context.request_context.request
+    except Exception:
+        request = None
+    if request is not None:
+        key = request.headers.get("x-api-key") or request.query_params.get("api_key")
+        if key:
+            return key
+        session_id = request.headers.get("mcp-session-id") or request.query_params.get("session_id")
+        if session_id and _session_keys.get(session_id):
+            return _session_keys[session_id]
+    return _api_key_var.get("")
+
+
+def _usage_details(arguments) -> dict:
+    """Pull the project (repo/workspace) and query text out of tool arguments."""
+    if not isinstance(arguments, dict):
+        return {}
+    repos = []
+    for key in ("repo", "repo_id"):
+        value = arguments.get(key)
+        if isinstance(value, str) and value.strip():
+            repos.append(value.strip())
+        elif isinstance(value, (list, tuple)):
+            repos.extend(str(v).strip() for v in value if str(v).strip())
+    details = {"repos": repos}
+    workspace_id = arguments.get("workspace_id")
+    if workspace_id:
+        details["workspace_id"] = str(workspace_id)
+    for key in ("q", "query"):
+        value = arguments.get(key)
+        if isinstance(value, str) and value.strip():
+            details["query"] = value.strip()
+            break
+    return details
+
+
+def _post_usage(api_key: str, server_name: str, tool_name: str, details: dict | None = None) -> None:
+    import os
+    import requests
+
+    base = os.environ.get("SAVANT_API_BASE", "http://127.0.0.1:8090").rstrip("/")
+    try:
+        requests.post(
+            f"{base}/api/usage/mcp",
+            json={"mcp_server": server_name, "tool_name": tool_name, **(details or {})},
+            headers={"X-API-Key": api_key, "X-App-Name": "savant-mcp"},
+            timeout=3,
+        )
+    except Exception:
+        pass
+
+
+def install_usage_tracking(mcp_instance, server_name: str) -> None:
+    """Count every tools/call per user; tracking must never delay or fail a tool."""
+    import threading
+
+    manager = getattr(mcp_instance, "_tool_manager", None)
+    if manager is None:
+        return
+    original_call_tool = manager.call_tool
+
+    async def call_tool(name, arguments, context=None, **kwargs):
+        try:
+            key = _usage_api_key(context)
+            if key:
+                threading.Thread(
+                    target=_post_usage,
+                    args=(key, server_name, name, _usage_details(arguments)),
+                    daemon=True,
+                ).start()
+        except Exception:
+            pass
+        return await original_call_tool(name, arguments, context=context, **kwargs)
+
+    manager.call_tool = call_tool
+
+
 def install_header_capture(mcp_instance):
     """Capture client headers for both legacy SSE and Streamable HTTP MCP apps."""
     original_sse_app = mcp_instance.sse_app
     original_streamable_http_app = getattr(mcp_instance, "streamable_http_app", None)
     server_name = getattr(mcp_instance, "name", "savant-mcp")
+    install_usage_tracking(mcp_instance, server_name)
     mcp_instance.sse_app = _capture_http_app(
         original_sse_app,
         server_name,

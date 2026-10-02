@@ -78,6 +78,41 @@ class UserDB:
             release_connection(conn)
 
     @staticmethod
+    def touch_last_login(user_id: str, min_interval_minutes: int = 5, session_gap_minutes: int = 30) -> None:
+        """Refresh last_login_at; count a login when activity resumes after an idle gap."""
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """WITH prev AS (
+                           SELECT last_login_at FROM users WHERE user_id = %(uid)s
+                       ), upd AS (
+                           UPDATE users SET last_login_at = now()
+                           WHERE user_id = %(uid)s
+                             AND (last_login_at IS NULL
+                                  OR last_login_at < now() - make_interval(mins => %(throttle)s))
+                           RETURNING 1
+                       )
+                       SELECT EXISTS (SELECT 1 FROM upd)
+                              AND COALESCE((SELECT last_login_at FROM prev)
+                                           < now() - make_interval(mins => %(gap)s), TRUE)
+                              AS new_session""",
+                    {"uid": user_id, "throttle": min_interval_minutes, "gap": session_gap_minutes},
+                )
+                new_session = cur.fetchone()["new_session"]
+                if new_session:
+                    cur.execute(
+                        """INSERT INTO user_login_days (user_id, day, logins)
+                           VALUES (%s, (now() AT TIME ZONE 'UTC')::date, 1)
+                           ON CONFLICT (user_id, day) DO UPDATE SET
+                             logins = user_login_days.logins + 1""",
+                        (user_id,),
+                    )
+            conn.commit()
+        finally:
+            release_connection(conn)
+
+    @staticmethod
     def get_default_admin() -> dict | None:
         """Return the first admin user (dev fallback when no API key provided)."""
         conn = get_connection()
@@ -188,8 +223,6 @@ class UserDB:
                            ON CONFLICT (user_id) DO UPDATE SET
                              name = EXCLUDED.name,
                              email = EXCLUDED.email,
-                             api_key = EXCLUDED.api_key,
-                             api_key_hash = EXCLUDED.api_key_hash,
                              role = EXCLUDED.role,
                              is_active = EXCLUDED.is_active,
                              updated_at = EXCLUDED.updated_at""",

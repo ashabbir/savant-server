@@ -1,6 +1,7 @@
 """User Management Routes Blueprint for Savant Server."""
 
 from flask import Blueprint, g, jsonify, request
+from db.mcp_usage import McpUsageDB
 from db.users import UserDB
 from db.workspaces import WorkspaceDB
 from utils.auth import check_domain_write_access, admin_required
@@ -142,6 +143,53 @@ def api_user_workspaces(user_id):
         return jsonify({"error": "User not found"}), 404
     all_ws = WorkspaceDB.list_all(user_id=user_id)
     return jsonify(all_ws)
+
+
+@users_bp.route("/api/usage/mcp", methods=["POST"])
+def api_record_mcp_usage():
+    user_id = getattr(g, "user_id", "")
+    if not user_id:
+        return jsonify({"error": "Authenticated user required"}), 401
+    data = request.get_json(force=True, silent=True) or {}
+    mcp_server = str(data.get("mcp_server") or "").strip()[:100]
+    tool_name = str(data.get("tool_name") or "").strip()[:200]
+    if not mcp_server or not tool_name:
+        return jsonify({"error": "mcp_server and tool_name are required"}), 400
+
+    raw_repos = data.get("repos") or []
+    if isinstance(raw_repos, str):
+        raw_repos = [raw_repos]
+    repos = list(dict.fromkeys(str(r).strip()[:200] for r in raw_repos if str(r).strip()))[:10] if isinstance(raw_repos, list) else []
+    workspace_id = str(data.get("workspace_id") or "").strip()[:200]
+    projects = [("repo", r) for r in repos]
+    if workspace_id:
+        projects.append(("workspace", workspace_id))
+    query = str(data.get("query") or "").strip()[:1000]
+
+    McpUsageDB.record_call(
+        user_id, mcp_server, tool_name,
+        projects=projects, query=query, repo=",".join(repos)[:500],
+    )
+    return jsonify({"status": "recorded"}), 201
+
+
+@users_bp.route("/api/users/<user_id>/usage", methods=["GET"])
+def api_user_usage(user_id):
+    err = _require_admin()
+    if err:
+        return err
+    user = UserDB.get_by_id(user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    try:
+        days = min(365, max(1, int(request.args.get("days", 30))))
+    except ValueError:
+        return jsonify({"error": "days must be an integer"}), 400
+    usage = McpUsageDB.get_user_usage(user_id, days=days)
+    last_login = user.get("last_login_at")
+    usage["user_id"] = user_id
+    usage["last_login_at"] = last_login.isoformat() if last_login else None
+    return jsonify(usage)
 
 
 @users_bp.route("/api/users/<user_id>/api-key", methods=["POST"])

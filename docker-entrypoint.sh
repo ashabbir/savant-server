@@ -67,17 +67,21 @@ CHILD_PIDS="$CHILD_PIDS $MCP_PIDS"
 # Run exactly one persistent queue consumer. Gunicorn workers must not each
 # start their own background thread; the DB claim is atomic, but a dedicated
 # process gives graph/index jobs an observable, supervised lifecycle.
-python -m context.job_worker &
+#
+# CPU-bound embedding/indexing work here runs niced below the web server, so
+# a heavy job can't starve the health-check endpoint under CPU contention
+# (small nodes can have fewer cores than the pod's CPU limit implies).
+nice -n 10 python -m context.job_worker &
 JOB_WORKER_PID="$!"
 CHILD_PIDS="$CHILD_PIDS $JOB_WORKER_PID"
 
-python -m context.periodic_runner &
+nice -n 10 python -m context.periodic_runner &
 PERIODIC_RUNNER_PID="$!"
 CHILD_PIDS="$CHILD_PIDS $PERIODIC_RUNNER_PID"
 
 # One dedicated scheduler process owns the four-hour graph optimization cron.
 # The transaction advisory lock remains a cross-container guard during deploys.
-python -m knowledge.maintenance_runner &
+nice -n 10 python -m knowledge.maintenance_runner &
 KG_MAINTENANCE_PID="$!"
 CHILD_PIDS="$CHILD_PIDS $KG_MAINTENANCE_PID"
 
