@@ -44,10 +44,12 @@ if [ "${SAVANT_ROLE:-}" = "worker" ] || [ "${SAVANT_ROLE:-}" = "jobs" ] || [ "${
   CHILD_PIDS="$CHILD_PIDS $JOB_WORKER_PID"
 
   nice -n 10 python -m context.periodic_runner &
-  CHILD_PIDS="$CHILD_PIDS $!"
+  PERIODIC_RUNNER_PID="$!"
+  CHILD_PIDS="$CHILD_PIDS $PERIODIC_RUNNER_PID"
 
   nice -n 10 python -m knowledge.maintenance_runner &
-  CHILD_PIDS="$CHILD_PIDS $!"
+  KG_MAINTENANCE_PID="$!"
+  CHILD_PIDS="$CHILD_PIDS $KG_MAINTENANCE_PID"
 
   while :; do
     for pid in $CHILD_PIDS; do
@@ -92,20 +94,21 @@ CHILD_PIDS="$CHILD_PIDS $MCP_PIDS"
 # dedicated savant-jobs worker (SAVANT_ROLE=worker, started above). Running
 # them here too would duplicate work and burn the API pod's CPU budget that
 # should go to serving requests.
-if [ "${SAVANT_ROLE:-}" != "server" ] && [ "${SAVANT_EXTERNAL_JOB_WORKER:-0}" != "1" ]; then
+if [ "${SAVANT_ROLE:-}" != "server" ] && [ "${SAVANT_EXTERNAL_JOB_WORKER:-0}" != "1" ] && [ "${SAVANT_API_ONLY:-0}" != "1" ]; then
   nice -n 10 python -m context.job_worker &
   JOB_WORKER_PID="$!"
   CHILD_PIDS="$CHILD_PIDS $JOB_WORKER_PID"
-fi
 
-if [ "${SAVANT_ROLE:-}" != "server" ]; then
   nice -n 10 python -m context.periodic_runner &
-  CHILD_PIDS="$CHILD_PIDS $!"
+  PERIODIC_RUNNER_PID="$!"
+  CHILD_PIDS="$CHILD_PIDS $PERIODIC_RUNNER_PID"
 
+  # One dedicated scheduler process owns the four-hour graph optimization cron.
+  # The transaction advisory lock remains a cross-container guard during deploys.
   nice -n 10 python -m knowledge.maintenance_runner &
-  CHILD_PIDS="$CHILD_PIDS $!"
+  KG_MAINTENANCE_PID="$!"
+  CHILD_PIDS="$CHILD_PIDS $KG_MAINTENANCE_PID"
 fi
-
 gunicorn \
   --bind "${FLASK_HOST:-0.0.0.0}:${FLASK_PORT:-8090}" \
   --workers "${GUNICORN_WORKERS:-1}" \

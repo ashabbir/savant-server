@@ -68,14 +68,15 @@ services:
       SAVANT_API_ONLY: "1"
       SAVANT_ROLE: server
       SAVANT_EXTERNAL_JOB_WORKER: "1"
+      SAVANT_EXTERNAL_PERIODIC_RUNNER: "1"
+      SAVANT_EXTERNAL_KG_MAINTENANCE: "1"
       SAVANT_API_KEY: "sk-ahmed-savant-001"
-      PERIODIC_SYNC_INTERVAL_HOURS: "2"
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       GITLAB_TOKEN: ${GITLAB_TOKEN:-}
     volumes:
       - ${SAVANT_DATA_DIR:-~/.savant/server-data}:/data/savant
       - ${SAVANT_COLOSSEUM_HOME:-~/.savant/colosseum}:/data/colosseum:ro
-      - ${BASE_CODE_HOST_DIR:-~/base-code}:/base-code:rw
+      - ${BASE_CODE_HOST_DIR:-~/base-code}:/base-code:ro
       - ${LOCAL_CODE_DIR:-~/Developer/icapital}:/base-code/local:ro
     healthcheck:
       test: ["CMD-SHELL", "node /app/codegraph_bridge/src/healthcheck.js && python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health/ready', timeout=3)\""]
@@ -104,6 +105,7 @@ services:
     environment:
       RUNNING_IN_DOCKER: 'true'
       SAVANT_ROLE: worker
+      PERIODIC_SYNC_INTERVAL_HOURS: "2"
       SAVANT_DATABASE_URL: postgresql://savant_user:savant_secure_password@savant-db:5432/savant
       HOME: /data/savant
       HF_HOME: /data/savant/hf

@@ -96,10 +96,15 @@ with app.app_context():
     try:
         init_schema()
         ensure_default_skills()
-        if os.environ.get("SAVANT_EXTERNAL_PERIODIC_RUNNER") != "1":
+        is_server_instance = (
+            os.environ.get("SAVANT_ROLE") == "server"
+            or os.environ.get("SAVANT_EXTERNAL_JOB_WORKER") == "1"
+            or os.environ.get("SAVANT_API_ONLY") == "1"
+        )
+        if not is_server_instance and os.environ.get("SAVANT_EXTERNAL_PERIODIC_RUNNER") != "1":
             from context.periodic_runner import start_periodic_runner
             start_periodic_runner()
-        if os.environ.get("SAVANT_EXTERNAL_KG_MAINTENANCE") != "1":
+        if not is_server_instance and os.environ.get("SAVANT_EXTERNAL_KG_MAINTENANCE") != "1":
             from knowledge.maintenance import start_maintenance_scheduler
             start_maintenance_scheduler()
 

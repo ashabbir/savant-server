@@ -844,6 +844,34 @@ def refresh_repo(name):
     if path_error:
         return jsonify({"error": path_error}), 400
 
+    # Offload git refresh / sync to the job server if running in server or external worker mode
+    if (
+        os.environ.get("SAVANT_ROLE") == "server"
+        or os.environ.get("SAVANT_EXTERNAL_JOB_WORKER") == "1"
+        or os.environ.get("SAVANT_API_ONLY") == "1"
+    ):
+        from db.jobs import JobDB
+        existing = JobDB.find_active("differential_sync", name)
+        if existing:
+            return jsonify({
+                "started": True,
+                "name": name,
+                "job_id": existing["id"],
+                "differential_sync_job_id": existing["id"],
+                "reused": True,
+                "message": f"Differential sync already in progress for {name}",
+            }), 202
+        user_id = getattr(g, "user_id", "") or "user"
+        job = JobDB.create_job("differential_sync", name, payload={"user_id": user_id, "actor_id": user_id})
+        return jsonify({
+            "started": True,
+            "name": name,
+            "job_id": job["id"],
+            "differential_sync_job_id": job["id"],
+            "differential_sync_triggered": True,
+            "message": f"Differential sync queued for {name}",
+        }), 202
+
     from .ingestion import IngestionError, refresh_repo as update_repo
     started_at = perf_counter()
 
