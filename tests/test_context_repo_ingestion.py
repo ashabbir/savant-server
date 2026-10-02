@@ -90,6 +90,42 @@ def test_sources_endpoint_reflects_db_over_env(client, monkeypatch):
     assert ingestion._token_for_provider("github") == "ghp_env_fallback"
 
 
+def test_sources_endpoint_and_ingestion_disable_local_directory(client, tmp_path, monkeypatch):
+    from context import routes
+    from db.app_variables import AppVariablesDB
+
+    monkeypatch.setattr(routes, "_ensure_init", lambda: True)
+    base = tmp_path / "repos"
+    target = base / "my-project"
+    target.mkdir(parents=True)
+    monkeypatch.setenv("BASE_CODE_DIR", str(base))
+
+    # Without DISABLE_LOCAL_DIRECTORY -> directory enabled
+    AppVariablesDB.delete("DISABLE_LOCAL_DIRECTORY")
+    resp = client.get("/api/context/repos/sources")
+    assert resp.status_code == 200
+    assert resp.get_json()["sources"]["directory"]["enabled"] is True
+
+    out = ingest_directory("my-project")
+    assert out.name == "my-project"
+
+    # Set DISABLE_LOCAL_DIRECTORY = "true" in DB
+    AppVariablesDB.set("DISABLE_LOCAL_DIRECTORY", "true")
+
+    resp2 = client.get("/api/context/repos/sources")
+    assert resp2.status_code == 200
+    dir_cfg = resp2.get_json()["sources"]["directory"]
+    assert dir_cfg["enabled"] is False
+    assert "disabled in server settings" in dir_cfg.get("disabled_reason", "")
+
+    # Ingestion should fail with clear IngestionError
+    with pytest.raises(IngestionError, match="Local directory ingestion is disabled on this server"):
+        ingest_directory("my-project")
+
+    # Clean up
+    AppVariablesDB.delete("DISABLE_LOCAL_DIRECTORY")
+
+
 def test_ingest_directory_valid(tmp_path, monkeypatch):
     base = tmp_path / "repos"
     target = base / "apps" / "api"

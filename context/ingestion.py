@@ -29,6 +29,7 @@ class SourceAvailability:
     directory: bool
     base_dir: Optional[str] = None
     base_host_dir: Optional[str] = None
+    directory_disabled_reason: Optional[str] = None
 
     def as_dict(self) -> Dict[str, Dict[str, object]]:
         directory_cfg: Dict[str, object] = {"enabled": self.directory}
@@ -36,6 +37,8 @@ class SourceAvailability:
             directory_cfg["base_dir"] = self.base_dir
         if self.base_host_dir:
             directory_cfg["base_host_dir"] = self.base_host_dir
+        if self.directory_disabled_reason:
+            directory_cfg["disabled_reason"] = self.directory_disabled_reason
         return {
             "github": {"enabled": self.github},
             "gitlab": {"enabled": self.gitlab},
@@ -154,12 +157,24 @@ def get_source_availability() -> SourceAvailability:
     from db.app_variables import AppVariablesDB
     github_token = AppVariablesDB.get_effective_variable("GITHUB_TOKEN")
     gitlab_token = AppVariablesDB.get_effective_variable("GITLAB_TOKEN")
+
+    disable_local_dir_val = AppVariablesDB.get_effective_variable("DISABLE_LOCAL_DIRECTORY").lower()
+    is_local_dir_disabled = disable_local_dir_val in {"true", "1", "yes", "disabled", "on"}
+
+    directory_enabled = bool(base_dir) and not is_local_dir_disabled
+    disabled_reason = None
+    if is_local_dir_disabled:
+        disabled_reason = "Local directory source is disabled in server settings."
+    elif not base_dir:
+        disabled_reason = "BASE_CODE_DIR is not configured on the server."
+
     return SourceAvailability(
         github=bool(github_token),
         gitlab=bool(gitlab_token),
-        directory=bool(base_dir),
-        base_dir=base_dir,
-        base_host_dir=base_host_dir,
+        directory=directory_enabled,
+        base_dir=base_dir if directory_enabled else None,
+        base_host_dir=base_host_dir if directory_enabled else None,
+        directory_disabled_reason=disabled_reason,
     )
 
 
@@ -265,6 +280,11 @@ def refresh_repo(repo_path: str, branch: Optional[str] = None) -> IngestedProjec
 
 
 def ingest_directory(directory: str) -> IngestedProject:
+    from db.app_variables import AppVariablesDB
+    disable_local_dir_val = AppVariablesDB.get_effective_variable("DISABLE_LOCAL_DIRECTORY").lower()
+    if disable_local_dir_val in {"true", "1", "yes", "disabled", "on"}:
+        raise IngestionError("Local directory ingestion is disabled on this server")
+
     if not directory or not directory.strip():
         raise IngestionError("directory required")
 

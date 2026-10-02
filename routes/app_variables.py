@@ -37,6 +37,7 @@ def list_app_variables():
     effective = {
         "GITHUB_TOKEN": AppVariablesDB.get_effective_info("GITHUB_TOKEN"),
         "GITLAB_TOKEN": AppVariablesDB.get_effective_info("GITLAB_TOKEN"),
+        "DISABLE_LOCAL_DIRECTORY": AppVariablesDB.get_effective_info("DISABLE_LOCAL_DIRECTORY"),
     }
 
     return jsonify({

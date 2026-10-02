@@ -634,6 +634,11 @@ def browse_directory():
     import os
     from pathlib import Path
 
+    from db.app_variables import AppVariablesDB
+    disable_local_dir_val = AppVariablesDB.get_effective_variable("DISABLE_LOCAL_DIRECTORY").lower()
+    if disable_local_dir_val in {"true", "1", "yes", "disabled", "on"}:
+        return jsonify({"error": "Local directory browsing is disabled on this server"}), 403
+
     base_dir = os.environ.get("BASE_CODE_DIR", "").strip()
     if not base_dir:
         return jsonify({"error": "BASE_CODE_DIR not set on server"}), 500
