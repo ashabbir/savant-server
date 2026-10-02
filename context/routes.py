@@ -1096,6 +1096,38 @@ def purge_ast():
     return jsonify({"purged": True, "name": name, "type": "ast"})
 
 
+@context_bp.route("/api/context/repos/lst/generate", methods=["POST"])
+@admin_required
+def generate_lst():
+    """Generate Lossless Syntax Tree (LST) for a project via the job queue."""
+    if not _ensure_init():
+        return jsonify({"error": "Context not initialized"}), 503
+
+    data = request.get_json(force=True)
+    name = data.get("name", "").strip()
+    if not name:
+        return jsonify({"error": "name required"}), 400
+
+    from .db import ContextDB
+    repo = ContextDB.get_repo(name)
+    if not repo:
+        return jsonify({"error": f"Project not found: {name}"}), 404
+    repo_path, path_err = _validate_repo_path(repo)
+    if path_err:
+        return jsonify({"error": f"{path_err}. Re-add the project or fix the mount path."}), 400
+
+    from db.jobs import JobDB
+    existing = JobDB.find_active("lst", name)
+    if existing:
+        return jsonify({"started": True, "name": name, "type": "lst",
+                        "job_id": existing["id"], "reused": True})
+
+    user_id = getattr(g, "user_id", "") or "ahmed"
+    job = JobDB.create_job("lst", name, payload={"user_id": user_id, "actor_id": user_id})
+    return jsonify({"started": True, "name": name, "type": "lst",
+                    "job_id": job["id"]})
+
+
 # ---------------------------------------------------------------------------
 # Indexing
 # ---------------------------------------------------------------------------

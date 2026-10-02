@@ -37,6 +37,24 @@ until node /app/codegraph_bridge/src/healthcheck.js; do
   sleep 1
 done
 
+if [ "${SAVANT_ROLE:-}" = "worker" ] || [ "${SAVANT_ROLE:-}" = "jobs" ] || [ "${SAVANT_WORKER_ONLY:-}" = "1" ]; then
+  echo "Starting dedicated savant-jobs worker container..."
+  python -m context.job_worker &
+  JOB_WORKER_PID="$!"
+  CHILD_PIDS="$CHILD_PIDS $JOB_WORKER_PID"
+
+  while :; do
+    for pid in $CHILD_PIDS; do
+      if ! kill -0 "$pid" 2>/dev/null; then
+        wait "$pid" 2>/dev/null || status="$?"
+        echo "Required worker process $pid exited" >&2
+        exit "${status:-1}"
+      fi
+    done
+    sleep 2
+  done
+fi
+
 # Run both MCP transports as independent supervised listeners.  SSE remains
 # available for long-running legacy clients; modern clients use /mcp over
 # Streamable HTTP.  Separate ports avoid changing either wire contract.
@@ -64,16 +82,12 @@ fi
 
 CHILD_PIDS="$CHILD_PIDS $MCP_PIDS"
 
-# Run exactly one persistent queue consumer. Gunicorn workers must not each
-# start their own background thread; the DB claim is atomic, but a dedicated
-# process gives graph/index jobs an observable, supervised lifecycle.
-#
-# CPU-bound embedding/indexing work here runs niced below the web server, so
-# a heavy job can't starve the health-check endpoint under CPU contention
-# (small nodes can have fewer cores than the pod's CPU limit implies).
-nice -n 10 python -m context.job_worker &
-JOB_WORKER_PID="$!"
-CHILD_PIDS="$CHILD_PIDS $JOB_WORKER_PID"
+# Run persistent queue consumer only if not offloaded to dedicated savant-jobs worker container.
+if [ "${SAVANT_ROLE:-}" != "server" ] && [ "${SAVANT_EXTERNAL_JOB_WORKER:-0}" != "1" ]; then
+  nice -n 10 python -m context.job_worker &
+  JOB_WORKER_PID="$!"
+  CHILD_PIDS="$CHILD_PIDS $JOB_WORKER_PID"
+fi
 
 nice -n 10 python -m context.periodic_runner &
 PERIODIC_RUNNER_PID="$!"

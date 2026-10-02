@@ -126,7 +126,7 @@ def _record_job_activity(
 ) -> None:
     """Persist user-triggered indexing and structural-analysis job outcomes."""
     if job_type not in {
-        "index", "reindex", "ast", "index-all", "ast-all",
+        "index", "reindex", "ast", "lst", "index-all", "ast-all",
         "codegraph_index", "codegraph_sync", "differential_sync",
         "initial_repo_sync", "initial_repo_processing",
     }:
@@ -157,7 +157,7 @@ def _record_job_activity(
             files_changed=result.get("files_changed"),
             indexed=job_type in {"index", "reindex", "index-all", "differential_sync", "initial_repo_sync", "initial_repo_processing"} and status == "success",
             graphed=job_type in {
-                "ast", "ast-all", "codegraph_index", "codegraph_sync", "differential_sync",
+                "ast", "ast-all", "lst", "codegraph_index", "codegraph_sync", "differential_sync",
                 "initial_repo_sync", "initial_repo_processing"
             } and status == "success",
             duration_ms=int((perf_counter() - started_at) * 1000),
@@ -227,6 +227,8 @@ def _execute_job(job_id: str, job_type: str, target: str, payload: dict | None =
         return _run_index(target, progress_cb, clear=True)
     elif job_type == "ast":
         return _run_ast(target, progress_cb, clear=True)
+    elif job_type == "lst":
+        return _run_lst(target, progress_cb)
     elif job_type == "index-all":
         return _run_batch_index(progress_cb)
     elif job_type == "ast-all":
@@ -422,6 +424,25 @@ def _run_ast(target: str, progress_cb, clear: bool = True) -> dict:
     return indexer.generate_ast_for_repository(repo_path, repo_name=repo_name,
                                                clear=clear,
                                                job_progress_cb=progress_cb)
+
+
+def _run_lst(target: str, progress_cb) -> dict:
+    """Generate Lossless Syntax Tree (LST) for a repository."""
+    from context.indexer import Indexer
+    repo_path, repo_name = _resolve_repo(target)
+    progress_cb(10, "Extracting LST", f"Parsing Lossless Syntax Tree for {repo_name}")
+    indexer = Indexer()
+    lossless_result = indexer.sync_lossless_trees_for_repository(
+        repo_path,
+        repo_name=repo_name,
+        progress_cb=lambda done, total: progress_cb(
+            10 + int((done / max(total, 1)) * 85),
+            "Extracting LST",
+            f"Parsed {done}/{total} files",
+        ),
+    )
+    progress_cb(100, "Complete", f"Lossless Syntax Tree generated for {repo_name}")
+    return {"repo_name": repo_name, "lossless_result": lossless_result}
 
 
 def _run_batch_index(progress_cb) -> dict:

@@ -171,52 +171,33 @@ def _execute_sync_pass_for_all_repos(
                     details.append(f"Fetch skipped/failed: {exc}")
                     activity_errors.append(f"fetch: {exc}")
 
-            # 2. Index if needed (code changed OR un-indexed)
+            # 2. Check if index or graph sync is needed
             is_unindexed = (repo.get("status") in {"added", "error", None}) or (repo.get("file_count", 0) == 0)
-            should_index = code_changed or is_unindexed
-
-            if should_index:
-                indexer = Indexer()
-                clear_flag = is_unindexed
-                idx_res = indexer.index_repository(
-                    repo_path,
-                    repo_name=repo_name,
-                    clear=clear_flag,
-                    differential=not clear_flag,
-                    before_commit=getattr(refreshed, "before_commit", "") if refreshed else "",
-                    after_commit=getattr(refreshed, "after_commit", "") if refreshed else "",
-                )
-                indexed = True
-                details.append(f"Indexed (clear={clear_flag}, indexed={idx_res.get('files_indexed',0)}, skipped={idx_res.get('files_skipped',0)}, removed={idx_res.get('files_removed',0)})")
-
-            # 3. CodeGraph generation if needed (code changed OR graph stale/uninitialized)
             config = CodeIntelligenceConfigDB.get(repo_name) or CodeIntelligenceConfigDB.get(str(repo_id))
             graph_freshness = config.get("freshness") if config else None
             graph_missing_on_disk = not (repo_path / ".codegraph" / "codegraph.db").exists()
             is_graph_stale = graph_freshness in {"stale", "pending_sync", None} or not config or graph_missing_on_disk
-            should_graph = code_changed or is_graph_stale
 
-            if should_graph:
-                try:
-                    from code_intelligence.runtime import build_service
-                    ci_res = build_service().ensure_index(str(repo_id), repo_path, mode="create_or_sync")
-                    graphed = True
-                    details.append(f"CodeGraph synced (freshness={getattr(ci_res, 'freshness', 'ok')})")
-                    health = build_service().health(str(repo_id), repo_path)
-                    CodeIntelligenceConfigDB.upsert(
-                        str(repo_id),
-                        provider=health.provider,
-                        graph_version=health.graph_version,
-                        last_indexed_at=health.indexed_at,
-                        last_synced_at=health.indexed_at,
-                        freshness=health.freshness.value,
-                        last_error_code=None,
+            needs_sync = code_changed or is_unindexed or is_graph_stale
+
+            # 3. Submit job to the persistent queue for savant-jobs container to process
+            if needs_sync:
+                from db.jobs import JobDB
+                active_job = JobDB.find_active_types(
+                    ["differential_sync", "index", "reindex", "codegraph_sync", "initial_repo_sync"],
+                    repo_name,
+                )
+                if not active_job:
+                    job_type = "index" if is_unindexed else "differential_sync"
+                    job = JobDB.create_job(
+                        job_type,
+                        repo_name,
+                        payload={"trigger": "scheduled", "actor_id": "scheduler", "code_changed": code_changed},
                     )
-                except Exception as exc:
-                    details.append(f"CodeGraph sync failed: {exc}")
-                    activity_errors.append(f"codegraph: {exc}")
-
-            made_progress = fetched or indexed or graphed
+                    details.append(f"Enqueued {job_type} job {job['id']}")
+                    made_progress = True
+                else:
+                    details.append(f"Job already in progress ({active_job['job_type']}: {active_job['id']})")
             if activity_errors:
                 summary_status = "partial" if made_progress else "failed"
             else:
