@@ -274,9 +274,14 @@ class UserDB:
 
     @staticmethod
     def assign_domain(user_id: str, domain_node_id: str, can_write: bool = True) -> dict:
-        """Assign or update a domain node assignment for a user."""
+        """Assign or update a domain node assignment for a user. Guests are strictly read-only."""
         conn = get_connection()
         try:
+            # Guests are strictly read-only (no write access)
+            user = UserDB._get_by_id_with_conn(user_id, conn)
+            if user and user.get("role") == "guest":
+                can_write = False
+
             now = _now()
             with conn.cursor() as cur:
                 cur.execute(

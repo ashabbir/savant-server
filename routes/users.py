@@ -88,7 +88,7 @@ def api_user_domains(user_id):
     if not domain_node_id:
         return jsonify({"error": "domain_node_id is required"}), 400
 
-    can_write = bool(data.get("can_write", True))
+    can_write = False if user.get("role") == "guest" else bool(data.get("can_write", True))
     res = UserDB.assign_domain(user_id, domain_node_id, can_write=can_write)
     return jsonify(res), 200
 

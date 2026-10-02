@@ -10,6 +10,7 @@ from db.knowledge_graph import KnowledgeGraphDB
 from db.tasks import TaskDB
 from db.notes import NoteDB
 from db.workspaces import WorkspaceDB
+from db.users import UserDB
 
 knowledge_bp = Blueprint("knowledge", __name__)
 
@@ -194,6 +195,17 @@ def get_node(node_id):
     """Get a node with its edges."""
     if not _safe_id(node_id):
         return jsonify({"error": "not found"}), 404
+
+    user_id = getattr(g, "user_id", "")
+    user = UserDB.get_by_id(user_id) if user_id else None
+    if user and user.get("role") == "guest":
+        assigned_domains = {
+            d["domain_node_id"] for d in UserDB.get_assigned_domains(user_id)
+            if d.get("domain_node_id")
+        }
+        if not (node_id in assigned_domains or bool(KnowledgeGraphDB.find_root_domains(node_id) & assigned_domains)):
+            return jsonify({"error": "Access denied. Node not in assigned domains."}), 403
+
     node = KnowledgeGraphDB.get_node(node_id)
     if not node:
         return jsonify({"error": "not found"}), 404
@@ -542,6 +554,28 @@ def get_graph():
         slim=slim,
         exclude_types=exclude_types,
     )
+
+    user_id = getattr(g, "user_id", "")
+    user = UserDB.get_by_id(user_id) if user_id else None
+    if user and user.get("role") == "guest":
+        assigned_domains = {
+            d["domain_node_id"] for d in UserDB.get_assigned_domains(user_id)
+            if d.get("domain_node_id")
+        }
+        if not assigned_domains:
+            return jsonify({"nodes": [], "edges": []})
+        visible_nodes = [
+            n for n in graph.get("nodes", [])
+            if n.get("node_id") in assigned_domains
+            or bool(KnowledgeGraphDB.find_root_domains(n.get("node_id")) & assigned_domains)
+        ]
+        visible_node_ids = {n["node_id"] for n in visible_nodes}
+        visible_edges = [
+            e for e in graph.get("edges", [])
+            if e.get("source_id") in visible_node_ids and e.get("target_id") in visible_node_ids
+        ]
+        return jsonify({"nodes": visible_nodes, "edges": visible_edges})
+
     return jsonify(graph)
 
 
@@ -550,6 +584,17 @@ def get_neighbors(node_id):
     """Get connected nodes (1-hop or n-hop)."""
     if not _safe_id(node_id):
         return jsonify({"nodes": [], "edges": []})
+
+    user_id = getattr(g, "user_id", "")
+    user = UserDB.get_by_id(user_id) if user_id else None
+    if user and user.get("role") == "guest":
+        assigned_domains = {
+            d["domain_node_id"] for d in UserDB.get_assigned_domains(user_id)
+            if d.get("domain_node_id")
+        }
+        if not (node_id in assigned_domains or bool(KnowledgeGraphDB.find_root_domains(node_id) & assigned_domains)):
+            return jsonify({"nodes": [], "edges": []})
+
     depth = _safe_int(request.args.get("depth", 1), default=1, min_val=1, max_val=5)
     edge_type = request.args.get("edge_type", "")
     include_staged = request.args.get("include_staged", "").lower() in ("true", "1", "yes")
@@ -729,6 +774,25 @@ def search_experience():
     limit = _safe_int(data.get("limit", 20), default=20, min_val=1, max_val=100)
     include_staged = str(data.get("include_staged", "")).lower() in ("true", "1", "yes")
     results = KnowledgeGraphDB.search_nodes(query, node_type=node_type, limit=limit, include_staged=include_staged)
+
+    user_id = getattr(g, "user_id", "")
+    user = UserDB.get_by_id(user_id) if user_id else None
+    if user and user.get("role") == "guest":
+        assigned_domains = {
+            d["domain_node_id"] for d in UserDB.get_assigned_domains(user_id)
+            if d.get("domain_node_id")
+        }
+        if not assigned_domains:
+            return jsonify({"result": []})
+        filtered_results = []
+        for r in results:
+            nid = r.get("node_id", "")
+            if not nid:
+                continue
+            if nid in assigned_domains or bool(KnowledgeGraphDB.find_root_domains(nid) & assigned_domains):
+                filtered_results.append(r)
+        return jsonify({"result": filtered_results})
+
     return jsonify({"result": results})
 
 
