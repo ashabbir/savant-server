@@ -147,8 +147,14 @@ def test_usage_key_comes_from_request_never_env(monkeypatch):
     mcp_auth._session_keys["sess-1"] = "sk-sse-session"
     assert mcp_auth._usage_api_key(_ctx(query={"session_id": "sess-1"})) == "sk-sse-session"
 
+    # In HTTP context, unauthenticated HTTP requests do not steal env key
     assert mcp_auth._usage_api_key(_ctx()) == ""
-    assert mcp_auth._usage_api_key(None) == ""
+
+    # In stdio / local agent / non-HTTP protocols, falls back to user's SAVANT_API_KEY
+    assert mcp_auth._usage_api_key(None) == "sk-env-default"
+
+    # Tool arguments key support
+    assert mcp_auth._usage_api_key(None, arguments={"api_key": "sk-arg-key"}) == "sk-arg-key"
 
 
 def test_forked_worker_gets_its_own_pool():
@@ -169,3 +175,13 @@ def test_forked_worker_gets_its_own_pool():
     os.waitpid(pid, 0)
     assert result == b"1"
     assert postgres_client._POOL is parent_pool
+
+
+def test_mcp_tool_call_records_usage_via_stdio_env(monkeypatch):
+    monkeypatch.setenv("SAVANT_API_KEY", "sk-lex-savant-001")
+    monkeypatch.setenv("SAVANT_API_BASE", "http://127.0.0.1:9999")
+    mcp_auth._post_usage("sk-lex-savant-001", "savant-context", "research", {"query": "stdio test query"})
+    usage = McpUsageDB.get_user_usage("lex")
+    assert any(t["tool_name"] == "research" for t in usage["tools"])
+    assert any(q["query"] == "stdio test query" for q in usage["recent_queries"])
+

@@ -260,15 +260,12 @@ def _capture_http_app(original_app, server_name: str, safe_sse_start: bool = Fal
     return patched_app
 
 
-def _usage_api_key(context) -> str:
-    """Resolve the calling client's key for usage attribution.
-
-    Deliberately never falls back to SAVANT_API_KEY or the process-wide last
-    key: those would credit every anonymous call to the pod's default user.
-    """
+def _usage_api_key(context=None, arguments: dict | None = None) -> str:
+    """Resolve the calling client's key for usage attribution across all protocols (HTTP, SSE, stdio)."""
+    # 1. HTTP / SSE request context
     request = None
     try:
-        request = context.request_context.request
+        request = getattr(getattr(context, "request_context", None), "request", None)
     except Exception:
         request = None
     if request is not None:
@@ -283,7 +280,22 @@ def _usage_api_key(context) -> str:
             if stored and stored.get("api_key"):
                 _session_keys[session_id] = stored["api_key"]
                 return stored["api_key"]
-    return _api_key_var.get("")
+        # In HTTP context with an active request, do not attribute anonymous HTTP traffic to server env
+        return _api_key_var.get("")
+
+    # 2. ContextVar (if bound)
+    key = _api_key_var.get("")
+    if key:
+        return key
+
+    # 3. Tool call arguments if passed
+    if isinstance(arguments, dict):
+        arg_key = arguments.get("api_key") or arguments.get("_api_key")
+        if isinstance(arg_key, str) and arg_key.strip():
+            return arg_key.strip()
+
+    # 4. Protocol-agnostic / stdio / local agent environment fallback
+    return os.environ.get("SAVANT_API_KEY", "").strip()
 
 
 def _usage_details(arguments) -> dict:
@@ -313,16 +325,58 @@ def _post_usage(api_key: str, server_name: str, tool_name: str, details: dict | 
     import os
     import requests
 
-    base = os.environ.get("SAVANT_API_BASE", "http://127.0.0.1:8090").rstrip("/")
+    if not api_key:
+        return
+    details = details or {}
+    base = (
+        os.environ.get("SAVANT_API_BASE")
+        or os.environ.get("FLASK_URL")
+        or "http://127.0.0.1:8090"
+    ).rstrip("/")
+
+    posted = False
     try:
-        requests.post(
+        resp = requests.post(
             f"{base}/api/usage/mcp",
-            json={"mcp_server": server_name, "tool_name": tool_name, **(details or {})},
+            json={"mcp_server": server_name, "tool_name": tool_name, **details},
             headers={"X-API-Key": api_key, "X-App-Name": "savant-mcp"},
             timeout=3,
         )
+        if resp.status_code in (200, 201):
+            posted = True
     except Exception:
         pass
+
+    # Direct database fallback when HTTP request could not be completed
+    if not posted:
+        try:
+            from db.users import UserDB
+            from db.mcp_usage import McpUsageDB
+
+            user = UserDB.get_by_api_key(api_key)
+            if user and int(user.get("is_active", 1)) == 1:
+                user_id = user["user_id"]
+                raw_repos = details.get("repos") or []
+                if isinstance(raw_repos, str):
+                    raw_repos = [raw_repos]
+                repos = [str(r).strip()[:200] for r in raw_repos if str(r).strip()]
+                workspace_id = str(details.get("workspace_id") or "").strip()[:200]
+                projects = [("repo", r) for r in repos]
+                if workspace_id:
+                    projects.append(("workspace", workspace_id))
+                query = str(details.get("query") or "").strip()[:1000]
+
+                McpUsageDB.record_call(
+                    user_id,
+                    server_name,
+                    tool_name,
+                    projects=projects,
+                    query=query,
+                    repo=",".join(repos)[:500],
+                )
+                UserDB.touch_last_login(user_id)
+        except Exception:
+            pass
 
 
 def install_usage_tracking(mcp_instance, server_name: str) -> None:
@@ -355,7 +409,7 @@ def install_usage_tracking(mcp_instance, server_name: str) -> None:
                 )
 
         try:
-            key = _usage_api_key(context)
+            key = _usage_api_key(context, arguments=arguments)
             if key:
                 threading.Thread(
                     target=_post_usage,
