@@ -59,6 +59,35 @@ docker compose up -d
 .venv/bin/gunicorn --bind 0.0.0.0:8090 --workers 2 --threads 4 app:app
 ```
 
+### Kubernetes Deployment & Horizontal Scaling
+
+Savant Server is fully multi-replica capable in Kubernetes (`replicas: N`), supporting both standard REST traffic and Model Context Protocol (MCP) clients:
+
+- **Stateless MCP Streamable HTTP**: By default (`SAVANT_MCP_STATELESS_HTTP=true`), MCP Streamable HTTP (`/mcp` on ports 8191–8195) runs statelessly. Incoming client requests can be load-balanced across any number of pod replicas without sticky sessions.
+- **Shared Session Auth (`mcp_sessions`)**: Multi-replica session authentication is backed by PostgreSQL, allowing clients to maintain persistent MCP sessions across distinct pods.
+- **Pre-baked Offline Models**: Pod images bundle both `stsb-distilbert-base` and `bge-reranker-base` models offline (`SAVANT_OFFLINE_MODELS=1`), avoiding external HuggingFace downloads at runtime.
+- **Stateful SSE / Affinity Fallback**: If using SSE (`/sse`) or legacy clients, Kubernetes `sessionAffinity: ClientIP` or Nginx `upstream-hash-by: "$http_mcp_session_id"` can be enabled.
+
+#### Zero Client Configuration Required
+
+Users add the MCP to their AI clients normally with **no special flags or sticky headers required**:
+
+```json
+{
+  "mcpServers": {
+    "savant-context": {
+      "type": "http",
+      "url": "http://<savant-service>:8193/mcp",
+      "headers": {
+        "X-API-Key": "sk-••••••••••••••••"
+      }
+    }
+  }
+}
+```
+
+See full guide and production manifests: [docs/kubernetes-mcp-scaling.md](docs/kubernetes-mcp-scaling.md).
+
 ## Architecture
 
 ### API Surface
@@ -117,6 +146,8 @@ Keep these credentials in a user-level configuration or secret store; do not
 commit them. `127.0.0.1` works only when the client and Savant Server run on
 the same machine. For another machine, terminate TLS in a reverse proxy and
 use its `https://` hostname rather than exposing the raw `8191–8195` ports.
+
+For multi-replica deployments in Kubernetes, Streamable HTTP runs statelessly (`SAVANT_MCP_STATELESS_HTTP=true`), allowing any pod replica to handle any tool request without sticky sessions. For architecture and ingress configuration, see [docs/kubernetes-mcp-scaling.md](docs/kubernetes-mcp-scaling.md).
 
 | MCP server | Streamable URL |
 | --- | --- |
@@ -297,6 +328,22 @@ analyze_code(
 - **From Knowledge to Code**: When `savant-knowledge.search` or `project_context` returns nodes pointing to services, repositories, or source files, transition to `savant-context.research` and `structure_search` to inspect the physical code, then `get_lossless_tree` for surgical editing.
 - **From Code to Knowledge**: When deep code analysis (`savant-context.analyze_code`) or refactoring reveals non-obvious architecture rules, client-specific workarounds, or bug root causes, persist them in `savant-knowledge.store` (with `workspace_id`, `node_type='insight'|'issue'`, `repo`, and touched `files`) and publish with `commit_workspace`.
 
+### Machine Learning Models & Two-Stage Semantic Search
+
+Savant Server runs an entirely local, two-stage semantic code search pipeline with zero external LLM API dependencies. It uses two specialized PyTorch/Transformer models via `sentence-transformers`:
+
+1. **Stage 1 (Bi-Encoder Embeddings) — `sentence-transformers/stsb-distilbert-base` (768-dim)**:
+   - **Role**: Fast candidate filtering across large codebases.
+   - **How it works**: Pre-computes 768-dimensional vector embeddings for code chunks stored in PostgreSQL (`pgvector`). At query time, converts the query to a vector and retrieves the top 20–30 candidates in milliseconds using cosine distance.
+   - **Config**: `EMBEDDING_MODEL_DIR` (disk footprint: ~260 MB; RAM: ~500 MB–1 GB).
+
+2. **Stage 2 (Cross-Encoder Reranker) — `BAAI/bge-reranker-base`**:
+   - **Role**: High-precision relevance scoring and re-ranking.
+   - **How it works**: Scores the `[Query, Code Chunk]` pair jointly through deep transformer cross-attention to produce an exact relevance score (0.0 to 1.0), returning the top 5–10 best matches.
+   - **Config**: `RERANKER_MODEL_DIR`, `SAVANT_ENABLE_RERANKER` (disk footprint: ~1.11 GB; RAM: ~1.5 GB–2 GB). Bundled directly at `/app/models/bge-reranker-base/v1` in the Docker image.
+
+For full architectural details, memory limits, and Kubernetes production pre-flight checks, see [docs/models-and-semantic-search.md](docs/models-and-semantic-search.md).
+
 ### Abilities Bootstrap
 
 Seed data is embedded in `abilities/bootstrap.py`. On first startup, abilities are materialized to `SAVANT_SERVER_DATA_DIR/abilities/`.
@@ -358,7 +405,11 @@ Use `X-API-Key` header. Rotate for production.
 | `SAVANT_DB` | `<data_dir>/savant.db` | SQLite DB path override |
 | `SAVANT_API_ONLY` | `0` | Enable API-only mode |
 | `SAVANT_ABILITIES_SEED_DIR` | `<data_dir>/abilities` | Abilities seed location |
-| `EMBEDDING_MODEL_DIR` | Bundled | Embedding model files |
+| `EMBEDDING_MODEL_DIR` | Bundled | Embedding model directory (`stsb-distilbert-base`) |
+| `RERANKER_MODEL_DIR` | `/app/models/bge-reranker-base/v1` | Cross-encoder reranker model directory |
+| `SAVANT_ENABLE_RERANKER` | `1` | Enable/disable reranker model (set `0` in memory-constrained setups) |
+| `SAVANT_OFFLINE_MODELS` | `0` (`1` in Docker) | Strictly prevent downloading models at runtime |
+| `SAVANT_MCP_STATELESS_HTTP` | `true` | Enable stateless Streamable HTTP for multi-replica Kubernetes scaling |
 | `BASE_CODE_DIR` | `/base-code` (Docker) | Root for directory source ingestion |
 | `BASE_CODE_HOST_DIR` | `~/Developer/code` | Host path mounted as BASE_CODE_DIR |
 | `RUNNING_IN_DOCKER` | Auto-detected | Force container-mode paths |

@@ -117,7 +117,8 @@ Use `resolve_abilities` only when a persona plus its applicable rules/policies m
 - **Blueprints:** Each feature module (`abilities/`, `context/`, `knowledge/`, `reminders/`, and `tools/`) has its own `routes.py` registered as a Flask blueprint. Structural graph operations use `code_intelligence/` and the private `codegraph_bridge/`.
 - **Knowledge graph staging:** Nodes created via `store()` are staged; call `commit_workspace(workspace_id)` to publish.
 - **Abilities assets:** Markdown files with YAML frontmatter in `<data>/abilities/{personas,rules,policies,styles,repos}/`. Use `resolver.py` to compose prompts.
-- **Semantic search:** `context/embeddings.py` wraps stsb-distilbert (768-dim). Embeddings stored in pgvector. Use `ContextDB` for search.
+- **Semantic search:** Two-stage local pipeline: `context/embeddings.py` wraps `stsb-distilbert-base` (768-dim) for fast candidate retrieval stored in pgvector; `context/reranker.py` wraps `bge-reranker-base` cross-encoder for high-precision top-k reranking. See `docs/models-and-semantic-search.md`.
+- **Multi-replica scaling:** MCP Streamable HTTP runs statelessly (`SAVANT_MCP_STATELESS_HTTP=true`) allowing multi-replica pod scaling in Kubernetes without sticky sessions. Sessions and credentials are synchronized via PostgreSQL (`mcp_sessions`). See `docs/kubernetes-mcp-scaling.md`.
 - **Versioning:** `build-info.json` is the source of truth for the server build version. `GET /version` and `GET /api/version` return `version`, `branch`, `commit`, and `built_at`. `GET /health/live` and `GET /health/ready` also echo the build version.
 
 ## Adding a new feature
@@ -130,12 +131,18 @@ Use `resolve_abilities` only when a persona plus its applicable rules/policies m
 
 ## Docker environment variables
 
-| Variable              | Default                        | Purpose                          |
-|-----------------------|--------------------------------|----------------------------------|
-| SAVANT_DATABASE_URL   | (required)                     | PostgreSQL connection string     |
-| SAVANT_API_ONLY       | 1                              | Disable non-API routes           |
-| SAVANT_SERVER_DATA_DIR| /data/savant                   | Persistent data root             |
-| BASE_CODE_DIR         | /base-code                     | Source code root for indexing    |
-| RUNNING_IN_DOCKER     | 1                              | Triggers Docker path mapping     |
-| GUNICORN_WORKERS      | 2                              | Gunicorn worker count            |
-| GUNICORN_THREADS      | 4                              | Gunicorn thread count            |
+| Variable                  | Default                        | Purpose                                              |
+|---------------------------|--------------------------------|------------------------------------------------------|
+| SAVANT_DATABASE_URL       | (required)                     | PostgreSQL connection string                         |
+| SAVANT_API_ONLY           | 1                              | Disable non-API routes                               |
+| SAVANT_SERVER_DATA_DIR    | /data/savant                   | Persistent data root                                 |
+| BASE_CODE_DIR             | /base-code                     | Source code root for indexing                        |
+| RUNNING_IN_DOCKER         | 1                              | Triggers Docker path mapping                         |
+| GUNICORN_WORKERS          | 2                              | Gunicorn worker count                                |
+| GUNICORN_THREADS          | 4                              | Gunicorn thread count                                |
+| SAVANT_MCP_STATELESS_HTTP | true                           | Enable stateless MCP for multi-replica scaling       |
+| SAVANT_OFFLINE_MODELS     | 1                              | Prevent runtime downloading of HuggingFace models    |
+| EMBEDDING_MODEL_DIR       | /app/models/stsb-distilbert-base/v1 | Bundled PyTorch embedding model directory        |
+| RERANKER_MODEL_DIR        | /app/models/bge-reranker-base/v1 | Bundled PyTorch reranker model directory            |
+| SAVANT_ENABLE_RERANKER    | 1                              | Enable/disable cross-encoder reranker                |
+

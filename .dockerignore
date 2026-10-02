@@ -18,5 +18,7 @@ data/*
 models/*
 !models/bge-reranker-base/
 !models/bge-reranker-base/**
+!models/stsb-distilbert-base/
+!models/stsb-distilbert-base/**
 .codegraph
 .tmp

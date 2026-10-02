@@ -108,6 +108,18 @@ class RerankerModel:
             try:
                 model_dir = resolve_model_dir()
                 if not model_dir.exists() or not (model_dir / "config.json").exists():
+                    if (
+                        os.getenv("SAVANT_OFFLINE_MODELS", "0").lower() in ("1", "true", "yes")
+                        or os.getenv("TRANSFORMERS_OFFLINE", "0") == "1"
+                        or os.getenv("HF_HUB_OFFLINE", "0") == "1"
+                        or os.getenv("SAVANT_ALLOW_MODEL_DOWNLOAD", "1").lower() in ("0", "false", "no")
+                    ):
+                        logger.warning(
+                            "Reranker model not found at '%s' and offline mode is active. Automatic downloading disabled. Bypassing reranker.",
+                            model_dir,
+                        )
+                        return None
+
                     logger.info("Reranker not found locally, downloading...")
                     model_dir = download_model(model_dir)
                 cls._instance = RerankerModel(model_dir)

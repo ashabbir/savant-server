@@ -74,6 +74,16 @@ def download_model(dest: Path = None) -> Path:
         repo_id=REPO_ID,
         revision=REVISION,
         local_dir=str(target),
+        ignore_patterns=[
+            "*.h5",
+            "*.msgpack",
+            "*.ot",
+            "*.onnx*",
+            "openvino*",
+            "coreml*",
+            "tf_model*",
+            "rust_model*",
+        ],
         local_dir_use_symlinks=False,
     )
     logger.info(f"Model downloaded to {target}")
@@ -156,6 +166,18 @@ class EmbeddingModel:
         model_dir = resolve_model_dir()
 
         if not model_dir.exists() or not (model_dir / "config.json").exists():
+            if (
+                os.getenv("SAVANT_OFFLINE_MODELS", "0").lower() in ("1", "true", "yes")
+                or os.getenv("TRANSFORMERS_OFFLINE", "0") == "1"
+                or os.getenv("HF_HUB_OFFLINE", "0") == "1"
+                or os.getenv("SAVANT_ALLOW_MODEL_DOWNLOAD", "1").lower() in ("0", "false", "no")
+            ):
+                raise RuntimeError(
+                    f"Embedding model not found at '{model_dir}'. "
+                    "Automatic model downloading is disabled (offline mode active). "
+                    "Ensure models are bundled in the container image or mounted via volume."
+                )
+
             logger.info("Model not found locally or bundled, downloading...")
             model_dir = default_model_dir()
             os.environ.pop("TRANSFORMERS_OFFLINE", None)

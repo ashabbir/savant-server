@@ -568,6 +568,16 @@ CREATE TABLE IF NOT EXISTS app_variables (
     value   TEXT NOT NULL
 );
 
+-- MCP Client Sessions (for cross-replica authorization and session state)
+CREATE TABLE IF NOT EXISTS mcp_sessions (
+    session_id  TEXT PRIMARY KEY,
+    api_key     TEXT NOT NULL,
+    app_name    TEXT DEFAULT '',
+    mcp_server  TEXT DEFAULT '',
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_sessions_updated ON mcp_sessions(updated_at DESC);
+
 -- Applied database migrations
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version     INTEGER PRIMARY KEY,
@@ -1330,6 +1340,20 @@ _SCHEMA_MIGRATIONS = (
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             )""",
+        ),
+    ),
+    (
+        16,
+        "create mcp_sessions table for multi-replica session persistence",
+        (
+            """CREATE TABLE IF NOT EXISTS mcp_sessions (
+                session_id  TEXT PRIMARY KEY,
+                api_key     TEXT NOT NULL,
+                app_name    TEXT DEFAULT '',
+                mcp_server  TEXT DEFAULT '',
+                updated_at  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )""",
+            "CREATE INDEX IF NOT EXISTS idx_mcp_sessions_updated ON mcp_sessions(updated_at DESC)",
         ),
     ),
 )

@@ -13,10 +13,16 @@ RUN apt-get update \
 # Overlay the checked-out server source, including the Git ingestion fix.
 # .dockerignore excludes local credentials such as .env.
 COPY --chown=savant:savant . /app
-# Keep the mandatory skill bundle and reranker model in the immutable application layer. Startup
+# Keep the mandatory skill bundle and local ML models in the immutable application layer. Startup
 # reconciles skills into the persistent SAVANT_SERVER_DATA_DIR volume.
 COPY --chown=savant:savant data/default_skills /app/data/default_skills
-COPY --chown=savant:savant models/bge-reranker-base /app/models/bge-reranker-base
+COPY --chown=savant:savant models /app/models
+ENV EMBEDDING_MODEL_DIR=/app/models/stsb-distilbert-base/v1 \
+    RERANKER_MODEL_DIR=/app/models/bge-reranker-base/v1 \
+    TRANSFORMERS_OFFLINE=1 \
+    HF_HUB_OFFLINE=1 \
+    SAVANT_OFFLINE_MODELS=1
+
 RUN python -m pip install --no-cache-dir $(grep -E '^(dulwich|APScheduler)' /app/requirements.txt) \
     && chmod +x /app/docker-entrypoint.sh
 

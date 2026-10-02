@@ -166,6 +166,26 @@ def _bind_request_value(value: str, session_id: str, context_var, session_values
     context_var.set(session_values.get("_last", ""))
 
 
+def _lookup_session_db(session_id: str) -> dict | None:
+    if not session_id or session_id == "_last":
+        return None
+    try:
+        from db.mcp_sessions import MCPSessionDB
+        return MCPSessionDB.get_session(session_id)
+    except Exception:
+        return None
+
+
+def _persist_session_db(session_id: str, api_key: str, app_name: str, mcp_server: str) -> None:
+    if not session_id or not api_key or session_id == "_last":
+        return
+    try:
+        from db.mcp_sessions import MCPSessionDB
+        MCPSessionDB.save_session(session_id, api_key, app_name, mcp_server)
+    except Exception:
+        pass
+
+
 def _capture_scope_context(scope: dict, server_name: str) -> None:
     headers = dict(scope.get("headers", []))
     params = parse_qs(scope.get("query_string", b"").decode(errors="replace"))
@@ -184,6 +204,22 @@ def _capture_scope_context(scope: dict, server_name: str) -> None:
         or _first_param(params, "mcp_server")
         or server_name
     )
+
+    # Multi-replica support: if request carries session_id but lacks api_key header,
+    # resolve credentials from the shared database if not cached locally.
+    if session_id and not api_key:
+        if session_id not in _session_keys:
+            stored = _lookup_session_db(session_id)
+            if stored:
+                api_key = stored.get("api_key", "")
+                if not app_name:
+                    app_name = stored.get("app_name", "")
+                if not mcp_server:
+                    mcp_server = stored.get("mcp_server", "")
+
+    if session_id and api_key:
+        _persist_session_db(session_id, api_key, app_name, mcp_server)
+
     _bind_request_value(api_key, session_id, _api_key_var, _session_keys)
     _bind_request_value(app_name, session_id, _app_name_var, _session_app_names)
     _bind_request_value(mcp_server, session_id, _mcp_server_var, _session_mcp_servers)
@@ -240,8 +276,13 @@ def _usage_api_key(context) -> str:
         if key:
             return key
         session_id = request.headers.get("mcp-session-id") or request.query_params.get("session_id")
-        if session_id and _session_keys.get(session_id):
-            return _session_keys[session_id]
+        if session_id:
+            if _session_keys.get(session_id):
+                return _session_keys[session_id]
+            stored = _lookup_session_db(session_id)
+            if stored and stored.get("api_key"):
+                _session_keys[session_id] = stored["api_key"]
+                return stored["api_key"]
     return _api_key_var.get("")
 
 

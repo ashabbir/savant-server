@@ -60,8 +60,9 @@ services:
       TRANSFORMERS_CACHE: /data/savant/hf/transformers
       SAVANT_SERVER_DATA_DIR: /data/savant
       SAVANT_COLOSSEUM_WORKTREES_DIR: /data/colosseum/worktrees
-      EMBEDDING_MODEL_DIR: /data/savant/models-v1
+      EMBEDDING_MODEL_DIR: /app/models/stsb-distilbert-base/v1
       RERANKER_MODEL_DIR: /app/models/bge-reranker-base/v1
+      SAVANT_OFFLINE_MODELS: "1"
       BASE_CODE_DIR: /base-code
       SAVANT_CODEGRAPH_SOCKET: /run/savant/codegraph.sock
       SAVANT_API_ONLY: "1"
@@ -110,8 +111,9 @@ services:
       TRANSFORMERS_CACHE: /data/savant/hf/transformers
       SAVANT_SERVER_DATA_DIR: /data/savant
       SAVANT_COLOSSEUM_WORKTREES_DIR: /data/colosseum/worktrees
-      EMBEDDING_MODEL_DIR: /data/savant/models-v1
+      EMBEDDING_MODEL_DIR: /app/models/stsb-distilbert-base/v1
       RERANKER_MODEL_DIR: /app/models/bge-reranker-base/v1
+      SAVANT_OFFLINE_MODELS: "1"
       BASE_CODE_DIR: /base-code
       SAVANT_CODEGRAPH_SOCKET: /run/savant/codegraph.sock
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}

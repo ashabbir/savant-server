@@ -38,7 +38,14 @@ _parser.add_argument("--host", default="127.0.0.1")
 _parser.add_argument("--port", type=int, default=8093)
 _parser.add_argument("--flask-url", default="http://127.0.0.1:8090")
 _parser.add_argument("--transport", default="sse", choices=["sse", "stdio", "streamable-http"])
+_parser.add_argument("--stateless", action=getattr(argparse, "BooleanOptionalAction", "store_true"), default=None, help="Run Streamable HTTP in stateless mode for multi-replica Kubernetes deployments")
 _args, _ = _parser.parse_known_args()
+
+_stateless_http = (
+    _args.stateless
+    if getattr(_args, "stateless", None) is not None
+    else os.getenv("SAVANT_MCP_STATELESS_HTTP", "true").lower() in ("1", "true", "yes")
+)
 
 # Default Flask URL (overridden by --flask-url)
 FLASK_URL = _args.flask_url
@@ -82,6 +89,7 @@ mcp = FastMCP(
     ),
     host=_args.host,
     port=_args.port,
+    stateless_http=_stateless_http,
 )
 
 install_header_capture(mcp)
