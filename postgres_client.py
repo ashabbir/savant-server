@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from contextlib import contextmanager
 from typing import Any, Generator
 
@@ -765,6 +766,7 @@ CREATE TABLE IF NOT EXISTS ctx_ast_nodes (
     name        TEXT NOT NULL,
     start_line  INTEGER NOT NULL,
     end_line    INTEGER NOT NULL,
+    content     TEXT NOT NULL DEFAULT '',
     created_at  TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_ctx_ast_file ON ctx_ast_nodes(file_id);
@@ -1356,6 +1358,21 @@ _SCHEMA_MIGRATIONS = (
             "CREATE INDEX IF NOT EXISTS idx_mcp_sessions_updated ON mcp_sessions(updated_at DESC)",
         ),
     ),
+    (
+        17,
+        "add full-text search index on kg_nodes to replace slow ILIKE n-gram scans",
+        (
+            "CREATE INDEX IF NOT EXISTS idx_kgn_fts ON kg_nodes "
+            "USING gin (to_tsvector('english', title || ' ' || content))",
+        ),
+    ),
+    (
+        18,
+        "add content column to ctx_ast_nodes for AST node source snapshots",
+        (
+            "ALTER TABLE ctx_ast_nodes ADD COLUMN IF NOT EXISTS content TEXT NOT NULL DEFAULT ''",
+        ),
+    ),
 )
 
 
@@ -1404,31 +1421,49 @@ def _reconcile_additive_schema(cur: psycopg2.extensions.cursor) -> None:
             cur.execute(statement)
 
 
-def init_schema() -> None:
-    """Create missing schema objects and apply pending migrations."""
+def init_schema(max_attempts: int = 5) -> None:
+    """Create missing schema objects and apply pending migrations.
+
+    Concurrent replicas/workers can hold row locks on tables this DDL needs to
+    ALTER, which Postgres resolves by picking a deadlock victim. That's expected
+    under concurrent startup, so retry with backoff rather than crash the pod.
+    """
     logger.info("Checking database schema and pending migrations")
-    conn = get_connection()
-    lock_acquired = False
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT pg_advisory_lock(%s)", (0x5A0A17,))
-            lock_acquired = True
-            _execute_schema_sql(cur)
-            _run_pending_migrations(cur)
-            _reconcile_additive_schema(cur)
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        logger.exception("Database schema initialization failed")
-        raise
-    finally:
-        if lock_acquired:
-            try:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT pg_advisory_unlock(%s)", (0x5A0A17,))
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                logger.exception("Failed to release database schema advisory lock")
-        release_connection(conn)
-    logger.info("Database schema is current")
+    for attempt in range(1, max_attempts + 1):
+        conn = get_connection()
+        lock_acquired = False
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SELECT pg_advisory_lock(%s)", (0x5A0A17,))
+                lock_acquired = True
+                _execute_schema_sql(cur)
+                _run_pending_migrations(cur)
+                _reconcile_additive_schema(cur)
+            conn.commit()
+            logger.info("Database schema is current")
+            return
+        except psycopg2.errors.DeadlockDetected:
+            conn.rollback()
+            if attempt == max_attempts:
+                logger.exception("Database schema initialization failed after %d attempts (deadlock)", attempt)
+                raise
+            delay = min(2 ** attempt, 10)
+            logger.warning(
+                "Schema init hit a deadlock (attempt %d/%d); retrying in %ds",
+                attempt, max_attempts, delay,
+            )
+            time.sleep(delay)
+        except Exception:
+            conn.rollback()
+            logger.exception("Database schema initialization failed")
+            raise
+        finally:
+            if lock_acquired:
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT pg_advisory_unlock(%s)", (0x5A0A17,))
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    logger.exception("Failed to release database schema advisory lock")
+            release_connection(conn)

@@ -102,6 +102,25 @@ with app.app_context():
         if os.environ.get("SAVANT_EXTERNAL_KG_MAINTENANCE") != "1":
             from knowledge.maintenance import start_maintenance_scheduler
             start_maintenance_scheduler()
+
+        # Warm the embedding/reranker models synchronously, before gunicorn
+        # forks workers (--preload). A background thread here is unsafe: if
+        # fork happens while the thread holds EmbeddingModel._lock mid-load,
+        # the lock is copied into each worker as permanently "acquired" (the
+        # thread that held it doesn't exist post-fork to release it), so every
+        # future EmbeddingModel.get() call in that worker deadlocks forever.
+        # Blocking here instead means the model is fully loaded, and its lock
+        # released, before fork ever happens.
+        try:
+            from context.embeddings import EmbeddingModel
+            EmbeddingModel.get()
+        except Exception:
+            logger.exception("Embedding model warm-up failed (will lazy-load on first use)")
+        try:
+            from context.reranker import RerankerModel
+            RerankerModel.get()
+        except Exception:
+            logger.exception("Reranker model warm-up failed (will lazy-load on first use)")
     except Exception as e:
         logger.critical("Database initialization failed; refusing to start: %s", e)
         raise

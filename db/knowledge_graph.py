@@ -355,60 +355,52 @@ class KnowledgeGraphDB:
 
     @staticmethod
     def search_nodes(query: str, node_type: str = "", limit: int = 20, include_staged: bool = False) -> list[dict]:
+        """Full-text search over kg_nodes title+content.
+
+        Uses the idx_kgn_fts GIN index on to_tsvector('english', title || ' ' || content).
+        Replaced a per-n-gram ILIKE scan that ran a full sequential scan of kg_nodes per
+        word/phrase combination — O(words^2) scans that took 40-180s on a ~6.5k row table.
+
+        Tries AND semantics first (plainto_tsquery — all query words must match): this is
+        selective enough for the index + ts_rank sort to stay in milliseconds. OR-ing every
+        word instead (tried first) matched ~70% of the table on long queries, which made the
+        ts_rank sort over thousands of rows slow again (~10-25s) — so OR is only used as a
+        fallback when the stricter AND query finds nothing, trading a slower query for not
+        returning zero results on a broad/natural-language search.
+        """
         conn = get_connection()
         try:
-            words = query.split()
+            words = [w for w in query.split() if w]
             if not words:
                 words = [query]
 
-            grams: list[str] = []
-            if len(words) > 1:
-                grams.append(query)
-            for n in (3, 2):
-                if len(words) >= n:
-                    for i in range(len(words) - n + 1):
-                        grams.append(" ".join(words[i:i + n]))
-            grams.extend(words)
-            seen: set[str] = set()
-            unique_grams: list[str] = []
-            for g in grams:
-                gl = g.lower()
-                if gl not in seen:
-                    seen.add(gl)
-                    unique_grams.append(g)
+            tsvector_sql = "to_tsvector('english', title || ' ' || content)"
 
-            score_parts: list[str] = []
-            match_parts: list[str] = []
-            params: list = []
-            for gram in unique_grams:
-                like = f"%{gram}%"
-                weight = len(gram.split())
-                score_parts.append(f"(CASE WHEN title ILIKE %s OR content ILIKE %s THEN {weight} ELSE 0 END)")
-                match_parts.append("(title ILIKE %s OR content ILIKE %s)")
-                params.extend([like, like])
+            def _run(tsquery_sql: str, tsquery_params: list) -> list[dict]:
+                conditions = [f"({tsvector_sql} @@ ({tsquery_sql}))"]
+                extra_params: list = []
+                if node_type:
+                    conditions.append("node_type = %s")
+                    extra_params.append(node_type)
+                if not include_staged:
+                    conditions.append("status = 'committed'")
+                where = " AND ".join(conditions)
 
-            score_sql = " + ".join(score_parts)
-            any_match = " OR ".join(match_parts)
-            match_params = list(params)
+                sql = (
+                    f"SELECT *, ts_rank({tsvector_sql}, ({tsquery_sql})) AS _score FROM kg_nodes"
+                    f" WHERE {where}"
+                    f" ORDER BY _score DESC, created_at DESC LIMIT %s"
+                )
+                all_params = tsquery_params + tsquery_params + extra_params + [limit]
+                with conn.cursor() as cur:
+                    cur.execute(sql, all_params)
+                    return [_row_to_dict(r) for r in cur.fetchall()]
 
-            conditions = [f"({any_match})"]
-            if node_type:
-                conditions.append("node_type = %s")
-                match_params.append(node_type)
-            if not include_staged:
-                conditions.append("status = 'committed'")
-            where = " AND ".join(conditions)
-
-            sql = (
-                f"SELECT *, ({score_sql}) AS _score FROM kg_nodes"
-                f" WHERE {where}"
-                f" ORDER BY _score DESC, created_at DESC LIMIT %s"
-            )
-            all_params = params + match_params + [limit]
-            with conn.cursor() as cur:
-                cur.execute(sql, all_params)
-                rows = cur.fetchall()
-            return [_row_to_dict(r) for r in rows]
+            rows = _run("plainto_tsquery('english', %s)", [query])
+            if not rows and len(words) > 1:
+                or_tsquery_sql = " || ".join(["plainto_tsquery('english', %s)"] * len(words))
+                rows = _run(or_tsquery_sql, list(words))
+            return rows
         finally:
             release_connection(conn)
 

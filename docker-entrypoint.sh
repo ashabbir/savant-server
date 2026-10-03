@@ -43,6 +43,12 @@ if [ "${SAVANT_ROLE:-}" = "worker" ] || [ "${SAVANT_ROLE:-}" = "jobs" ] || [ "${
   JOB_WORKER_PID="$!"
   CHILD_PIDS="$CHILD_PIDS $JOB_WORKER_PID"
 
+  nice -n 10 python -m context.periodic_runner &
+  CHILD_PIDS="$CHILD_PIDS $!"
+
+  nice -n 10 python -m knowledge.maintenance_runner &
+  CHILD_PIDS="$CHILD_PIDS $!"
+
   while :; do
     for pid in $CHILD_PIDS; do
       if ! kill -0 "$pid" 2>/dev/null; then
@@ -82,22 +88,23 @@ fi
 
 CHILD_PIDS="$CHILD_PIDS $MCP_PIDS"
 
-# Run persistent queue consumer only if not offloaded to dedicated savant-jobs worker container.
+# Queue consumer, periodic repo sync, and KG maintenance all belong on the
+# dedicated savant-jobs worker (SAVANT_ROLE=worker, started above). Running
+# them here too would duplicate work and burn the API pod's CPU budget that
+# should go to serving requests.
 if [ "${SAVANT_ROLE:-}" != "server" ] && [ "${SAVANT_EXTERNAL_JOB_WORKER:-0}" != "1" ]; then
   nice -n 10 python -m context.job_worker &
   JOB_WORKER_PID="$!"
   CHILD_PIDS="$CHILD_PIDS $JOB_WORKER_PID"
 fi
 
-nice -n 10 python -m context.periodic_runner &
-PERIODIC_RUNNER_PID="$!"
-CHILD_PIDS="$CHILD_PIDS $PERIODIC_RUNNER_PID"
+if [ "${SAVANT_ROLE:-}" != "server" ]; then
+  nice -n 10 python -m context.periodic_runner &
+  CHILD_PIDS="$CHILD_PIDS $!"
 
-# One dedicated scheduler process owns the four-hour graph optimization cron.
-# The transaction advisory lock remains a cross-container guard during deploys.
-nice -n 10 python -m knowledge.maintenance_runner &
-KG_MAINTENANCE_PID="$!"
-CHILD_PIDS="$CHILD_PIDS $KG_MAINTENANCE_PID"
+  nice -n 10 python -m knowledge.maintenance_runner &
+  CHILD_PIDS="$CHILD_PIDS $!"
+fi
 
 gunicorn \
   --bind "${FLASK_HOST:-0.0.0.0}:${FLASK_PORT:-8090}" \
