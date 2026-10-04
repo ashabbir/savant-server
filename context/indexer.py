@@ -4,7 +4,7 @@ import logging
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from postgres_client import get_connection, release_connection
 from .chunker import ContentChunker
@@ -628,6 +628,7 @@ class Indexer:
     def index_repository(self, repo_path: Path, repo_name: Optional[str] = None,
                          clear: bool = True, differential: bool = False,
                          before_commit: Optional[str] = None, after_commit: Optional[str] = None,
+                         changed_files: Optional[Dict[str, List[str]]] = None,
                          job_progress_cb: Optional[Callable] = None) -> Dict[str, Any]:
         repo_path = Path(repo_path).resolve()
         if not repo_path.exists():
@@ -660,11 +661,21 @@ class Indexer:
             files_removed = 0
 
             if differential:
-                import subprocess
-                has_commits = subprocess.run(["git", "rev-parse", "--verify", "HEAD"], cwd=str(repo_path), capture_output=True).returncode == 0
-                if has_commits:
-                    _set_status(repo_name, phase="Determining git diff")
-                    added_files, modified_files, deleted_files = get_git_diff_files(repo_path, before_commit, after_commit)
+                if changed_files is not None:
+                    added_files = changed_files.get("added", [])
+                    modified_files = changed_files.get("modified", [])
+                    deleted_files = changed_files.get("deleted", [])
+                else:
+                    import subprocess
+                    has_commits = subprocess.run(["git", "rev-parse", "--verify", "HEAD"], cwd=str(repo_path), capture_output=True).returncode == 0
+                    if has_commits:
+                        _set_status(repo_name, phase="Determining git diff")
+                        added_files, modified_files, deleted_files = get_git_diff_files(repo_path, before_commit, after_commit)
+                    else:
+                        added_files, modified_files, deleted_files = [], [], []
+                        differential = False
+
+                if differential:
                     stored_files = ContextDB.get_repo_files_mtime(repo_id, conn=conn)
                     files_to_remove = set(deleted_files)
                     removed_ids = [stored_files[rel_path]["id"] for rel_path in files_to_remove if rel_path in stored_files]
@@ -673,8 +684,6 @@ class Indexer:
                         logger.info(f"Differential indexing removed {files_removed} deleted files for {repo_name}")
                     files_to_index = [Path(f) for f in (set(added_files) | set(modified_files))]
                     total_files = len(files_to_index)
-                else:
-                    differential = False
 
             if not differential:
                 _set_status(repo_name, phase="Scanning directory")
@@ -766,6 +775,7 @@ class Indexer:
                 "files_removed": files_removed,
                 "chunks_indexed": chunks_indexed,
                 "errors": errors,
+                "differential": differential,
             }
 
         except _CancelledError:
@@ -782,7 +792,9 @@ class Indexer:
             _schedule_status_cleanup(repo_name)
 
     def generate_ast_for_repository(self, repo_path: Path, repo_name: Optional[str] = None,
-                                    clear: bool = True,
+                                    clear: bool = True, differential: bool = False,
+                                    before_commit: Optional[str] = None, after_commit: Optional[str] = None,
+                                    changed_files: Optional[Dict[str, List[str]]] = None,
                                     job_progress_cb: Optional[Callable] = None) -> Dict[str, Any]:
         repo_path = Path(repo_path).resolve()
         if not repo_path.exists():
@@ -802,16 +814,36 @@ class Indexer:
                 repo = ContextDB.add_repo(repo_name, str(repo_path), conn=conn)
             repo_id = repo["id"]
 
-            if clear:
-                _set_status(repo_name, phase="Clearing old AST data")
-                ContextDB.clear_ast_data(repo_id, conn=conn)
+            files_removed = 0
+            if differential:
+                clear = False
+                if changed_files is not None:
+                    added = changed_files.get("added", [])
+                    modified = changed_files.get("modified", [])
+                    deleted = changed_files.get("deleted", [])
+                else:
+                    added, modified, deleted = get_git_diff_files(repo_path, before_commit, after_commit)
 
-            if _is_cancelled(repo_name):
-                raise _CancelledError(repo_name)
-            _set_status(repo_name, phase="Scanning directory")
-            walker = FileWalker(repo_path, tracked_only=True)
-            files_to_index = list(walker.walk())
-            total_files = len(files_to_index)
+                stored_files = ContextDB.get_repo_files_mtime(repo_id, conn=conn)
+                removed_ids = [stored_files[rel_path]["id"] for rel_path in deleted if rel_path in stored_files]
+                if removed_ids:
+                    for fid in removed_ids:
+                        ContextDB.clear_file_ast_data(fid, conn=conn)
+                    logger.info(f"Differential AST cleaned up {len(removed_ids)} deleted files for {repo_name}")
+                files_removed = len(deleted)
+                files_to_index = [Path(f) for f in (set(added) | set(modified))]
+                total_files = len(files_to_index)
+            else:
+                if clear:
+                    _set_status(repo_name, phase="Clearing old AST data")
+                    ContextDB.clear_ast_data(repo_id, conn=conn)
+
+                if _is_cancelled(repo_name):
+                    raise _CancelledError(repo_name)
+                _set_status(repo_name, phase="Scanning directory")
+                walker = FileWalker(repo_path, tracked_only=True)
+                files_to_index = list(walker.walk())
+                total_files = len(files_to_index)
 
             _set_status(repo_name, phase="Generating AST", total=total_files)
             files_indexed = 0
@@ -834,7 +866,7 @@ class Indexer:
                     _set_status(repo_name, phase="Extracting", files_done=files_indexed,
                                 progress=pct, current_file=str(file_rel_path), errors=errors)
 
-                    if job_progress_cb and files_indexed % 5 == 0:
+                    if job_progress_cb and (files_indexed % 5 == 0 or files_indexed == total_files):
                         job_progress_cb(pct, "Extracting", str(file_rel_path))
 
                 except _CancelledError:
@@ -847,8 +879,15 @@ class Indexer:
                     time.sleep(0.002)
 
             _set_status(repo_name, status="indexed", phase="Complete", progress=100)
-            ContextDB.update_repo_status(repo_name, "ast_only", conn=conn)
-            return {"repo_name": repo_name, "files_processed": files_indexed, "errors": errors}
+            if not differential:
+                ContextDB.update_repo_status(repo_name, "ast_only", conn=conn)
+            return {
+                "repo_name": repo_name,
+                "files_processed": files_indexed,
+                "files_removed": files_removed,
+                "errors": errors,
+                "differential": differential,
+            }
 
         except _CancelledError:
             _set_status(repo_name, status="cancelled", phase="Cancelled")
@@ -862,7 +901,9 @@ class Indexer:
             _schedule_status_cleanup(repo_name)
 
     def sync_lossless_trees_for_repository(self, repo_path: Path, repo_name: Optional[str] = None,
-                                            clear: bool = False,
+                                            clear: bool = False, differential: bool = False,
+                                            before_commit: Optional[str] = None, after_commit: Optional[str] = None,
+                                            changed_files: Optional[Dict[str, List[str]]] = None,
                                             job_progress_cb: Optional[Callable] = None,
                                             progress_cb: Optional[Callable] = None,
                                             **kwargs) -> Dict[str, Any]:
@@ -883,10 +924,30 @@ class Indexer:
             if not repo:
                 repo = ContextDB.add_repo(repo_name, str(repo_path), conn=conn)
             repo_id = repo["id"]
-            if clear:
-                ContextDB.clear_lossless_tree_data(repo_id, conn=conn)
 
-            files = list(FileWalker(repo_path, tracked_only=True).walk())
+            files_removed = 0
+            if differential:
+                clear = False
+                if changed_files is not None:
+                    added = changed_files.get("added", [])
+                    modified = changed_files.get("modified", [])
+                    deleted = changed_files.get("deleted", [])
+                else:
+                    added, modified, deleted = get_git_diff_files(repo_path, before_commit, after_commit)
+
+                stored_files = ContextDB.get_repo_files_mtime(repo_id, conn=conn)
+                removed_ids = [stored_files[rel_path]["id"] for rel_path in deleted if rel_path in stored_files]
+                if removed_ids:
+                    for fid in removed_ids:
+                        ContextDB.clear_file_lossless_tree_data(fid, conn=conn)
+                    logger.info(f"Differential LST cleaned up {len(removed_ids)} deleted files for {repo_name}")
+                files_removed = len(deleted)
+                files = [Path(f) for f in (set(added) | set(modified))]
+            else:
+                if clear:
+                    ContextDB.clear_lossless_tree_data(repo_id, conn=conn)
+                files = list(FileWalker(repo_path, tracked_only=True).walk())
+
             stored = 0
             skipped = 0
             errors = 0
@@ -896,6 +957,9 @@ class Indexer:
                     continue
                 path = repo_path / file_rel_path
                 try:
+                    if not path.exists():
+                        skipped += 1
+                        continue
                     if path.stat().st_size > 5_000_000:
                         skipped += 1
                         continue
@@ -911,6 +975,8 @@ class Indexer:
                         repo_id, str(file_rel_path), language, False,
                         int(path.stat().st_mtime_ns), datetime.now(timezone.utc).isoformat(), conn=conn,
                     )
+                    if differential:
+                        ContextDB.clear_file_lossless_tree_data(file_id, conn=conn)
                     self._store_lossless_tree(file_id, str(file_rel_path), content, conn=conn)
                     stored += 1
                     if job_progress_cb and (index % 10 == 0 or index == len(files)):
@@ -919,8 +985,14 @@ class Indexer:
                 except Exception as exc:
                     logger.error("Error generating lossless tree for %s: %s", file_rel_path, exc)
                     errors += 1
-            return {"repo_name": repo_name, "files_processed": stored,
-                    "files_skipped": skipped, "errors": errors}
+            return {
+                "repo_name": repo_name,
+                "files_processed": stored,
+                "files_skipped": skipped,
+                "files_removed": files_removed,
+                "errors": errors,
+                "differential": differential,
+            }
         finally:
             release_connection(conn)
 

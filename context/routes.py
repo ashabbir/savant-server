@@ -831,7 +831,7 @@ def add_repo():
 @context_bp.route("/api/context/repos/<name>/refresh", methods=["POST"])
 @admin_required
 def refresh_repo(name):
-    """Update a registered Git checkout from its origin remote."""
+    """Queue the complete Git-aware differential refresh pipeline."""
     if not _ensure_init():
         return jsonify({"error": "Context not initialized"}), 503
 
@@ -844,88 +844,30 @@ def refresh_repo(name):
     if path_error:
         return jsonify({"error": path_error}), 400
 
-    # Offload git refresh / sync to the job server if running in server or external worker mode
-    if (
-        os.environ.get("SAVANT_ROLE") == "server"
-        or os.environ.get("SAVANT_EXTERNAL_JOB_WORKER") == "1"
-        or os.environ.get("SAVANT_API_ONLY") == "1"
-    ):
-        from db.jobs import JobDB
-        existing = JobDB.find_active("differential_sync", name)
-        if existing:
-            return jsonify({
-                "started": True,
-                "name": name,
-                "job_id": existing["id"],
-                "differential_sync_job_id": existing["id"],
-                "reused": True,
-                "message": f"Differential sync already in progress for {name}",
-            }), 202
-        user_id = getattr(g, "user_id", "") or "user"
-        job = JobDB.create_job("differential_sync", name, payload={"user_id": user_id, "actor_id": user_id})
+    from db.jobs import JobDB
+    existing = JobDB.find_active("differential_sync", name)
+    if existing:
         return jsonify({
             "started": True,
             "name": name,
-            "job_id": job["id"],
-            "differential_sync_job_id": job["id"],
-            "differential_sync_triggered": True,
-            "message": f"Differential sync queued for {name}",
+            "job_id": existing["id"],
+            "differential_sync_job_id": existing["id"],
+            "reused": True,
+            "message": f"Differential sync already in progress for {name}",
         }), 202
-
-    from .ingestion import IngestionError, refresh_repo as update_repo
-    started_at = perf_counter()
-
-    try:
-        refreshed = update_repo(str(repo_path))
-    except IngestionError as e:
-        _record_repo_sync_activity(
-            repo_name=name, operation="refresh", trigger="manual", status="failed",
-            duration_ms=int((perf_counter() - started_at) * 1000), error=str(e),
-            details="Repository refresh failed",
-        )
-        return jsonify({"error": str(e)}), 400
-
-    ContextDB.add_repo(refreshed.name, refreshed.path)
-    ContextDB.mark_repo_fetched(refreshed.name)
-    from .activity import collect_git_change_details
-    git_details = collect_git_change_details(
-        repo_path, refreshed.before_commit, refreshed.after_commit
-    )
-    _record_repo_sync_activity(
-        repo_name=refreshed.name, operation="refresh", trigger="manual",
-        provider=refreshed.provider, branch=refreshed.branch, status="success",
-        before_commit=refreshed.before_commit, after_commit=refreshed.after_commit,
-        fetched=True, code_changed=refreshed.changed,
-        duration_ms=int((perf_counter() - started_at) * 1000),
-        details="Repository refreshed",
-        **git_details,
-    )
-
-    # Check for differential index & graph generation requirements:
-    # 1. Provider is GitHub or GitLab
-    # 2. Local code changed after fetch/pull
-    # 3. Project was previously indexed and graphed
-    differential_job_id = None
-    if getattr(refreshed, "provider", "git") in {"github", "gitlab", "git"} and getattr(refreshed, "changed", False):
-        is_indexed = (repo.get("status") in {"indexed", "ast_only"}) or bool(repo.get("indexed_at"))
-        from db.code_intelligence import CodeIntelligenceConfigDB
-        config = CodeIntelligenceConfigDB.get(name) or CodeIntelligenceConfigDB.get(str(repo.get("id")))
-        is_graphed = bool(config and config.get("provider") == "codegraph")
-
-        if is_indexed and is_graphed:
-            from db.jobs import JobDB
-            existing = JobDB.find_active("differential_sync", name)
-            if not existing:
-                job = JobDB.create_job("differential_sync", name)
-                differential_job_id = job["id"]
-            else:
-                differential_job_id = existing["id"]
-
-    res = ContextDB.get_repo(refreshed.name) or {}
-    if differential_job_id:
-        res["differential_sync_job_id"] = differential_job_id
-        res["differential_sync_triggered"] = True
-    return jsonify(res)
+    user_id = getattr(g, "user_id", "") or "user"
+    job = JobDB.create_job("differential_sync", name, payload={
+        "user_id": user_id, "actor_id": user_id,
+        "trigger": "manual", "source_app": "savant-olympus",
+    })
+    return jsonify({
+        "started": True,
+        "name": name,
+        "job_id": job["id"],
+        "differential_sync_job_id": job["id"],
+        "differential_sync_triggered": True,
+        "message": f"Differential sync queued for {name}",
+    }), 202
 
 
 @context_bp.route("/api/context/repos/<name>/differential-sync", methods=["POST"])
@@ -955,7 +897,12 @@ def trigger_differential_sync(name):
         return jsonify({"started": True, "name": name, "job_id": existing["id"], "reused": True})
 
     user_id = getattr(g, "user_id", "") or "ahmed"
-    job = JobDB.create_job("differential_sync", name, payload={"user_id": user_id, "actor_id": user_id})
+    job = JobDB.create_job("differential_sync", name, payload={
+        "user_id": user_id,
+        "actor_id": user_id,
+        "trigger": "manual",
+        "source_app": "savant-olympus",
+    })
     return jsonify({"started": True, "name": name, "job_id": job["id"]})
 
 

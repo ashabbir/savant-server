@@ -123,7 +123,7 @@ def _execute_sync_pass_for_all_repos(
     trigger: str = "scheduled", actor_id: str = "system",
     source_app: str = "savant-server", target_repo: str | None = None,
 ) -> dict:
-    """Enqueue Run All pipeline (diff sync -> ast -> lst -> code graph -> index) for registered projects."""
+    """Enqueue one self-contained differential pipeline for each eligible project."""
     from context.db import ContextDB
     from db.jobs import JobDB
 
@@ -149,8 +149,6 @@ def _execute_sync_pass_for_all_repos(
             continue
 
         details = []
-        made_progress = False
-
         try:
             active_job = JobDB.find_active_types(
                 ["differential_sync", "ast", "lst", "codegraph_sync", "codegraph_index", "index", "reindex", "initial_repo_sync"],
@@ -160,23 +158,28 @@ def _execute_sync_pass_for_all_repos(
                 details.append(f"Job already in progress ({active_job['job_type']}: {active_job['id']})")
                 summary_status = "skipped"
             else:
-                pipeline_ids = []
                 is_git = (repo_path / ".git").is_dir()
                 if is_git:
-                    j_diff = JobDB.create_job("differential_sync", repo_name, payload={"trigger": trigger, "actor_id": actor_id})
-                    pipeline_ids.append(f"diff:{j_diff['id']}")
-                j_ast = JobDB.create_job("ast", repo_name, payload={"trigger": trigger, "actor_id": actor_id})
-                pipeline_ids.append(f"ast:{j_ast['id']}")
-                j_lst = JobDB.create_job("lst", repo_name, payload={"trigger": trigger, "actor_id": actor_id})
-                pipeline_ids.append(f"lst:{j_lst['id']}")
-                j_graph = JobDB.create_job("codegraph_sync", repo_name, payload={"trigger": trigger, "actor_id": actor_id})
-                pipeline_ids.append(f"graph:{j_graph['id']}")
-                j_idx = JobDB.create_job("index", repo_name, payload={"trigger": trigger, "actor_id": actor_id})
-                pipeline_ids.append(f"index:{j_idx['id']}")
-
-                details.append(f"Enqueued Run All pipeline: {', '.join(pipeline_ids)}")
-                made_progress = True
-                summary_status = "success"
+                    j_diff = JobDB.create_job("differential_sync", repo_name, payload={
+                        "trigger": trigger,
+                        "actor_id": actor_id,
+                        "source_app": source_app,
+                    })
+                    details.append(f"Enqueued differential sync pipeline: {j_diff['id']}")
+                    summary_status = "success"
+                else:
+                    is_indexed = (repo.get("status") in {"indexed", "ast_only"}) or bool(repo.get("indexed_at"))
+                    if not is_indexed:
+                        j_idx = JobDB.create_job("index", repo_name, payload={
+                            "trigger": trigger,
+                            "actor_id": actor_id,
+                            "source_app": source_app,
+                        })
+                        details.append(f"Enqueued initial index: {j_idx['id']}")
+                        summary_status = "success"
+                    else:
+                        details.append("Non-git project already indexed; skipped")
+                        summary_status = "skipped"
 
             log_detail_str = "; ".join(details)
             logger.info(f"Periodic sync [{repo_name}]: {summary_status} — {log_detail_str}")

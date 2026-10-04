@@ -260,12 +260,12 @@ def refresh_repo(repo_path: str, branch: Optional[str] = None) -> IngestedProjec
         raise IngestionError(f"{provider.title()} source is not configured")
 
     head_before = _get_git_head(target_path)
-    _repository_sync_service.update(
+    pulled = _repository_sync_service.update(
         target_path, _normalize_remote_url(parsed), provider, token, branch
     )
     head_after = _get_git_head(target_path)
 
-    changed = bool(head_before and head_after and head_before != head_after)
+    changed = bool((pulled is not False) and head_before and head_after and head_before != head_after)
 
     return IngestedProject(
         name=target_path.name,
@@ -417,7 +417,7 @@ class RepositorySyncService:
         provider: str,
         token: str,
         branch: Optional[str],
-    ) -> None:
+    ) -> bool:
         with self._lock(target_path):
             repo = None
             try:
@@ -431,11 +431,26 @@ class RepositorySyncService:
                 except KeyError as exc:
                     raise IngestionError(f"Branch not found: {selected_branch}") from exc
 
+                remote_commit_str = (
+                    remote_commit.decode("ascii", errors="ignore")
+                    if isinstance(remote_commit, bytes)
+                    else str(remote_commit)
+                )
+                local_head = _get_git_head(target_path)
+
+                from .indexer import get_git_diff_files
+                added, modified, deleted = get_git_diff_files(target_path)
+                has_drift = bool(added or modified or deleted)
+
+                if local_head and local_head == remote_commit_str and not has_drift:
+                    return False
+
                 local_ref = f"refs/heads/{selected_branch}".encode()
                 repo.refs.set_symbolic_ref(b"HEAD", local_ref)
                 repo.refs[local_ref] = remote_commit
                 porcelain.reset(repo, "hard", remote_commit)
                 porcelain.clean(repo, target_dir=target_path)
+                return True
             except IngestionError:
                 raise
             except Exception as exc:

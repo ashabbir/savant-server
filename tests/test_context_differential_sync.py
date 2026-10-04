@@ -73,7 +73,7 @@ def test_differential_indexing_removes_deleted_and_skips_unchanged(tmp_path, _is
     assert res3["files_skipped"] == 2  # file_b.py and file_c.py skipped because unchanged
 
 
-def test_refresh_route_triggers_differential_sync_when_conditions_met(client, _isolated_db, monkeypatch):
+def test_refresh_route_queues_the_self_contained_differential_pipeline(client, _isolated_db, monkeypatch):
     from context import routes
 
     monkeypatch.setattr(routes, "_ensure_init", lambda: True)
@@ -82,17 +82,8 @@ def test_refresh_route_triggers_differential_sync_when_conditions_met(client, _i
     repo_record = ContextDB.add_repo("gh-repo", "/tmp/repos/gh-repo")
     ContextDB.update_repo_status("gh-repo", "indexed", indexed_at="2026-07-19T10:00:00Z")
 
-    # Repo is graphed
-    CodeIntelligenceConfigDB.upsert("gh-repo", provider="codegraph", freshness="fresh")
-
-    # Mock update_repo returning changed=True and provider="github"
-    refreshed_obj = IngestedProject(
-        name="gh-repo", path="/tmp/repos/gh-repo", changed=True, provider="github"
-    )
-    monkeypatch.setattr("context.ingestion.refresh_repo", lambda path, branch=None: refreshed_obj)
-
     resp = client.post("/api/context/repos/gh-repo/refresh")
-    assert resp.status_code == 200
+    assert resp.status_code == 202
     data = resp.get_json()
     assert data.get("differential_sync_triggered") is True
     assert "differential_sync_job_id" in data
@@ -102,7 +93,7 @@ def test_refresh_route_triggers_differential_sync_when_conditions_met(client, _i
     assert active_job is not None
 
 
-def test_refresh_route_skips_differential_sync_if_no_code_changes(client, _isolated_db, monkeypatch):
+def test_refresh_route_defers_the_no_change_decision_to_the_worker(client, _isolated_db, monkeypatch):
     from context import routes
 
     monkeypatch.setattr(routes, "_ensure_init", lambda: True)
@@ -110,18 +101,11 @@ def test_refresh_route_skips_differential_sync_if_no_code_changes(client, _isola
 
     ContextDB.add_repo("no-change-repo", "/tmp/repos/no-change-repo")
     ContextDB.update_repo_status("no-change-repo", "indexed", indexed_at="2026-07-19T10:00:00Z")
-    CodeIntelligenceConfigDB.upsert("no-change-repo", provider="codegraph", freshness="fresh")
-
-    # Mock update_repo returning changed=False
-    refreshed_obj = IngestedProject(
-        name="no-change-repo", path="/tmp/repos/no-change-repo", changed=False, provider="github"
-    )
-    monkeypatch.setattr("context.ingestion.refresh_repo", lambda path, branch=None: refreshed_obj)
-
     resp = client.post("/api/context/repos/no-change-repo/refresh")
-    assert resp.status_code == 200
+    assert resp.status_code == 202
     data = resp.get_json()
-    assert "differential_sync_triggered" not in data
+    assert data["differential_sync_triggered"] is True
+    assert JobDB.find_active("differential_sync", "no-change-repo") is not None
 
 
 def test_trigger_differential_sync_endpoint(client, _isolated_db, monkeypatch):
@@ -194,3 +178,54 @@ def test_differential_indexing_with_commits(tmp_path, _isolated_db, monkeypatch)
     assert res2["files_indexed"] == 2  # file_b.py updated, file_c.py added
     assert res2["files_skipped"] == 0
 
+
+def test_differential_ast_and_lst_replace_only_changed_files(tmp_path, _isolated_db, monkeypatch):
+    repo_dir = tmp_path / "diff-structure-repo"
+    repo_dir.mkdir()
+    subprocess.run(["git", "-C", str(repo_dir), "init"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_dir), "config", "user.name", "Test User"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_dir), "config", "user.email", "test@example.com"], check=True, capture_output=True)
+
+    (repo_dir / "removed.py").write_text("def removed(): return 'old'\n")
+    (repo_dir / "changed.py").write_text("def version(): return 'old'\n")
+    subprocess.run(["git", "-C", str(repo_dir), "add", "."], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_dir), "commit", "-m", "initial"], check=True, capture_output=True)
+    before = subprocess.check_output(["git", "-C", str(repo_dir), "rev-parse", "HEAD"], text=True).strip()
+
+    embedder = MagicMock()
+    embedder.embed_one.return_value = [0.1] * 768
+    monkeypatch.setattr("context.embeddings.EmbeddingModel.get", lambda: embedder)
+    indexer = Indexer()
+    indexer.index_repository(repo_dir, repo_name="diff-structure-repo", clear=True)
+    indexer.generate_ast_for_repository(repo_dir, repo_name="diff-structure-repo", clear=True)
+    indexer.sync_lossless_trees_for_repository(repo_dir, repo_name="diff-structure-repo", clear=True)
+
+    (repo_dir / "removed.py").unlink()
+    (repo_dir / "changed.py").write_text("def version(): return 'new'\n")
+    (repo_dir / "added.py").write_text("def added(): return 'new'\n")
+    subprocess.run(["git", "-C", str(repo_dir), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_dir), "commit", "-m", "differential"], check=True, capture_output=True)
+    after = subprocess.check_output(["git", "-C", str(repo_dir), "rev-parse", "HEAD"], text=True).strip()
+    changed_files = {"added": ["added.py"], "modified": ["changed.py"], "deleted": ["removed.py"]}
+
+    indexer.index_repository(
+        repo_dir, repo_name="diff-structure-repo", clear=False, differential=True,
+        before_commit=before, after_commit=after, changed_files=changed_files,
+    )
+    ast_result = indexer.generate_ast_for_repository(
+        repo_dir, repo_name="diff-structure-repo", clear=False, differential=True,
+        before_commit=before, after_commit=after, changed_files=changed_files,
+    )
+    lst_result = indexer.sync_lossless_trees_for_repository(
+        repo_dir, repo_name="diff-structure-repo", clear=False, differential=True,
+        before_commit=before, after_commit=after, changed_files=changed_files,
+    )
+
+    assert ast_result["files_processed"] == 2
+    assert ast_result["files_removed"] == 1
+    assert lst_result["files_processed"] == 2
+    assert lst_result["files_removed"] == 1
+    assert {row["path"] for row in ContextDB.list_ast_nodes("diff-structure-repo")} == {"added.py", "changed.py"}
+    assert {row["rel_path"] for row in ContextDB.search_lossless_trees("new", "diff-structure-repo")} == {
+        "added.py", "changed.py",
+    }

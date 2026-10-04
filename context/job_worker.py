@@ -79,15 +79,16 @@ def _process_next_job():
 
     started_at = perf_counter()
     payload = job.get("result") or {}
+    if not isinstance(payload, dict):
+        payload = {}
     user_id = ""
-    if isinstance(payload, dict):
-        user_id = str(payload.get("user_id") or payload.get("actor_id") or "")
-
+    user_id = str(payload.get("user_id") or payload.get("actor_id") or "")
     try:
         result = _execute_job(job_id, job_type, target, payload)
         JobDB.set_done(job_id, result)
-        _record_job_activity(job_type, target, "success", result, started_at)
-        logger.info(f"Job {job_id} completed: {job_type} → {target}")
+        job_status = result.get("status", "success") if isinstance(result, dict) else "success"
+        _record_job_activity(job_type, target, job_status, result, started_at, payload=payload)
+        logger.info(f"Job {job_id} completed: {job_type} → {target} ({job_status})")
         try:
             from db.notifications import NotificationDB
             NotificationDB.notify_job_success(job_id, job_type, target, result=result, user_id=user_id)
@@ -96,7 +97,7 @@ def _process_next_job():
     except _CancelledError:
         from db.jobs import JobDB as JDB
         JDB.set_cancelled(job_id)
-        _record_job_activity(job_type, target, "cancelled", {}, started_at)
+        _record_job_activity(job_type, target, "cancelled", {}, started_at, payload=payload)
         logger.info(f"Job {job_id} cancelled: {job_type} → {target}")
     except Exception as e:
         if JobDB.is_cancel_requested(job_id):
@@ -105,7 +106,7 @@ def _process_next_job():
             return
         logger.error(f"Job {job_id} failed: {e}")
         JobDB.set_failed(job_id, str(e)[:2000])
-        _record_job_activity(job_type, target, "failed", {}, started_at, str(e))
+        _record_job_activity(job_type, target, "failed", {}, started_at, str(e), payload=payload)
         try:
             from db.notifications import NotificationDB
             NotificationDB.notify_job_failure(
@@ -122,9 +123,9 @@ def _process_next_job():
 
 def _record_job_activity(
     job_type: str, target: str, status: str, result: dict,
-    started_at: float, error: str = "",
+    started_at: float, error: str = "", payload: dict | None = None,
 ) -> None:
-    """Persist user-triggered indexing and structural-analysis job outcomes."""
+    """Persist indexing outcomes, preserving the scheduled job's provenance."""
     if job_type not in {
         "index", "reindex", "ast", "lst", "index-all", "ast-all",
         "codegraph_index", "codegraph_sync", "differential_sync",
@@ -138,29 +139,61 @@ def _record_job_activity(
             repo = ContextDB.get_repo_by_identifier(target)
             repo_name = (repo or {}).get("name") or target
         change_stats = {"job_type": job_type, **_extract_index_metrics(result)}
+        files_changed = result.get("files_changed") if isinstance(result, dict) else None
         graph_result = result.get("graph_result") if isinstance(result, dict) else None
         if isinstance(graph_result, dict):
             change_stats["codegraph_accepted"] = bool(graph_result.get("accepted", False))
             change_stats["codegraph_result"] = graph_result.get("result", {})
-        files_changed = result.get("files_changed") if isinstance(result, dict) else None
         if isinstance(files_changed, dict):
             change_stats["codegraph_changed_files"] = [
                 *files_changed.get("added", []),
                 *files_changed.get("modified", []),
                 *files_changed.get("deleted", []),
             ]
-        ContextDB.record_repo_sync_log(
-            repo_name=repo_name, operation=job_type, trigger="user",
-            actor_id="user", source_app="savant-olympus", status=status,
-            before_commit=result.get("before_commit"),
-            after_commit=result.get("after_commit"),
-            files_changed=result.get("files_changed"),
-            indexed=job_type in {"index", "reindex", "index-all"} and status == "success",
-            graphed=job_type in {
+        if isinstance(result, dict):
+            if "index_result" in result:
+                change_stats["index_summary"] = result["index_result"]
+            if "ast_result" in result:
+                change_stats["ast_summary"] = result["ast_result"]
+            if "lst_result" in result:
+                change_stats["lst_summary"] = result["lst_result"]
+            if "summary" in result:
+                change_stats["summary"] = result["summary"]
+            if "hash_changed" in result:
+                change_stats["hash_changed"] = result["hash_changed"]
+
+        indexed = (
+            job_type in {"index", "reindex", "index-all"}
+            or (job_type == "differential_sync" and bool(result.get("index_result", {}).get("files_indexed", 0)))
+        ) and status == "success"
+        graphed = (
+            job_type in {
                 "ast", "ast-all", "lst", "codegraph_index", "codegraph_sync"
-            } and status == "success",
+            }
+            or (job_type == "differential_sync" and bool(
+                result.get("graph_result", {}).get("accepted")
+                or result.get("ast_result", {}).get("files_processed")
+                or result.get("lst_result", {}).get("files_processed")
+            ))
+        ) and status == "success"
+        code_changed = bool(result.get("hash_changed", result.get("changed", False))) if isinstance(result, dict) else False
+        details_text = (result.get("summary") if isinstance(result, dict) else "") or json.dumps(result, default=str)[:10000]
+
+        payload = payload or {}
+        ContextDB.record_repo_sync_log(
+            repo_name=repo_name, operation=job_type,
+            trigger=str(payload.get("trigger") or "user"),
+            actor_id=str(payload.get("actor_id") or payload.get("user_id") or "user"),
+            source_app=str(payload.get("source_app") or "savant-olympus"), status=status,
+            before_commit=result.get("before_commit") if isinstance(result, dict) else None,
+            after_commit=result.get("after_commit") if isinstance(result, dict) else None,
+            files_changed=files_changed,
+            fetched=True if job_type == "differential_sync" else False,
+            code_changed=code_changed,
+            indexed=indexed,
+            graphed=graphed,
             duration_ms=int((perf_counter() - started_at) * 1000),
-            error=error, details=json.dumps(result, default=str)[:10000],
+            error=error, details=details_text,
             change_stats=change_stats,
         )
     except Exception:
@@ -235,7 +268,7 @@ def _execute_job(job_id: str, job_type: str, target: str, payload: dict | None =
     elif job_type in ("codegraph_index", "codegraph_sync"):
         return _run_code_intelligence_sync(job_id, target, progress_cb)
     elif job_type == "differential_sync":
-        return _run_differential_sync(job_id, target, progress_cb)
+        return _run_differential_sync(job_id, target, progress_cb, payload)
     elif job_type == "initial_repo_sync":
         return _run_initial_repo_sync(target, payload, progress_cb)
     elif job_type == "initial_repo_processing":
@@ -285,53 +318,206 @@ def _run_initial_repo_processing(target: str, progress_cb, clone_result: dict | 
     return {"repo_name": repo_name, "status": "ready"}
 
 
-def _run_differential_sync(job_id: str, target: str, progress_cb) -> dict:
-    """Pull latest code from remote for an existing checkout (git differential sync)."""
-    progress_cb(10, "Pulling Git Origin", f"Fetching latest commits from remote for {target}")
-
+def _run_differential_sync(job_id: str, target: str, progress_cb, payload: dict | None = None) -> dict:
+    """Execute complete differential sync pipeline:
+    1. Check if current hash is different from remote git hash.
+    2. If so then Pull.
+    3. If hash didn't change: skip the whole process.
+    4. Figure out which files changed and differential reindex only those files (clean up old).
+    5. Generate AST for only the files that were changed (clean up old if needed).
+    6. Generate LST for the files that changed (clean up old if needed).
+    7. Generate code graph differential.
+    8. Document full summary of what was indexed, AST, LST, and Code Graph.
+    """
     from context.db import ContextDB
-    from context.ingestion import refresh_repo, IngestionError
-    from context.activity import collect_git_change_details
+    from context.ingestion import refresh_repo, IngestionError, _get_git_head
+    from context.indexer import Indexer, get_git_diff_files
 
     repo_path, repo_name = _resolve_repo(target)
     started_at = perf_counter()
+    payload = payload or {}
+    actor_id = str(payload.get("actor_id") or payload.get("user_id") or "user")
+    source_app = str(payload.get("source_app") or "savant-olympus")
+    trigger = str(payload.get("trigger") or "user")
 
     if not (repo_path / ".git").is_dir():
         progress_cb(100, "Complete", "Not a Git repository; differential sync skipped")
         return {"repo_name": repo_name, "status": "skipped", "message": "Not a Git repository"}
 
+    progress_cb(5, "Checking Git Hash", f"Checking if current hash is different from git hash for {repo_name}")
+
+    repo_record = ContextDB.get_repo(repo_name) or {}
+    is_indexed = (repo_record.get("status") in {"indexed", "ast_only"}) or bool(repo_record.get("indexed_at"))
+
     try:
         refreshed = refresh_repo(str(repo_path))
     except IngestionError as exc:
         ContextDB.record_repo_sync_log(
-            repo_name=repo_name, operation="differential_sync", trigger="user",
+            repo_name=repo_name, operation="differential_sync", trigger=trigger,
             status="failed", error=str(exc), duration_ms=int((perf_counter() - started_at) * 1000),
-            details="Repository git differential pull failed",
+            details=f"Repository git differential pull failed: {exc}",
+            actor_id=actor_id, source_app=source_app,
         )
         raise
 
+    before_commit = refreshed.before_commit or ""
+    after_commit = refreshed.after_commit or ""
+    hash_changed = bool(refreshed.changed)
+
+    # If the hash didn't change and project is already indexed: SKIP THE WHOLE PROCESS
+    if not hash_changed and is_indexed:
+        current_hash_display = (after_commit or before_commit or _get_git_head(repo_path))[:7] or "N/A"
+        summary_msg = f"Git hash unchanged ({current_hash_display}). Skipped whole process."
+        progress_cb(100, "Complete", summary_msg)
+
+        return {
+            "repo_name": repo_name,
+            "status": "skipped",
+            "changed": False,
+            "hash_changed": False,
+            "before_commit": before_commit,
+            "after_commit": after_commit,
+            "message": summary_msg,
+            "summary": summary_msg,
+            "files_changed": {"added": [], "modified": [], "deleted": []},
+            "index_result": {"status": "skipped", "files_indexed": 0, "files_removed": 0, "chunks_indexed": 0},
+            "ast_result": {"status": "skipped", "files_processed": 0, "files_removed": 0},
+            "lst_result": {"status": "skipped", "files_processed": 0, "files_removed": 0},
+            "graph_result": {"status": "skipped", "accepted": False},
+        }
+
+    # Hash changed (or project was unindexed):
     ContextDB.add_repo(refreshed.name, refreshed.path)
     ContextDB.mark_repo_fetched(refreshed.name)
-    git_details = collect_git_change_details(
-        repo_path, refreshed.before_commit, refreshed.after_commit
+
+    # Figure out which files changed:
+    progress_cb(15, "Diff Analysis", f"Analyzing changed files between commits for {repo_name}")
+    added, modified, deleted = get_git_diff_files(repo_path, before_commit, after_commit)
+    files_changed = {"added": added, "modified": modified, "deleted": deleted}
+    num_changed = len(added) + len(modified) + len(deleted)
+
+    indexer = Indexer()
+    index_result = {}
+    ast_result = {}
+    lst_result = {}
+    graph_result = {}
+
+    if is_indexed:
+        # If commits changed but no code files were added/modified/deleted:
+        if num_changed == 0:
+            commit_display = (after_commit or "HEAD")[:7]
+            summary_msg = f"Commit {commit_display} contains no code file changes. Skipped indexing."
+            progress_cb(100, "Complete", summary_msg)
+            return {
+                "repo_name": repo_name,
+                "status": "skipped",
+                "changed": False,
+                "hash_changed": True,
+                "before_commit": before_commit,
+                "after_commit": after_commit,
+                "summary": summary_msg,
+                "files_changed": files_changed,
+                "index_result": {"files_indexed": 0, "files_removed": 0, "chunks_indexed": 0},
+                "ast_result": {"files_processed": 0, "files_removed": 0},
+                "lst_result": {"files_processed": 0, "files_removed": 0},
+                "graph_result": {"accepted": False},
+            }
+
+        # 1. Differential reindex only changed files (clean up old chunks for modified/deleted)
+        progress_cb(25, "Differential Indexing", f"Reindexing {len(added)+len(modified)} files, removing {len(deleted)} files")
+        index_result = indexer.index_repository(
+            repo_path, repo_name=repo_name, clear=False, differential=True,
+            before_commit=before_commit, after_commit=after_commit,
+            changed_files=files_changed,
+            job_progress_cb=lambda pct, ph, msg: progress_cb(25 + int(pct * 0.25), ph, msg),
+        )
+
+        # 2. Differential AST for only changed files (clean up old)
+        progress_cb(52, "Differential AST", f"Generating AST for {len(added)+len(modified)} changed files")
+        ast_result = indexer.generate_ast_for_repository(
+            repo_path, repo_name=repo_name, clear=False, differential=True,
+            before_commit=before_commit, after_commit=after_commit,
+            changed_files=files_changed,
+            job_progress_cb=lambda pct, ph, msg: progress_cb(52 + int(pct * 0.15), ph, msg),
+        )
+
+        # 3. Differential LST for only changed files (clean up old)
+        progress_cb(68, "Differential LST", f"Generating LST for {len(added)+len(modified)} changed files")
+        lst_result = indexer.sync_lossless_trees_for_repository(
+            repo_path, repo_name=repo_name, clear=False, differential=True,
+            before_commit=before_commit, after_commit=after_commit,
+            changed_files=files_changed,
+            job_progress_cb=lambda pct, ph, msg: progress_cb(68 + int(pct * 0.15), ph, msg),
+        )
+    else:
+        # Initial ingestion for un-indexed repository
+        progress_cb(25, "Full Indexing", f"Initial indexing of {repo_name}")
+        index_result = indexer.index_repository(
+            repo_path, repo_name=repo_name, clear=True,
+            job_progress_cb=lambda pct, ph, msg: progress_cb(25 + int(pct * 0.25), ph, msg),
+        )
+        progress_cb(52, "Full AST", f"Generating full AST for {repo_name}")
+        ast_result = indexer.generate_ast_for_repository(
+            repo_path, repo_name=repo_name, clear=True,
+            job_progress_cb=lambda pct, ph, msg: progress_cb(52 + int(pct * 0.15), ph, msg),
+        )
+        progress_cb(68, "Full LST", f"Generating full LST for {repo_name}")
+        lst_result = indexer.sync_lossless_trees_for_repository(
+            repo_path, repo_name=repo_name, clear=True,
+            job_progress_cb=lambda pct, ph, msg: progress_cb(68 + int(pct * 0.15), ph, msg),
+        )
+
+    # 4. Code Graph differential sync
+    progress_cb(84, "Differential Code Graph", f"Syncing differential code graph for {repo_name}")
+    try:
+        from code_intelligence.runtime import build_service
+        from db.code_intelligence import CodeIntelligenceConfigDB
+        provider_repo_id = str(repo_record.get("id") or target)
+        graph_index_res = build_service().ensure_index(
+            provider_repo_id, repo_path, mode="create_or_sync", request_id=job_id
+        )
+        health = build_service().health(provider_repo_id, repo_path)
+        CodeIntelligenceConfigDB.upsert(
+            provider_repo_id,
+            provider=health.provider,
+            graph_version=health.graph_version,
+            last_indexed_at=health.indexed_at,
+            last_synced_at=health.indexed_at,
+            freshness=health.freshness.value,
+            last_error_code=None,
+            last_error_at=None,
+        )
+        graph_result = graph_index_res.model_dump(mode="json") if hasattr(graph_index_res, "model_dump") else dict(graph_index_res)
+    except Exception as graph_err:
+        logger.warning("Code graph differential sync failed for %s: %s", repo_name, graph_err)
+        graph_result = {"error": str(graph_err), "accepted": False}
+
+    # Summary documentation of what was indexed, AST, LST, and Code Graph
+    summary_text = (
+        f"Differential sync completed for {repo_name} "
+        f"({(before_commit[:7] if before_commit else 'none')} -> {(after_commit[:7] if after_commit else 'none')}). "
+        f"Files changed: {len(added)} added, {len(modified)} modified, {len(deleted)} deleted. "
+        f"Indexed: {index_result.get('files_indexed', 0)} files ({index_result.get('chunks_indexed', 0)} chunks), "
+        f"{index_result.get('files_removed', 0)} removed. "
+        f"AST: {ast_result.get('files_processed', 0)} files updated, {ast_result.get('files_removed', 0)} removed. "
+        f"LST: {lst_result.get('files_processed', 0)} files updated, {lst_result.get('files_removed', 0)} removed. "
+        f"Code Graph: {'accepted' if graph_result.get('accepted') else ('failed' if graph_result.get('error') else 'completed')}."
     )
-    ContextDB.record_repo_sync_log(
-        repo_name=refreshed.name, operation="differential_sync", trigger="user",
-        provider=refreshed.provider, branch=refreshed.branch, status="success",
-        before_commit=refreshed.before_commit, after_commit=refreshed.after_commit,
-        fetched=True, code_changed=refreshed.changed,
-        duration_ms=int((perf_counter() - started_at) * 1000),
-        details=f"Git differential sync completed (changed={refreshed.changed})",
-        **git_details,
-    )
-    progress_cb(100, "Complete", f"Git differential sync completed (commits: {refreshed.before_commit[:7] if refreshed.before_commit else 'none'} -> {refreshed.after_commit[:7] if refreshed.after_commit else 'none'})")
+    progress_cb(100, "Complete", summary_text)
+
     return {
         "repo_name": repo_name,
         "status": "success",
-        "changed": refreshed.changed,
-        "before_commit": refreshed.before_commit,
-        "after_commit": refreshed.after_commit,
-        "files_changed": git_details.get("files_changed", {}),
+        "changed": True,
+        "hash_changed": True,
+        "before_commit": before_commit,
+        "after_commit": after_commit,
+        "files_changed": files_changed,
+        "summary": summary_text,
+        "index_result": index_result,
+        "ast_result": ast_result,
+        "lst_result": lst_result,
+        "graph_result": graph_result,
     }
 
 

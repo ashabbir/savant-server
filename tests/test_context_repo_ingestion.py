@@ -440,9 +440,10 @@ def test_add_repo_route_rejects_source_url_mismatch(client, monkeypatch):
     assert "does not match source" in resp.get_json()["error"]
 
 
-def test_refresh_repo_updates_existing_checkout(client, monkeypatch):
+def test_refresh_repo_queues_existing_checkout_for_differential_processing(client, monkeypatch):
     from context import routes
     from context import db as context_db
+    from db.jobs import JobDB
 
     monkeypatch.setattr(routes, "_ensure_init", lambda: True)
     monkeypatch.setattr(routes, "_validate_repo_path", lambda _repo: (Path("/tmp/repos/repo"), None))
@@ -451,39 +452,20 @@ def test_refresh_repo_updates_existing_checkout(client, monkeypatch):
         "get_repo",
         staticmethod(lambda _name: {"id": 4, "name": "repo", "path": "/tmp/repos/repo"}),
     )
-    refreshed = []
-    monkeypatch.setattr(
-        "context.ingestion.refresh_repo",
-        lambda path, branch=None: refreshed.append((path, branch)) or IngestedProject(
-            name="repo", path="/tmp/repos/repo", changed=True, provider="gitlab",
-            branch="main", before_commit="abc123", after_commit="def456",
-        ),
-    )
-    monkeypatch.setattr(
-        context_db.ContextDB,
-        "add_repo",
-        staticmethod(lambda name, path: {"id": 4, "name": name, "path": path, "status": "added"}),
-    )
-    monkeypatch.setattr(context_db.ContextDB, "mark_repo_fetched", staticmethod(lambda name: None))
-
     resp = client.post("/api/context/repos/repo/refresh")
 
-    assert resp.status_code == 200
-    assert refreshed == [("/tmp/repos/repo", None)]
+    assert resp.status_code == 202
     assert resp.get_json()["name"] == "repo"
-    log = context_db.ContextDB.list_repo_sync_logs(repo_name="repo")[0]
-    assert log["operation"] == "refresh"
-    assert log["trigger"] == "manual"
-    assert log["provider"] == "gitlab"
-    assert log["before_commit"] == "abc123"
-    assert log["after_commit"] == "def456"
-    assert log["actor_id"] == "ahmed"
-    assert log["source_app"] == "savant-olympus"
+    job = JobDB.find_active("differential_sync", "repo")
+    assert job is not None
+    assert job["result"]["trigger"] == "manual"
+    assert job["result"]["source_app"] == "savant-olympus"
 
 
-def test_refresh_repo_failure_is_recorded(client, monkeypatch):
+def test_refresh_repo_defers_pull_failure_recording_to_the_worker(client, monkeypatch):
     from context import routes
     from context import db as context_db
+    from db.jobs import JobDB
 
     monkeypatch.setattr(routes, "_ensure_init", lambda: True)
     monkeypatch.setattr(routes, "_validate_repo_path", lambda _repo: (Path("/tmp/repos/repo"), None))
@@ -493,18 +475,10 @@ def test_refresh_repo_failure_is_recorded(client, monkeypatch):
         staticmethod(lambda _name: {"id": 4, "name": "repo", "path": "/tmp/repos/repo"}),
     )
 
-    def fail_refresh(path, branch=None):
-        raise IngestionError("remote unavailable")
-
-    monkeypatch.setattr("context.ingestion.refresh_repo", fail_refresh)
-
     resp = client.post("/api/context/repos/repo/refresh")
 
-    assert resp.status_code == 400
-    log = context_db.ContextDB.list_repo_sync_logs(repo_name="repo")[0]
-    assert log["status"] == "failed"
-    assert log["operation"] == "refresh"
-    assert log["error"] == "remote unavailable"
+    assert resp.status_code == 202
+    assert JobDB.find_active("differential_sync", "repo") is not None
 
 
 def test_file_walker_respects_gitignore_and_node_modules(tmp_path):
