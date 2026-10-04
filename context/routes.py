@@ -289,7 +289,7 @@ def _lossless_codegraph_symbols(repo: str, rel_path: str, start_line: int, end_l
         from .db import ContextDB
         from db.code_intelligence import CodeIntelligenceConfigDB
 
-        record = ContextDB.get_repo_by_identifier(repo)
+        record = ContextDB.get_repo_bare(repo)
         if not record or not CodeIntelligenceConfigDB.get(str(record["id"])):
             return []
         from code_intelligence.runtime import build_service
@@ -375,12 +375,23 @@ def lossless_tree_search():
     from .db import ContextDB
     rows = ContextDB.search_lossless_trees(query, repo_filter=repo_filter,
                                            limit=request.args.get("limit", type=int) or 20)
+    from .lossless_tree import bounded_tree
     results = []
     for artifact in rows:
         source = artifact["source"]
         offset = max(0, int(artifact.get("match_offset") or 1) - 1)
         line = source[:offset].count("\n") + 1
-        results.append(_lossless_tree_response(artifact, max(1, line - 3), line + 3, 200))
+        # Deliberately skip AST/CodeGraph symbol enrichment here: it costs a
+        # per-row CodeGraph bridge round-trip (seconds each), multiplying by
+        # `limit` to tens of seconds for a search whose own docstring already
+        # tells agents to follow up with get_lossless_tree() on a specific
+        # match for that detail. Matching this endpoint's actual job (find
+        # candidates fast) keeps it fast.
+        result = bounded_tree(artifact, start_line=max(1, line - 3), end_line=line + 3, max_nodes=200)
+        result["repo"] = artifact["repo"]
+        result["path"] = artifact["rel_path"]
+        result["generated_at"] = artifact.get("generated_at")
+        results.append(result)
     return jsonify({"query": query, "result_count": len(results), "results": results})
 
 

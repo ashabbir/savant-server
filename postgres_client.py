@@ -1373,6 +1373,23 @@ _SCHEMA_MIGRATIONS = (
             "ALTER TABLE ctx_ast_nodes ADD COLUMN IF NOT EXISTS content TEXT NOT NULL DEFAULT ''",
         ),
     ),
+    (
+        19,
+        "add trigram index on ctx_lossless_trees.source to replace slow unindexed LIKE scans",
+        (
+            "CREATE EXTENSION IF NOT EXISTS pg_trgm",
+            # Indexed on LOWER(source) to match search_lossless_trees()'s
+            # `WHERE LOWER(t.source) LIKE ...` query exactly — a plain gin(source)
+            # index would not be used by the planner for that expression.
+            "CREATE INDEX IF NOT EXISTS idx_ctx_lossless_trees_source_trgm ON ctx_lossless_trees "
+            "USING gin (LOWER(source) gin_trgm_ops)",
+            # search_ast_nodes()'s `WHERE a.name ILIKE %pattern%` fallback path
+            # (used when CodeGraph is unavailable for a repo) hits the same
+            # unindexed-scan class of problem, just on a smaller column.
+            "CREATE INDEX IF NOT EXISTS idx_ctx_ast_nodes_name_trgm ON ctx_ast_nodes "
+            "USING gin (name gin_trgm_ops)",
+        ),
+    ),
 )
 
 

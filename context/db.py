@@ -158,6 +158,29 @@ class ContextDB:
                 release_connection(conn)
 
     @staticmethod
+    def get_repo_bare(repo_id: str, conn=None) -> Optional[Dict[str, Any]]:
+        """Resolve a repo's id/name/path without the file/chunk/AST/LST
+        aggregate subqueries get_repo_by_identifier() computes. Use this in
+        any per-result-row hot path (e.g. CodeGraph symbol lookups during a
+        search) — those aggregates scan entire repo tables and are wasted
+        work when only `id` and `path` are needed."""
+        local_conn = False
+        if conn is None:
+            conn = get_connection()
+            local_conn = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT * FROM ctx_repos WHERE id::text = %s OR LOWER(name) = LOWER(%s)",
+                    (str(repo_id), str(repo_id)),
+                )
+                row = cur.fetchone()
+            return dict(row) if row else None
+        finally:
+            if local_conn:
+                release_connection(conn)
+
+    @staticmethod
     def list_repos() -> List[Dict[str, Any]]:
         conn = get_connection()
         try:
