@@ -1,4 +1,4 @@
-# Savant Server (Version 18.0.0)
+# Savant Server (Version 20.0.0)
 
 License Owned by Project X. This repository is private and proprietary.
 
