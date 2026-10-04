@@ -52,7 +52,7 @@ def check_domain_write_access(user_id: str, node_id: str | None = None, is_domai
     if is_domain_creation:
         if user.get("role") == "admin":
             return True, None
-        return False, "Access denied. Only admin users can create domain nodes."
+        return False, "Access denied. Only admin users can create domain nodes. Create a concept node instead."
 
     # Rule 2: Admins have unrestricted write access across all domains
     if user.get("role") == "admin":

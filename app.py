@@ -27,7 +27,6 @@ _bg_cache = {}
 from abilities.routes import abilities_bp
 from context.routes import context_bp
 from knowledge.routes import knowledge_bp
-from tools.routes import tools_bp
 from reminders.routes import reminders_bp
 from code_intelligence.routes import code_intelligence_bp
 from abilities.skills_routes import skills_bp
@@ -155,7 +154,6 @@ def handle_500(e):
 app.register_blueprint(abilities_bp)
 app.register_blueprint(context_bp)
 app.register_blueprint(knowledge_bp)
-app.register_blueprint(tools_bp)
 app.register_blueprint(reminders_bp)
 app.register_blueprint(code_intelligence_bp)
 app.register_blueprint(skills_bp)

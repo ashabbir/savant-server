@@ -73,6 +73,27 @@ def test_usage_endpoint_is_admin_only(client):
     assert client.get("/api/users/lex/usage?days=abc").status_code == 400
 
 
+def test_contributions_endpoint_returns_creator_attributed_node_counts(client):
+    from db.knowledge_graph import KnowledgeGraphDB
+
+    KnowledgeGraphDB.create_node({"title": "Lex insight", "node_type": "insight", "created_by": "lex", "status": "committed"})
+    KnowledgeGraphDB.create_node({"title": "Lex service", "node_type": "service", "created_by": "lex", "status": "staged"})
+    KnowledgeGraphDB.create_node({"title": "Ahmed insight", "node_type": "insight", "created_by": "ahmed", "status": "committed"})
+
+    resp = client.get("/api/users/lex/contributions")
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["user_id"] == "lex"
+    assert body["node_count"] == 2
+    assert body["committed_count"] == 1
+    assert body["staged_count"] == 1
+    assert body["by_type"] == [
+        {"node_type": "insight", "node_count": 1},
+        {"node_type": "service", "node_count": 1},
+    ]
+    assert client.get("/api/users/lex/contributions", headers=LEX).status_code == 403
+
+
 def _age_last_login(user_id, minutes):
     from postgres_client import get_connection, release_connection
     conn = get_connection()
@@ -184,4 +205,3 @@ def test_mcp_tool_call_records_usage_via_stdio_env(monkeypatch):
     usage = McpUsageDB.get_user_usage("lex")
     assert any(t["tool_name"] == "research" for t in usage["tools"])
     assert any(q["query"] == "stdio test query" for q in usage["recent_queries"])
-

@@ -616,12 +616,34 @@ def code_read():
 def list_repos():
     if not _ensure_init():
         return jsonify({"error": "Context not initialized"}), 503
+
+    try:
+        page = int(request.args.get("page", "1"))
+        page_size = int(request.args.get("page_size", "10"))
+    except ValueError:
+        return jsonify({"error": "page and page_size must be integers"}), 400
+    if page < 1:
+        return jsonify({"error": "page must be at least 1"}), 400
+    if not 1 <= page_size <= 10:
+        return jsonify({"error": "page_size must be between 1 and 10"}), 400
+    search = request.args.get("q", "").strip()
+
     from .db import ContextDB
     from .ingestion import inspect_project_source
-    repos = ContextDB.list_repos()
+    repos = ContextDB.list_repos(page=page, page_size=page_size, search=search)
     for repo in repos:
         repo.update(inspect_project_source(repo.get("path", "")))
-    return jsonify({"repos": repos, "count": len(repos)})
+    return jsonify({"repos": repos, "page": page, "page_size": page_size, "q": search})
+
+
+@context_bp.route("/api/context/repos/count")
+def repo_count():
+    """Return repository count separately from the expensive page details."""
+    if not _ensure_init():
+        return jsonify({"error": "Context not initialized"}), 503
+    from .db import ContextDB
+    search = request.args.get("q", "").strip()
+    return jsonify({"count": ContextDB.count_repos(search=search), "q": search})
 
 
 @context_bp.route("/api/context/repos/status")

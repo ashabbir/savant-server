@@ -254,19 +254,19 @@ def _execute_job(job_id: str, job_type: str, target: str, payload: dict | None =
     payload = payload or {}
 
     if job_type == "index":
-        return _run_index(target, progress_cb, clear=True)
+        return _run_index(target, progress_cb, clear=True, payload=payload)
     elif job_type == "reindex":
         return _run_index(target, progress_cb, clear=True)
     elif job_type == "ast":
-        return _run_ast(target, progress_cb, clear=True)
+        return _run_ast(target, progress_cb, clear=True, payload=payload)
     elif job_type == "lst":
-        return _run_lst(target, progress_cb)
+        return _run_lst(target, progress_cb, payload=payload)
     elif job_type == "index-all":
         return _run_batch_index(progress_cb)
     elif job_type == "ast-all":
         return _run_batch_ast(progress_cb)
     elif job_type in ("codegraph_index", "codegraph_sync"):
-        return _run_code_intelligence_sync(job_id, target, progress_cb)
+        return _run_code_intelligence_sync(job_id, target, progress_cb, payload=payload)
     elif job_type == "differential_sync":
         return _run_differential_sync(job_id, target, progress_cb, payload)
     elif job_type == "initial_repo_sync":
@@ -319,19 +319,23 @@ def _run_initial_repo_processing(target: str, progress_cb, clone_result: dict | 
 
 
 def _run_differential_sync(job_id: str, target: str, progress_cb, payload: dict | None = None) -> dict:
-    """Execute complete differential sync pipeline:
+    """Discover a Git diff and enqueue the scoped follow-up processing jobs.
+
+    The differential job intentionally does not perform indexing itself.  Keeping
+    each follow-up as a durable queue item makes progress visible in Olympus and
+    prevents a long-running diff from hiding failures in AST, LST, or CodeGraph.
+
     1. Check if current hash is different from remote git hash.
     2. If so then Pull.
     3. If hash didn't change: skip the whole process.
-    4. Figure out which files changed and differential reindex only those files (clean up old).
-    5. Generate AST for only the files that were changed (clean up old if needed).
-    6. Generate LST for the files that changed (clean up old if needed).
-    7. Generate code graph differential.
-    8. Document full summary of what was indexed, AST, LST, and Code Graph.
+    4. Figure out which code files changed.
+    5. Queue differential Index, AST, LST, and CodeGraph work with that exact
+       file set, including deleted paths so generated data is cleaned up.
     """
     from context.db import ContextDB
     from context.ingestion import refresh_repo, IngestionError, _get_git_head
-    from context.indexer import Indexer, get_git_diff_files
+    from context.indexer import get_git_diff_files
+    from db.jobs import JobDB
 
     repo_path, repo_name = _resolve_repo(target)
     started_at = perf_counter()
@@ -380,10 +384,7 @@ def _run_differential_sync(job_id: str, target: str, progress_cb, payload: dict 
             "message": summary_msg,
             "summary": summary_msg,
             "files_changed": {"added": [], "modified": [], "deleted": []},
-            "index_result": {"status": "skipped", "files_indexed": 0, "files_removed": 0, "chunks_indexed": 0},
-            "ast_result": {"status": "skipped", "files_processed": 0, "files_removed": 0},
-            "lst_result": {"status": "skipped", "files_processed": 0, "files_removed": 0},
-            "graph_result": {"status": "skipped", "accepted": False},
+            "queued_jobs": [],
         }
 
     # Hash changed (or project was unindexed):
@@ -396,112 +397,39 @@ def _run_differential_sync(job_id: str, target: str, progress_cb, payload: dict 
     files_changed = {"added": added, "modified": modified, "deleted": deleted}
     num_changed = len(added) + len(modified) + len(deleted)
 
-    indexer = Indexer()
-    index_result = {}
-    ast_result = {}
-    lst_result = {}
-    graph_result = {}
+    if num_changed == 0:
+        commit_display = (after_commit or "HEAD")[:7]
+        summary_msg = f"Commit {commit_display} contains no code file changes. No follow-up jobs queued."
+        progress_cb(100, "Complete", summary_msg)
+        return {
+            "repo_name": repo_name, "status": "skipped", "changed": False,
+            "hash_changed": True, "before_commit": before_commit, "after_commit": after_commit,
+            "summary": summary_msg, "files_changed": files_changed, "queued_jobs": [],
+        }
 
-    if is_indexed:
-        # If commits changed but no code files were added/modified/deleted:
-        if num_changed == 0:
-            commit_display = (after_commit or "HEAD")[:7]
-            summary_msg = f"Commit {commit_display} contains no code file changes. Skipped indexing."
-            progress_cb(100, "Complete", summary_msg)
-            return {
-                "repo_name": repo_name,
-                "status": "skipped",
-                "changed": False,
-                "hash_changed": True,
-                "before_commit": before_commit,
-                "after_commit": after_commit,
-                "summary": summary_msg,
-                "files_changed": files_changed,
-                "index_result": {"files_indexed": 0, "files_removed": 0, "chunks_indexed": 0},
-                "ast_result": {"files_processed": 0, "files_removed": 0},
-                "lst_result": {"files_processed": 0, "files_removed": 0},
-                "graph_result": {"accepted": False},
-            }
-
-        # 1. Differential reindex only changed files (clean up old chunks for modified/deleted)
-        progress_cb(25, "Differential Indexing", f"Reindexing {len(added)+len(modified)} files, removing {len(deleted)} files")
-        index_result = indexer.index_repository(
-            repo_path, repo_name=repo_name, clear=False, differential=True,
-            before_commit=before_commit, after_commit=after_commit,
-            changed_files=files_changed,
-            job_progress_cb=lambda pct, ph, msg: progress_cb(25 + int(pct * 0.25), ph, msg),
-        )
-
-        # 2. Differential AST for only changed files (clean up old)
-        progress_cb(52, "Differential AST", f"Generating AST for {len(added)+len(modified)} changed files")
-        ast_result = indexer.generate_ast_for_repository(
-            repo_path, repo_name=repo_name, clear=False, differential=True,
-            before_commit=before_commit, after_commit=after_commit,
-            changed_files=files_changed,
-            job_progress_cb=lambda pct, ph, msg: progress_cb(52 + int(pct * 0.15), ph, msg),
-        )
-
-        # 3. Differential LST for only changed files (clean up old)
-        progress_cb(68, "Differential LST", f"Generating LST for {len(added)+len(modified)} changed files")
-        lst_result = indexer.sync_lossless_trees_for_repository(
-            repo_path, repo_name=repo_name, clear=False, differential=True,
-            before_commit=before_commit, after_commit=after_commit,
-            changed_files=files_changed,
-            job_progress_cb=lambda pct, ph, msg: progress_cb(68 + int(pct * 0.15), ph, msg),
-        )
-    else:
-        # Initial ingestion for un-indexed repository
-        progress_cb(25, "Full Indexing", f"Initial indexing of {repo_name}")
-        index_result = indexer.index_repository(
-            repo_path, repo_name=repo_name, clear=True,
-            job_progress_cb=lambda pct, ph, msg: progress_cb(25 + int(pct * 0.25), ph, msg),
-        )
-        progress_cb(52, "Full AST", f"Generating full AST for {repo_name}")
-        ast_result = indexer.generate_ast_for_repository(
-            repo_path, repo_name=repo_name, clear=True,
-            job_progress_cb=lambda pct, ph, msg: progress_cb(52 + int(pct * 0.15), ph, msg),
-        )
-        progress_cb(68, "Full LST", f"Generating full LST for {repo_name}")
-        lst_result = indexer.sync_lossless_trees_for_repository(
-            repo_path, repo_name=repo_name, clear=True,
-            job_progress_cb=lambda pct, ph, msg: progress_cb(68 + int(pct * 0.15), ph, msg),
-        )
-
-    # 4. Code Graph differential sync
-    progress_cb(84, "Differential Code Graph", f"Syncing differential code graph for {repo_name}")
-    try:
-        from code_intelligence.runtime import build_service
-        from db.code_intelligence import CodeIntelligenceConfigDB
-        provider_repo_id = str(repo_record.get("id") or target)
-        graph_index_res = build_service().ensure_index(
-            provider_repo_id, repo_path, mode="create_or_sync", request_id=job_id
-        )
-        health = build_service().health(provider_repo_id, repo_path)
-        CodeIntelligenceConfigDB.upsert(
-            provider_repo_id,
-            provider=health.provider,
-            graph_version=health.graph_version,
-            last_indexed_at=health.indexed_at,
-            last_synced_at=health.indexed_at,
-            freshness=health.freshness.value,
-            last_error_code=None,
-            last_error_at=None,
-        )
-        graph_result = graph_index_res.model_dump(mode="json") if hasattr(graph_index_res, "model_dump") else dict(graph_index_res)
-    except Exception as graph_err:
-        logger.warning("Code graph differential sync failed for %s: %s", repo_name, graph_err)
-        graph_result = {"error": str(graph_err), "accepted": False}
-
-    # Summary documentation of what was indexed, AST, LST, and Code Graph
+    child_payload = {
+        "parent_job_id": job_id,
+        "differential": True,
+        "files_changed": files_changed,
+        "before_commit": before_commit,
+        "after_commit": after_commit,
+        "provider_repo_id": str(repo_record.get("id") or target),
+        "user_id": actor_id,
+        "actor_id": actor_id,
+        "trigger": trigger,
+        "source_app": source_app,
+    }
+    # Index must precede AST and LST: both annotate the repository file records
+    # created/updated by the differential indexer.  FIFO retains this dependency.
+    queued_jobs = [
+        JobDB.create_job("index", target, payload=child_payload),
+        JobDB.create_job("ast", target, payload=child_payload),
+        JobDB.create_job("lst", target, payload=child_payload),
+        JobDB.create_job("codegraph_sync", target, payload=child_payload),
+    ]
     summary_text = (
-        f"Differential sync completed for {repo_name} "
-        f"({(before_commit[:7] if before_commit else 'none')} -> {(after_commit[:7] if after_commit else 'none')}). "
-        f"Files changed: {len(added)} added, {len(modified)} modified, {len(deleted)} deleted. "
-        f"Indexed: {index_result.get('files_indexed', 0)} files ({index_result.get('chunks_indexed', 0)} chunks), "
-        f"{index_result.get('files_removed', 0)} removed. "
-        f"AST: {ast_result.get('files_processed', 0)} files updated, {ast_result.get('files_removed', 0)} removed. "
-        f"LST: {lst_result.get('files_processed', 0)} files updated, {lst_result.get('files_removed', 0)} removed. "
-        f"Code Graph: {'accepted' if graph_result.get('accepted') else ('failed' if graph_result.get('error') else 'completed')}."
+        f"Differential sync found {len(added)} added, {len(modified)} modified, and {len(deleted)} deleted code files. "
+        "Queued differential Index, AST, LST, and CodeGraph jobs."
     )
     progress_cb(100, "Complete", summary_text)
 
@@ -514,33 +442,36 @@ def _run_differential_sync(job_id: str, target: str, progress_cb, payload: dict 
         "after_commit": after_commit,
         "files_changed": files_changed,
         "summary": summary_text,
-        "index_result": index_result,
-        "ast_result": ast_result,
-        "lst_result": lst_result,
-        "graph_result": graph_result,
+        "queued_jobs": [{"id": job["id"], "job_type": job["job_type"], "target": job["target"]} for job in queued_jobs],
     }
 
 
-def _run_code_intelligence_sync(job_id: str, target: str, progress_cb) -> dict:
+def _run_code_intelligence_sync(job_id: str, target: str, progress_cb, payload: dict | None = None) -> dict:
     """Run structural create/sync without changing semantic repository status."""
     from code_intelligence.runtime import build_service
     from db.code_intelligence import CodeIntelligenceConfigDB
     from context.indexer import Indexer
 
     repo_path, repo_name = _resolve_repo(target)
+    payload = payload or {}
+    differential = bool(payload.get("differential"))
+    changed_files = payload.get("files_changed") if differential else None
     # Preserve the stable repository identifier used by the caller. Converting
     # numeric IDs to a display name here creates a second bridge registration
     # and splits watcher/freshness state for the same repository.
-    provider_repo_id = str(target)
+    provider_repo_id = str(payload.get("provider_repo_id") or target)
     progress_cb(5, "Preparing", "Resolving structural provider")
     CodeIntelligenceConfigDB.upsert(provider_repo_id, freshness="pending_sync", last_error_code=None)
     try:
         result = build_service().ensure_index(
-            provider_repo_id, repo_path, mode="create_or_sync", request_id=job_id
+            provider_repo_id, repo_path, mode="create_or_sync", request_id=job_id,
+            changed_files=changed_files,
         )
         progress_cb(70, "Lossless source tree", "Refreshing exact syntax context")
         lossless_result = Indexer().sync_lossless_trees_for_repository(
-            repo_path, repo_name=repo_name,
+            repo_path, repo_name=repo_name, clear=not differential, differential=differential,
+            before_commit=payload.get("before_commit"), after_commit=payload.get("after_commit"),
+            changed_files=changed_files,
             job_progress_cb=lambda pct, phase, message: progress_cb(
                 70 + int(pct * .25), phase, message
             ),
@@ -557,9 +488,12 @@ def _run_code_intelligence_sync(job_id: str, target: str, progress_cb) -> dict:
             last_error_code=None,
             last_error_at=None,
         )
-        payload = result.model_dump(mode="json") if hasattr(result, "model_dump") else dict(result)
-        payload["lossless_tree_result"] = lossless_result
-        return payload
+        result_payload = result.model_dump(mode="json") if hasattr(result, "model_dump") else dict(result)
+        result_payload["lossless_tree_result"] = lossless_result
+        if differential:
+            result_payload["differential"] = True
+            result_payload["files_changed"] = changed_files
+        return result_payload
     except Exception as exc:
         CodeIntelligenceConfigDB.upsert(
             provider_repo_id, freshness="stale", last_error_code=getattr(getattr(exc, "category", None), "value", "internal"),
@@ -580,39 +514,66 @@ def _resolve_repo(name: str):
     return repo_path, repo["name"]
 
 
-def _run_index(target: str, progress_cb, clear: bool = True) -> dict:
+def _run_index(target: str, progress_cb, clear: bool = True, payload: dict | None = None) -> dict:
     """Run index for a single repo."""
     from context.indexer import Indexer
     repo_path, repo_name = _resolve_repo(target)
     indexer = Indexer()
-    return indexer.index_repository(repo_path, repo_name=repo_name,
-                                    clear=clear, job_progress_cb=progress_cb)
+    payload = payload or {}
+    differential = bool(payload.get("differential"))
+    result = indexer.index_repository(
+        repo_path, repo_name=repo_name, clear=False if differential else clear,
+        differential=differential, before_commit=payload.get("before_commit"),
+        after_commit=payload.get("after_commit"), changed_files=payload.get("files_changed"),
+        job_progress_cb=progress_cb,
+    )
+    if differential:
+        result["files_changed"] = payload.get("files_changed")
+    return result
 
 
-def _run_ast(target: str, progress_cb, clear: bool = True) -> dict:
+def _run_ast(target: str, progress_cb, clear: bool = True, payload: dict | None = None) -> dict:
     """Run AST generation for a single repo."""
     from context.indexer import Indexer
     repo_path, repo_name = _resolve_repo(target)
     indexer = Indexer()
-    return indexer.generate_ast_for_repository(repo_path, repo_name=repo_name,
-                                               clear=clear,
-                                               job_progress_cb=progress_cb)
+    payload = payload or {}
+    differential = bool(payload.get("differential"))
+    result = indexer.generate_ast_for_repository(
+        repo_path, repo_name=repo_name, clear=False if differential else clear,
+        differential=differential, before_commit=payload.get("before_commit"),
+        after_commit=payload.get("after_commit"), changed_files=payload.get("files_changed"),
+        job_progress_cb=progress_cb,
+    )
+    if differential:
+        result["files_changed"] = payload.get("files_changed")
+    return result
 
 
-def _run_lst(target: str, progress_cb) -> dict:
+def _run_lst(target: str, progress_cb, payload: dict | None = None) -> dict:
     """Generate Lossless Syntax Tree (LST) for a repository."""
     from context.indexer import Indexer
     repo_path, repo_name = _resolve_repo(target)
-    progress_cb(10, "Extracting LST", f"Parsing Lossless Syntax Tree for {repo_name}")
+    payload = payload or {}
+    differential = bool(payload.get("differential"))
+    progress_cb(10, "Extracting LST", f"Parsing {'differential ' if differential else ''}Lossless Syntax Tree for {repo_name}")
     indexer = Indexer()
     lossless_result = indexer.sync_lossless_trees_for_repository(
         repo_path,
         repo_name=repo_name,
-        clear=True,
+        clear=not differential,
+        differential=differential,
+        before_commit=payload.get("before_commit"),
+        after_commit=payload.get("after_commit"),
+        changed_files=payload.get("files_changed"),
         job_progress_cb=progress_cb,
     )
     progress_cb(100, "Complete", f"Lossless Syntax Tree generated for {repo_name}")
-    return {"repo_name": repo_name, "lossless_result": lossless_result}
+    result = {"repo_name": repo_name, "lossless_result": lossless_result}
+    if differential:
+        result["files_changed"] = payload.get("files_changed")
+        result["differential"] = True
+    return result
 
 
 def _run_batch_index(progress_cb) -> dict:

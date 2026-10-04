@@ -41,11 +41,12 @@ class CodeGraphProvider:
             self._registered[repo_id] = root_str
         return repo_id
 
-    def ensure_index(self, repo: dict | Any, mode: str = "create_or_sync", request_id: str | None = None) -> IndexResult:
+    def ensure_index(self, repo: dict | Any, mode: str = "create_or_sync", request_id: str | None = None,
+                     changed_files: dict[str, list[str]] | None = None) -> IndexResult:
         repo_id = self._repo(repo)
         return IndexResult.model_validate(self.client.call(
             "ensure_index", repo_id=repo_id,
-            params={"mode": mode, "watch": self.watch_enabled},
+            params={"mode": mode, "watch": self.watch_enabled, "changed_files": changed_files},
             request_id=request_id,
             timeout=self.index_timeout,
         ))

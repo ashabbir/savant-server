@@ -170,8 +170,14 @@ def create_node():
             meta = _json.loads(meta)
         meta["graph_type"] = graph_type
         data["metadata"] = meta
+    # Creator always comes from the authenticated API key, never the request body.
+    data["created_by"] = user_id
     try:
         node = KnowledgeGraphDB.create_node(data)
+        if is_domain:
+            # Domains are admin-created shared roots. All active non-admins
+            # receive an explicit read-only assignment by default.
+            node["read_only_assignments_created"] = UserDB.assign_domain_read_only_to_non_admins(node["node_id"])
         return jsonify(node)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
@@ -696,9 +702,9 @@ def store_experience():
     if not content:
         return jsonify({"error": "content is required"}), 400
     workspace_id = _text_value(data.get("workspace_id"), 200)
-    node = KnowledgeGraphDB.create_node(
-        _experience_node_payload(data, content, workspace_id)
-    )
+    payload = _experience_node_payload(data, content, workspace_id)
+    payload["created_by"] = getattr(g, "user_id", "")
+    node = KnowledgeGraphDB.create_node(payload)
     _create_experience_connections(node["node_id"], data.get("connections"))
     _store_legacy_experience(node["node_id"], data, content, workspace_id)
     return jsonify(node)
@@ -1036,6 +1042,8 @@ def import_workspace_kg():
                     "content": node_data.get("content", ""),
                     "metadata": meta,
                     "status": "committed",
+                    # Imports are new nodes, so attribute them to the admin who imported them.
+                    "created_by": getattr(g, "user_id", ""),
                 })
                 title_to_id[title] = new_node["node_id"]
                 existing_index[key] = new_node

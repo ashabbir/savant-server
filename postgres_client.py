@@ -165,22 +165,6 @@ CREATE TABLE IF NOT EXISTS users (
 );
 CREATE INDEX IF NOT EXISTS idx_users_api_key_hash ON users(api_key_hash);
 
--- Server-owned tool registry.  Archives and metadata live in PostgreSQL so a
--- tool remains available after container replacement or a renderer refresh.
-CREATE TABLE IF NOT EXISTS tool_packages (
-    name            TEXT PRIMARY KEY,
-    description     TEXT NOT NULL DEFAULT '',
-    input_schema    JSONB NOT NULL DEFAULT '{"type":"object","properties":{}}'::jsonb,
-    archive_data    BYTEA NOT NULL,
-    author          TEXT NOT NULL DEFAULT '',
-    uploaded_by     TEXT NOT NULL REFERENCES users(user_id),
-    service_node_id TEXT NOT NULL DEFAULT '',
-    kg_node_ids     JSONB NOT NULL DEFAULT '[]'::jsonb,
-    created_at      TIMESTAMPTZ NOT NULL,
-    updated_at      TIMESTAMPTZ NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_tool_packages_created ON tool_packages(created_at DESC);
-
 -- User <-> Domain Node Assignments
 CREATE TABLE IF NOT EXISTS user_domains (
     user_id         TEXT NOT NULL,
@@ -615,7 +599,9 @@ CREATE TABLE IF NOT EXISTS kg_nodes (
     metadata    TEXT DEFAULT '{}',
     created_at  TIMESTAMPTZ NOT NULL,
     updated_at  TIMESTAMPTZ NOT NULL,
-    status      TEXT NOT NULL DEFAULT 'staged'
+    status      TEXT NOT NULL DEFAULT 'staged',
+    -- user_id of the authenticated user who created the node ('' = system)
+    created_by  TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_kgn_type    ON kg_nodes(node_type);
 CREATE INDEX IF NOT EXISTS idx_kgn_created ON kg_nodes(created_at DESC);
@@ -1390,7 +1376,79 @@ _SCHEMA_MIGRATIONS = (
             "USING gin (name gin_trgm_ops)",
         ),
     ),
+    (
+        20,
+        "track the creator of every knowledge graph node",
+        (
+            "ALTER TABLE kg_nodes ADD COLUMN IF NOT EXISTS created_by TEXT NOT NULL DEFAULT ''",
+            "CREATE INDEX IF NOT EXISTS idx_kgn_created_by ON kg_nodes(created_by)",
+        ),
+    ),
 )
+
+
+# The first admin account on an instance. Every Savant instance seeds its users
+# differently (different user_ids), so we resolve by role rather than a fixed id:
+# admins whose name/user_id starts with "ahmed" win, then the oldest admin.
+_FIRST_ADMIN_SQL = """
+    SELECT user_id FROM users
+    WHERE role = 'admin'
+    ORDER BY (LOWER(name) LIKE 'ahmed%' OR LOWER(user_id) LIKE 'ahmed%') DESC,
+             created_at ASC, user_id ASC
+    LIMIT 1
+"""
+
+
+def _backfill_kg_node_creators(cur: psycopg2.extensions.cursor) -> bool:
+    """Assign every pre-existing, unattributed KG node to the instance's first admin.
+
+    Returns False (migration left pending) only when there are legacy nodes to
+    attribute but no admin exists yet, so it retries on the next boot. A fresh
+    instance with no legacy nodes is stamped done immediately, so nodes created
+    later by the system are never misattributed.
+    """
+    cur.execute("SELECT EXISTS (SELECT 1 FROM kg_nodes WHERE created_by = '') AS pending")
+    row = cur.fetchone()
+    pending = (row["pending"] if isinstance(row, dict) else row[0]) if row else False
+    if not pending:
+        return True
+    cur.execute(_FIRST_ADMIN_SQL)
+    row = cur.fetchone()
+    if not row:
+        logger.warning("KG creator backfill deferred: no admin user exists yet")
+        return False
+    admin_id = row["user_id"] if isinstance(row, dict) else row[0]
+    cur.execute("UPDATE kg_nodes SET created_by = %s WHERE created_by = ''", (admin_id,))
+    logger.info("KG creator backfill: assigned %s existing node(s) to %s", cur.rowcount, admin_id)
+    return True
+
+
+def _drop_retired_tool_package_registry(cur: psycopg2.extensions.cursor) -> bool:
+    """Remove persisted archives for the retired experimental Tools feature."""
+    cur.execute("DROP TABLE IF EXISTS tool_packages")
+    return True
+
+
+# One-time data migrations. Unlike _SCHEMA_MIGRATIONS these are NEVER replayed by
+# _reconcile_additive_schema — they run exactly once per instance, then are
+# recorded in schema_migrations. Each callable returns True when done, or False
+# to stay pending and retry on the next boot. Versions share the schema
+# migration number space and must run after the schema migration they depend on.
+_DATA_MIGRATIONS = (
+    (21, "assign existing knowledge graph nodes to the first admin", _backfill_kg_node_creators),
+    (22, "remove retired tool package registry", _drop_retired_tool_package_registry),
+)
+
+
+def _record_migration(cur: psycopg2.extensions.cursor, version: int, name: str) -> None:
+    cur.execute(
+        """
+        INSERT INTO schema_migrations (version, name)
+        VALUES (%s, %s)
+        ON CONFLICT (version) DO NOTHING
+        """,
+        (version, name),
+    )
 
 
 def _execute_schema_sql(cur: psycopg2.extensions.cursor) -> None:
@@ -1418,14 +1476,18 @@ def _run_pending_migrations(cur: psycopg2.extensions.cursor) -> list[int]:
         logger.info("Applying database migration %s: %s", version, name)
         for statement in statements:
             cur.execute(statement)
-        cur.execute(
-            """
-            INSERT INTO schema_migrations (version, name)
-            VALUES (%s, %s)
-            ON CONFLICT (version) DO NOTHING
-            """,
-            (version, name),
-        )
+        _record_migration(cur, version, name)
+        applied.append(version)
+
+    # One-time data migrations run after all schema migrations so the columns
+    # they touch exist. They are intentionally not replayed by reconciliation.
+    for version, name, migrate in _DATA_MIGRATIONS:
+        if version in applied_versions:
+            continue
+        logger.info("Applying one-time data migration %s: %s", version, name)
+        if not migrate(cur):
+            continue
+        _record_migration(cur, version, name)
         applied.append(version)
 
     return applied

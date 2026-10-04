@@ -89,7 +89,10 @@ mcp = FastMCP(
         "  2. `neighbors(node_id)` to traverse relationships.\n"
         "  3. `store(...)` creates staged nodes (requires workspace_id, domain connection, repo/files).\n"
         "  4. `connect(...)` links nodes with typed edges (relates_to, applies_to, uses, depends_on, etc.).\n"
-        "  5. `commit_workspace(workspace_id)` or `commit_nodes(...)` publishes staged nodes to the live graph."
+        "  5. `commit_workspace(workspace_id)` or `commit_nodes(...)` publishes staged nodes to the live graph.\n\n"
+        "DOMAIN ACCESS: Only admins may create `domain` nodes. A newly created domain automatically gives every active "
+        "non-admin read-only access. If you are not an admin, never attempt to create a `domain`; store a `concept` "
+        "node instead and connect it to an existing domain when appropriate."
     ),
     host=_args.host,
     port=_args.port,
@@ -222,6 +225,9 @@ def store(
                   technology | project | concept | repo | session | issue |
                   person | operation | organization
                   Default: 'insight'
+                  Only admins may use 'domain'. If you are not an admin and
+                  need to capture a new business area or idea, use 'concept'
+                  and connect it to an existing domain when appropriate.
     graph_type:   Optional classification for which knowledge graph/namespace
                   this node belongs to. Use this to organize nodes into logical
                   groups beyond node_type. Examples: 'business' (client/partner

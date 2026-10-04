@@ -238,6 +238,53 @@ class TestKnowledgeHealth:
         assert resp.get_json()["status"] == "ok"
 
 
+class TestKnowledgeNodeCreator:
+    """Every new node is tagged with the authenticated user who created it."""
+
+    def test_store_tags_creator(self, client):
+        resp = _store_experience(client, content="Creator via store")
+        assert resp.status_code == 200
+        assert resp.get_json()["created_by"] == "ahmed"
+
+    def test_create_node_tags_creator(self, client):
+        resp = client.post("/api/knowledge/nodes", json={"node_type": "concept", "title": "Creator via nodes"})
+        assert resp.status_code == 200
+        assert resp.get_json()["created_by"] == "ahmed"
+
+    def test_create_node_ignores_spoofed_creator(self, client):
+        resp = client.post("/api/knowledge/nodes", json={
+            "node_type": "concept", "title": "Spoof attempt", "created_by": "lex",
+        })
+        assert resp.status_code == 200
+        assert resp.get_json()["created_by"] == "ahmed"
+
+    def test_create_node_tags_other_user(self, client):
+        resp = client.post(
+            "/api/knowledge/nodes",
+            json={"node_type": "concept", "title": "Made by lex"},
+            headers={"X-API-Key": "sk-lex-savant-001"},
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["created_by"] == "lex"
+
+    def test_creator_returned_in_slim_graph(self, client):
+        client.post("/api/knowledge/nodes", json={"node_type": "concept", "title": "Slim creator", "status": "committed"})
+        from db.knowledge_graph import KnowledgeGraphDB
+        graph = KnowledgeGraphDB.get_full_graph(slim=True, include_staged=True)
+        assert {n["created_by"] for n in graph["nodes"]} == {"ahmed"}
+
+    def test_import_tags_creator(self, client):
+        resp = client.post("/api/knowledge/import", json={
+            "workspace_id": "workspace-creator-test",
+            "nodes": [{"node_type": "concept", "title": "Imported by Ahmed"}],
+            "edges": [],
+        })
+        assert resp.status_code == 200
+        from db.knowledge_graph import KnowledgeGraphDB
+        nodes = KnowledgeGraphDB.list_nodes(limit=10, include_staged=True)
+        assert nodes[0]["created_by"] == "ahmed"
+
+
 class TestKnowledgeStore:
     """POST /api/knowledge/store must create insight nodes."""
 

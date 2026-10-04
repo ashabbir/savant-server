@@ -297,6 +297,32 @@ class UserDB:
             release_connection(conn)
 
     @staticmethod
+    def assign_domain_read_only_to_non_admins(domain_node_id: str) -> int:
+        """Give every active non-admin a read-only assignment to a new domain.
+
+        Existing assignments are deliberately overwritten: creating a domain is
+        the authoritative point at which its default access policy is applied.
+        """
+        conn = get_connection()
+        try:
+            now = _now()
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO user_domains (user_id, domain_node_id, can_write, assigned_at)
+                       SELECT user_id, %s, 0, %s
+                       FROM users
+                       WHERE is_active = 1 AND role != 'admin'
+                       ON CONFLICT (user_id, domain_node_id) DO UPDATE SET
+                         can_write = 0""",
+                    (domain_node_id, now),
+                )
+                assigned_count = cur.rowcount
+            conn.commit()
+            return assigned_count
+        finally:
+            release_connection(conn)
+
+    @staticmethod
     def remove_domain(user_id: str, domain_node_id: str) -> bool:
         """Unassign a domain node from a user."""
         conn = get_connection()

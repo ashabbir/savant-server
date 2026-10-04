@@ -46,10 +46,12 @@ class CodeIntelligenceService:
         repo = {"repo_id": repo_id, "name": repo_id, "root": root}
         return provider, getattr(provider, operation)(repo, *args, **kwargs)
 
-    def ensure_index(self, repo_id, root, *, mode="create_or_sync", request_id=None):
+    def ensure_index(self, repo_id, root, *, mode="create_or_sync", request_id=None, changed_files=None):
         kwargs = {"mode": mode}
         if request_id is not None:
             kwargs["request_id"] = request_id
+        if changed_files is not None:
+            kwargs["changed_files"] = changed_files
         _provider, result = self._dispatch(repo_id, root, "ensure_index", **kwargs)
         return result
 

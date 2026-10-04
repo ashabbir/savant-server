@@ -24,8 +24,8 @@ def test_codegraph_sync_refreshes_lossless_source_tree(monkeypatch, tmp_path):
                                   graph_version="g1", files=1, nodes=1, edges=0)
 
     class FakeIndexer:
-        def sync_lossless_trees_for_repository(self, root, repo_name, job_progress_cb):
-            calls.append(("lossless", root, repo_name))
+        def sync_lossless_trees_for_repository(self, root, repo_name, job_progress_cb, **kwargs):
+            calls.append(("lossless", root, repo_name, kwargs))
             job_progress_cb(100, "Lossless source tree", "done")
             return {"files_processed": 1, "errors": 0}
 
@@ -37,5 +37,6 @@ def test_codegraph_sync_refreshes_lossless_source_tree(monkeypatch, tmp_path):
     result = worker._run_code_intelligence_sync("job-1", "repo-id", lambda *args: None)
 
     assert calls[0][0] == "graph"
-    assert calls[1] == ("lossless", tmp_path, "canonical-repo")
+    assert calls[1][:3] == ("lossless", tmp_path, "canonical-repo")
+    assert calls[1][3]["differential"] is False
     assert result["lossless_tree_result"] == {"files_processed": 1, "errors": 0}

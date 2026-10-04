@@ -59,6 +59,35 @@ def test_check_domain_write_access_blocks_guest():
     assert err_admin is None
 
 
+def test_non_admin_domain_creation_is_directed_to_concepts():
+    ok, err = check_domain_write_access("test_regular", is_domain_creation=True)
+    assert not ok
+    assert "Only admin users can create domain nodes" in err
+    assert "concept node instead" in err
+
+
+def test_admin_creating_domain_assigns_all_non_admins_read_only(client):
+    headers = {
+        "X-API-Key": "sk-ahmed-savant-001",
+        "X-App-Name": "savant-olympus",
+    }
+
+    response = client.post(
+        "/api/knowledge/nodes",
+        json={"node_type": "domain", "title": "Shared Domain"},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    domain = response.get_json()
+    assert domain["read_only_assignments_created"] == 3
+    for user_id in ("lex", "test_guest", "test_regular"):
+        assignments = UserDB.get_assigned_domains(user_id)
+        assert len(assignments) == 1
+        assert assignments[0]["domain_node_id"] == domain["node_id"]
+        assert not assignments[0]["can_write"]
+
+
 def test_mcp_knowledge_guest_filtering_and_call():
     fm = FastMCP("savant-knowledge")
 
@@ -281,4 +310,3 @@ def test_guest_domain_scoped_search_and_read_only_assignment(client):
     assert d1["node_id"] in node_ids
     assert n2["node_id"] not in node_ids
     assert d2["node_id"] not in node_ids
-

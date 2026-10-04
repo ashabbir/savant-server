@@ -2,6 +2,7 @@
 
 from flask import Blueprint, g, jsonify, request
 from db.mcp_usage import McpUsageDB
+from db.knowledge_graph import KnowledgeGraphDB
 from db.users import UserDB
 from db.workspaces import WorkspaceDB
 from utils.auth import check_domain_write_access, admin_required
@@ -190,6 +191,19 @@ def api_user_usage(user_id):
     usage["user_id"] = user_id
     usage["last_login_at"] = last_login.isoformat() if last_login else None
     return jsonify(usage)
+
+
+@users_bp.route("/api/users/<user_id>/contributions", methods=["GET"])
+def api_user_contributions(user_id):
+    """Return creator-attributed knowledge graph activity for an admin view."""
+    err = _require_admin()
+    if err:
+        return err
+    if not UserDB.get_by_id(user_id):
+        return jsonify({"error": "User not found"}), 404
+    contributions = KnowledgeGraphDB.get_creator_contributions(user_id)
+    contributions["user_id"] = user_id
+    return jsonify(contributions)
 
 
 @users_bp.route("/api/users/<user_id>/api-key", methods=["POST"])

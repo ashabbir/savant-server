@@ -197,14 +197,54 @@ class KnowledgeGraphDB:
             if isinstance(metadata, str):
                 metadata = json.loads(metadata)
             status = node.get("status", "staged")
+            created_by = str(node.get("created_by") or "").strip()
 
             with conn.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO kg_nodes (node_id, node_type, title, content, metadata, status, created_at, updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
-                    (node_id, node_type, title, content, json.dumps(metadata), status, now, now)
+                    "INSERT INTO kg_nodes (node_id, node_type, title, content, metadata, status, created_by, created_at, updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (node_id, node_type, title, content, json.dumps(metadata), status, created_by, now, now)
                 )
             conn.commit()
             return KnowledgeGraphDB._get_node_with_conn(node_id, conn)
+        finally:
+            release_connection(conn)
+
+    @staticmethod
+    def get_creator_contributions(user_id: str) -> dict:
+        """Return a compact, indexed summary of nodes created by one user."""
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT COUNT(*) AS node_count,
+                              COUNT(*) FILTER (WHERE status = 'committed') AS committed_count,
+                              COUNT(*) FILTER (WHERE status = 'staged') AS staged_count,
+                              MAX(created_at) AS latest_created_at
+                       FROM kg_nodes
+                       WHERE created_by = %s""",
+                    (user_id,),
+                )
+                summary = cur.fetchone() or {}
+                cur.execute(
+                    """SELECT node_type, COUNT(*) AS node_count
+                       FROM kg_nodes
+                       WHERE created_by = %s
+                       GROUP BY node_type
+                       ORDER BY node_count DESC, node_type ASC""",
+                    (user_id,),
+                )
+                by_type = cur.fetchall()
+            latest = summary.get("latest_created_at")
+            return {
+                "node_count": int(summary.get("node_count") or 0),
+                "committed_count": int(summary.get("committed_count") or 0),
+                "staged_count": int(summary.get("staged_count") or 0),
+                "latest_created_at": latest.isoformat() if latest else None,
+                "by_type": [
+                    {"node_type": row["node_type"], "node_count": int(row["node_count"])}
+                    for row in by_type
+                ],
+            }
         finally:
             release_connection(conn)
 
@@ -546,7 +586,7 @@ class KnowledgeGraphDB:
     ) -> dict:
         conn = get_connection()
         try:
-            node_cols = "node_id, node_type, title, status, created_at" if slim else "*"
+            node_cols = "node_id, node_type, title, status, created_by, created_at" if slim else "*"
             with conn.cursor() as cur:
                 nodes = _fetch_graph_nodes(
                     cur, node_cols, node_type, limit, include_staged, exclude_types

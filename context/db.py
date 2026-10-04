@@ -181,11 +181,38 @@ class ContextDB:
                 release_connection(conn)
 
     @staticmethod
-    def list_repos() -> List[Dict[str, Any]]:
+    def count_repos(search: Optional[str] = None) -> int:
+        """Return the number of registered repositories without loading their details."""
+        where_clause, params = ContextDB._repo_search_clause(search)
         conn = get_connection()
         try:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(f"SELECT COUNT(*) AS count FROM ctx_repos r{where_clause}", params)
+                row = cur.fetchone()
+            return int(row["count"] if row else 0)
+        finally:
+            release_connection(conn)
+
+    @staticmethod
+    def list_repos(
+        page: Optional[int] = None,
+        page_size: int = 10,
+        search: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return repository details, optionally limited to one name-ordered page.
+
+        The aggregate fields below are intentionally computed only for the
+        requested HTTP page.  Computing them for every registered repository makes
+        the project list increasingly slow as the registry grows.
+
+        Omitting ``page`` retains the full-list behavior required by background
+        jobs and MCP tools that operate across the registry.
+        """
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                where_clause, params = ContextDB._repo_search_clause(search)
+                query = """
                     SELECT r.*,
                            (SELECT COUNT(*) FROM ctx_files WHERE repo_id = r.id) AS file_count,
                            (SELECT COUNT(*) FROM ctx_files WHERE repo_id = r.id AND is_memory_bank = 1) AS memory_bank_count,
@@ -204,8 +231,14 @@ class ContextDB:
                            (SELECT COALESCE(SUM(jsonb_array_length(t.tree->'nodes')), 0) FROM ctx_lossless_trees t
                             JOIN ctx_files f ON t.file_id = f.id
                             WHERE f.repo_id = r.id) AS lst_node_count
-                    FROM ctx_repos r ORDER BY r.name
-                """)
+                    FROM ctx_repos r
+                """ + where_clause + """
+                    ORDER BY LOWER(r.name), r.name, r.id
+                """
+                if page is not None:
+                    query += " LIMIT %s OFFSET %s"
+                    params += (page_size, (page - 1) * page_size)
+                cur.execute(query, params)
                 rows = cur.fetchall()
             result = []
             for r in rows:
@@ -222,6 +255,21 @@ class ContextDB:
             return result
         finally:
             release_connection(conn)
+
+    @staticmethod
+    def _repo_search_clause(search: Optional[str]) -> tuple[str, tuple[str, ...]]:
+        """Build a case-insensitive literal search across repo list fields."""
+        query = (search or "").strip().lower()
+        if not query:
+            return "", ()
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{escaped}%"
+        clause = (
+            " WHERE (LOWER(r.name) LIKE %s ESCAPE '\\'"
+            " OR LOWER(r.path) LIKE %s ESCAPE '\\'"
+            " OR LOWER(COALESCE(r.status, '')) LIKE %s ESCAPE '\\')"
+        )
+        return clause, (pattern, pattern, pattern)
 
     @staticmethod
     def delete_repo(name: str) -> bool:
