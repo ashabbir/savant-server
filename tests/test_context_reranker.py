@@ -68,6 +68,36 @@ def test_exec_code_search_uses_reranker(monkeypatch):
     assert "rerank_score" in res["results"][0]
 
 
+@pytest.mark.no_db
+def test_exec_memory_search_uses_reranker_after_vector_recall(monkeypatch):
+    from context.routes import _exec_memory_search
+    from context.db import ContextDB
+
+    candidates = [
+        {"id": 1, "content": "unrelated deployment notes", "rel_path": "memory/deploy.md"},
+        {"id": 2, "content": "JWT token refresh and authentication requirements", "rel_path": "memory/auth.md"},
+    ]
+    vector_limits = []
+    monkeypatch.setattr(ContextDB, "vector_search", lambda *_args, **kwargs: vector_limits.append(kwargs["limit"]) or list(candidates))
+
+    class _MockEmbedder:
+        def embed_one(self, _text):
+            return [0.1] * 768
+
+    class _Reranker:
+        def rerank(self, _query, entries, **_kwargs):
+            return [entries[1]]
+
+    monkeypatch.setattr("context.embeddings.EmbeddingModel.get", lambda: _MockEmbedder())
+    monkeypatch.setattr("context.reranker.RerankerModel.get", lambda: _Reranker())
+
+    result = _exec_memory_search("jwt authentication", repo=None, limit=1)
+
+    assert vector_limits == [20]
+    assert result["result_count"] == 1
+    assert result["results"][0]["id"] == 2
+
+
 def test_search_api_with_rerank_toggle(client, monkeypatch):
     from context.db import ContextDB
 

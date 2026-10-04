@@ -191,6 +191,7 @@ def memory_search():
 
     repo = request.args.get("repo")
     limit = min(100, max(1, int(request.args.get("limit", 20))))
+    should_rerank = request.args.get("rerank", "1").lower() in ("1", "true", "yes")
 
     try:
         from .embeddings import EmbeddingModel
@@ -200,8 +201,13 @@ def memory_search():
         from .db import ContextDB
         repo_filter = repo.split(",") if repo and "," in repo else repo
         results = ContextDB.vector_search(
-            qvec, limit=limit, repo_filter=repo_filter, memory_bank_only=True,
+            qvec, limit=max(limit * 3, 20) if should_rerank else limit,
+            repo_filter=repo_filter, memory_bank_only=True,
         )
+        if should_rerank:
+            from .reranker import RerankerModel
+            reranker = RerankerModel.get()
+            results = reranker.rerank(q, results, text_key="content", top_k=limit) if reranker else results[:limit]
         return jsonify({"query": q, "result_count": len(results), "results": results})
     except Exception as e:
         logger.error(f"Memory search failed: {e}")
@@ -1510,12 +1516,15 @@ def _exec_structure_search(q: str, repo: str | None, repo_ids: list[str], limit:
 def _exec_memory_search(q: str, repo: str | None, limit: int) -> dict:
     from .db import ContextDB
     from .embeddings import EmbeddingModel
+    from .reranker import RerankerModel
     embedder = EmbeddingModel.get()
     qvec = embedder.embed_one(q)
     repo_filter = repo.split(",") if repo and isinstance(repo, str) and "," in repo else repo
     res = ContextDB.vector_search(
-        qvec, limit=limit, repo_filter=repo_filter, memory_bank_only=True,
+        qvec, limit=max(limit * 3, 20), repo_filter=repo_filter, memory_bank_only=True,
     )
+    reranker = RerankerModel.get()
+    res = reranker.rerank(q, res, text_key="content", top_k=limit) if reranker else res[:limit]
     MAX_CONTENT = 700
     trimmed = []
     for r in res:

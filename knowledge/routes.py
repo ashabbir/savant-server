@@ -67,6 +67,28 @@ def _metadata_value(value) -> dict:
     return {}
 
 
+def _precision_rerank(query: str, candidates: list[dict], limit: int) -> list[dict]:
+    """Apply the shared cross-encoder after graph full-text recall.
+
+    PostgreSQL FTS remains the broad, indexed recall stage.  The BERT-family
+    cross-encoder makes the final relevance decision using each node's title
+    and content together, rather than relying only on lexical term frequency.
+    """
+    if not candidates:
+        return []
+    from context.reranker import RerankerModel
+
+    reranker = RerankerModel.get()
+    if reranker is None:
+        return candidates[:limit]
+    prepared = [
+        {**candidate, "_precision_text": f"{candidate.get('title') or ''}\n{candidate.get('content') or ''}"}
+        for candidate in candidates
+    ]
+    ranked = reranker.rerank(query, prepared, text_key="_precision_text", top_k=limit)
+    return [{key: value for key, value in candidate.items() if key != "_precision_text"} for candidate in ranked]
+
+
 def _safe_id(val: str) -> str:
     """Sanitize a node/edge ID — alphanumeric, dash, underscore only."""
     val = (val or "").strip()
@@ -779,8 +801,11 @@ def search_experience():
     node_type = data.get("node_type", "")
     limit = _safe_int(data.get("limit", 20), default=20, min_val=1, max_val=100)
     include_staged = str(data.get("include_staged", "")).lower() in ("true", "1", "yes")
-    results = KnowledgeGraphDB.search_nodes(query, node_type=node_type, limit=limit, include_staged=include_staged)
-
+    # Recall extra FTS candidates, then use the model to select the final set.
+    recall_limit = max(limit * 3, 20)
+    candidates = KnowledgeGraphDB.search_nodes(
+        query, node_type=node_type, limit=recall_limit, include_staged=include_staged,
+    )
     user_id = getattr(g, "user_id", "")
     user = UserDB.get_by_id(user_id) if user_id else None
     if user and user.get("role") == "guest":
@@ -790,16 +815,16 @@ def search_experience():
         }
         if not assigned_domains:
             return jsonify({"result": []})
-        filtered_results = []
-        for r in results:
+        filtered_candidates = []
+        for r in candidates:
             nid = r.get("node_id", "")
             if not nid:
                 continue
             if nid in assigned_domains or bool(KnowledgeGraphDB.find_root_domains(nid) & assigned_domains):
-                filtered_results.append(r)
-        return jsonify({"result": filtered_results})
+                filtered_candidates.append(r)
+        return jsonify({"result": _precision_rerank(query, filtered_candidates, limit)})
 
-    return jsonify({"result": results})
+    return jsonify({"result": _precision_rerank(query, candidates, limit)})
 
 
 @knowledge_bp.route("/api/knowledge/recent", methods=["GET"])
