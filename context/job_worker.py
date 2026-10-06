@@ -278,9 +278,10 @@ def _execute_job(job_id: str, job_type: str, target: str, payload: dict | None =
 
 
 def _run_initial_repo_sync(target: str, payload: dict, progress_cb) -> dict:
-    """Clone a newly registered remote repository (initial git sync)."""
+    """Clone a newly registered remote repository, then queue its full first pass."""
     from context.ingestion import ingest_repo
     from context.db import ContextDB
+    from db.jobs import JobDB
     started_at = perf_counter()
     url = str(payload.get("url") or "")
     if not url:
@@ -292,20 +293,38 @@ def _run_initial_repo_sync(target: str, payload: dict, progress_cb) -> dict:
     ContextDB.add_repo(ingested.name, ingested.path)
     ContextDB.mark_repo_fetched(ingested.name)
     ContextDB.update_repo_status(ingested.name, "ready")
+    processing_payload = {
+        "trigger": "project_add",
+        "actor_id": str(payload.get("actor_id") or "user"),
+        "source_app": str(payload.get("source_app") or ""),
+        "provider": ingested.provider,
+        "after_commit": ingested.after_commit,
+    }
+    queued_jobs = [
+        JobDB.create_job("index", ingested.name, payload=processing_payload),
+        JobDB.create_job("ast", ingested.name, payload=processing_payload),
+        JobDB.create_job("lst", ingested.name, payload=processing_payload),
+        JobDB.create_job("codegraph_sync", ingested.name, payload=processing_payload),
+    ]
     ContextDB.record_repo_sync_log(
         repo_name=ingested.name, operation=ingested.operation or "clone", trigger="project_add",
         provider=ingested.provider, branch=ingested.branch, status="success",
         after_commit=ingested.after_commit, fetched=True, code_changed=ingested.changed,
-        duration_ms=int((perf_counter() - started_at) * 1000), details="Initial repository clone completed",
+        duration_ms=int((perf_counter() - started_at) * 1000),
+        details="Initial repository clone completed; queued Index, AST, LST, and CodeGraph processing",
         actor_id=str(payload.get("actor_id") or "user"),
         source_app=str(payload.get("source_app") or ""),
     )
-    progress_cb(100, "Complete", "Initial repository clone completed")
+    progress_cb(100, "Complete", "Repository downloaded; queued Index, AST, LST, and CodeGraph processing")
     return {
         "repo_name": ingested.name,
         "operation": ingested.operation,
         "after_commit": ingested.after_commit,
         "status": "success",
+        "queued_jobs": [
+            {"id": job["id"], "job_type": job["job_type"], "target": job["target"]}
+            for job in queued_jobs
+        ],
     }
 
 

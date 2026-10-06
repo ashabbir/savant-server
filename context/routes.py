@@ -802,7 +802,7 @@ def trigger_periodic_sync_all():
 @context_bp.route("/api/context/repos", methods=["POST"])
 @admin_required
 def add_repo():
-    """Register a project and enqueue its first download/index/analysis pass."""
+    """Register a project and enqueue its first download and processing pass."""
     if not _ensure_init():
         return jsonify({"error": "Context not initialized"}), 503
 
@@ -863,7 +863,7 @@ def add_repo():
         "job_id": job["id"],
         "job_type": job_type,
         "processing_status": "queued",
-        "message": "Repository registered. Downloading, indexing, and analysis run in the background.",
+        "message": "Repository registered. Download, index, AST, LST, and CodeGraph run in the background.",
         "reused": reused,
     })
     return jsonify(response), 202
@@ -1271,10 +1271,13 @@ def reindex_all():
 def indexing_status():
     from .indexer import get_indexing_status
     from .db import ContextDB
+    repo_names = {name for name in request.args.getlist("repo") if name}
     live = get_indexing_status()
     live = live if isinstance(live, dict) else {}
-    _merge_active_index_jobs(live)
-    _merge_persisted_repo_status(live, ContextDB)
+    if repo_names:
+        live = {name: status for name, status in live.items() if name in repo_names}
+    _merge_active_index_jobs(live, repo_names)
+    _merge_persisted_repo_status(live, ContextDB, repo_names)
     _mark_stalled_indexing(live)
     return jsonify(live)
 
@@ -1288,7 +1291,7 @@ def _index_status_base(**overrides) -> dict:
     return status
 
 
-def _merge_active_index_jobs(live: dict) -> None:
+def _merge_active_index_jobs(live: dict, repo_names: set[str] | None = None) -> None:
     try:
         from db.jobs import JobDB
         jobs = JobDB.list_jobs(limit=50)
@@ -1306,6 +1309,8 @@ def _merge_active_index_jobs(live: dict) -> None:
                 repo_name = repo.get("name") if repo else str(target)
             except Exception:
                 repo_name = str(target)
+            if repo_names and repo_name not in repo_names:
+                continue
             current = live.setdefault(repo_name, _persisted_repo_status(repo) if repo else _index_status_base())
             if "structural_job" in current:
                 continue
@@ -1320,6 +1325,8 @@ def _merge_active_index_jobs(live: dict) -> None:
                 current["structural_job"] = job
             continue
         if job.get("status") not in {"queued", "running", "cancelling"}:
+            continue
+        if repo_names and target not in repo_names:
             continue
         if live.get(target, {}).get("status") == "indexing":
             continue
@@ -1350,13 +1357,15 @@ def _persisted_repo_status(repo: dict) -> dict:
     )
 
 
-def _merge_persisted_repo_status(live: dict, context_db) -> None:
+def _merge_persisted_repo_status(live: dict, context_db, repo_names: set[str] | None = None) -> None:
     try:
         repos = context_db.list_repos()
     except Exception:
         return
     for repo in repos:
         name = repo.get("name")
+        if repo_names and name not in repo_names:
+            continue
         if name and name not in live:
             live[name] = _persisted_repo_status(repo)
 

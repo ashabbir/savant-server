@@ -426,6 +426,42 @@ def test_add_repo_route_registers_immediately_and_queues_background_sync(client,
     }
 
 
+def test_initial_remote_sync_queues_full_processing_pipeline(monkeypatch):
+    from types import SimpleNamespace
+    from context import job_worker
+    from context import db as context_db
+    from db.jobs import JobDB
+
+    monkeypatch.setattr(
+        "context.ingestion.ingest_repo",
+        lambda _url, branch=None: SimpleNamespace(
+            name="repo", path="/tmp/repos/repo", provider="github", branch=branch or "",
+            after_commit="abc123", operation="clone", changed=True,
+        ),
+    )
+    monkeypatch.setattr(context_db.ContextDB, "add_repo", staticmethod(lambda *_args: {}))
+    monkeypatch.setattr(context_db.ContextDB, "mark_repo_fetched", staticmethod(lambda *_args: None))
+    monkeypatch.setattr(context_db.ContextDB, "update_repo_status", staticmethod(lambda *_args: None))
+    monkeypatch.setattr(context_db.ContextDB, "record_repo_sync_log", staticmethod(lambda **_kwargs: {}))
+    queued = []
+
+    def create_job(job_type, target, payload):
+        queued.append((job_type, target, payload))
+        return {"id": f"job-{job_type}", "job_type": job_type, "target": target}
+
+    monkeypatch.setattr(JobDB, "create_job", staticmethod(create_job))
+
+    result = job_worker._run_initial_repo_sync(
+        "repo",
+        {"url": "https://github.com/acme/repo.git", "actor_id": "ahmed", "source_app": "savant-olympus"},
+        lambda *_args: None,
+    )
+
+    assert [job_type for job_type, _, _ in queued] == ["index", "ast", "lst", "codegraph_sync"]
+    assert all(target == "repo" for _, target, _ in queued)
+    assert result["queued_jobs"][-1]["job_type"] == "codegraph_sync"
+
+
 def test_add_repo_route_rejects_source_url_mismatch(client, monkeypatch):
     from context import routes
 

@@ -50,3 +50,28 @@ def test_indexing_status_maps_numeric_graph_job_to_repository_name(monkeypatch, 
     assert payload["savant-server"]["status"] == "added"
     assert payload["savant-server"]["structural_job"]["status"] == "running"
     assert payload["savant-server"]["structural_job"]["progress"] == 37
+
+
+def test_indexing_status_limits_results_to_requested_projects(monkeypatch, client):
+    monkeypatch.setattr(
+        indexer,
+        "get_indexing_status",
+        lambda: {
+            "visible-project": {"status": "indexing"},
+            "other-project": {"status": "indexed"},
+        },
+    )
+    monkeypatch.setattr(
+        context_db.ContextDB,
+        "list_repos",
+        lambda: [
+            {"name": "visible-project", "status": "indexed"},
+            {"name": "other-project", "status": "indexed"},
+        ],
+    )
+    monkeypatch.setattr(JobDB, "list_jobs", lambda **kwargs: [])
+
+    response = client.get("/api/context/repos/indexing-status?repo=visible-project")
+
+    assert response.status_code == 200
+    assert response.get_json() == {"visible-project": {"status": "indexing"}}
