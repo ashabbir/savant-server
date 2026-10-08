@@ -63,7 +63,78 @@ def test_non_admin_domain_creation_is_directed_to_concepts():
     ok, err = check_domain_write_access("test_regular", is_domain_creation=True)
     assert not ok
     assert "Only admin users can create domain nodes" in err
-    assert "concept node instead" in err
+    assert "You can only add nodes into the following domains: none" in err
+
+
+def test_non_admin_domain_creation_names_writable_domains_and_nodes_default_to_them(client):
+    from db.knowledge_graph import KnowledgeGraphDB
+
+    admin_headers = {
+        "X-API-Key": "sk-ahmed-savant-001",
+        "X-App-Name": "savant-olympus",
+    }
+    regular_headers = {
+        "X-API-Key": "sk-test-regular-token",
+        "X-App-Name": "savant-olympus",
+    }
+    unscoped = client.post(
+        "/api/knowledge/nodes",
+        json={"node_type": "insight", "title": "Unscoped knowledge"},
+        headers=regular_headers,
+    )
+    assert unscoped.status_code == 403
+    assert "following domains: none" in unscoped.get_json()["error"]
+
+    first_domain = client.post(
+        "/api/knowledge/nodes",
+        json={"node_type": "domain", "title": "Billing"},
+        headers=admin_headers,
+    ).get_json()
+    second_domain = client.post(
+        "/api/knowledge/nodes",
+        json={"node_type": "domain", "title": "Identity"},
+        headers=admin_headers,
+    ).get_json()
+    UserDB.assign_domain("test_regular", first_domain["node_id"], can_write=True)
+    UserDB.assign_domain("test_regular", second_domain["node_id"], can_write=True)
+
+    forbidden = client.post(
+        "/api/knowledge/nodes",
+        json={"node_type": "domain", "title": "Forbidden Domain"},
+        headers=regular_headers,
+    )
+    assert forbidden.status_code == 403
+    assert "You can only add nodes into the following domains: Billing, Identity." in forbidden.get_json()["error"]
+
+    created = client.post(
+        "/api/knowledge/nodes",
+        json={"node_type": "insight", "title": "Regular user knowledge"},
+        headers=regular_headers,
+    )
+    assert created.status_code == 200
+    assert KnowledgeGraphDB.find_root_domains(created.get_json()["node_id"]) == {
+        first_domain["node_id"], second_domain["node_id"],
+    }
+
+
+def test_current_user_domain_endpoint_exposes_write_assignments(client):
+    domain = client.post(
+        "/api/knowledge/nodes",
+        json={"node_type": "domain", "title": "Operations"},
+    ).get_json()
+    UserDB.assign_domain("test_regular", domain["node_id"], can_write=True)
+
+    response = client.get(
+        "/api/users/me/domains",
+        headers={"X-API-Key": "sk-test-regular-token"},
+    )
+
+    assert response.status_code == 200
+    assignments = response.get_json()
+    assert len(assignments) == 1
+    assert assignments[0]["domain_node_id"] == domain["node_id"]
+    assert assignments[0]["domain_title"] == "Operations"
+    assert assignments[0]["can_write"] is True
 
 
 def test_admin_creating_domain_assigns_all_non_admins_read_only(client):

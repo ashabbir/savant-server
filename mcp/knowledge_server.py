@@ -84,15 +84,24 @@ mcp = FastMCP(
         "  client (Fidelity, UBS…), domain (Auth/SSO, Holdings…), service (icn, simonapp…), library (icn-user-acl…), "
         "  technology (Rails, Redis…), insight (curated developer knowledge & decisions), issue (known bugs & problems), "
         "  project (repositories & codebases), concept (abstract patterns), repo (source code repositories), session (AI session entries).\n\n"
+        "DOMAIN SCOPE — REQUIRED FIRST STEP:\n"
+        "  Call `my_domains()` before any knowledge create, edit, update, connection, or delete. It tells you: "
+        "'You only have access to these domains; keep all of your adds, edits, and updates in these domains.' "
+        "For non-admin users, use only domains with `can_write: true`; do not create or modify knowledge outside them.\n\n"
+        "ROLE RULES: Admins may create domains and write to any domain. Guests have no write abilities and may only "
+        "search/read accessible knowledge.\n\n"
         "WORKFLOW:\n"
-        "  1. `project_context(workspace_id)` or `search(query)` to discover existing domain context and constraints.\n"
-        "  2. `neighbors(node_id)` to traverse relationships.\n"
-        "  3. `store(...)` creates staged nodes (requires workspace_id, domain connection, repo/files).\n"
-        "  4. `connect(...)` links nodes with typed edges (relates_to, applies_to, uses, depends_on, etc.).\n"
-        "  5. `commit_workspace(workspace_id)` or `commit_nodes(...)` publishes staged nodes to the live graph.\n\n"
+        "  1. `my_domains()` to learn the current user's writable domains and enforce the domain scope.\n"
+        "  2. `project_context(workspace_id)` or `search(query)` to discover existing domain context and constraints.\n"
+        "  3. `neighbors(node_id)` to traverse relationships.\n"
+        "  4. `store(...)` creates staged nodes (requires workspace_id, domain connection, repo/files).\n"
+        "  5. `connect(...)` links nodes with typed edges (relates_to, applies_to, uses, depends_on, etc.).\n"
+        "  6. `commit_workspace(workspace_id)` or `commit_nodes(...)` publishes staged nodes to the live graph.\n\n"
         "DOMAIN ACCESS: Only admins may create `domain` nodes. A newly created domain automatically gives every active "
-        "non-admin read-only access. If you are not an admin, never attempt to create a `domain`; store a `concept` "
-        "node instead and connect it to an existing domain when appropriate."
+        "non-admin read-only access. Non-admins must only add nodes within domains returned by `my_domains()` where "
+        "`can_write` is true. If `store()` has no domain connection, the server automatically links the new node to "
+        "every writable domain. If a non-admin attempts to create a domain or use an unauthorized domain, the MCP "
+        "error response names the domains they may write to."
     ),
     host=_args.host,
     port=_args.port,
@@ -176,6 +185,44 @@ def recent(node_type: str = "", limit: int = 20) -> dict[str, Any]:
 
 
 @mcp.tool()
+def my_domains() -> dict[str, Any]:
+    """List the current user's domain assignments and write permissions.
+
+    REQUIRED: Call this before any create, edit, update, connection, or delete.
+    The returned instruction is role-aware: admins may create and write any
+    domain; guests have no write abilities; other users must keep changes in
+    domains where `can_write` is true. When `store()` omits a domain connection,
+    the server links the new node to every writable domain automatically.
+    """
+    user = _api("GET", "/api/auth/validate")
+    domains = _api("GET", "/api/users/me/domains")
+    writable_domains = [domain for domain in domains if domain.get("can_write")]
+    role = user.get("role", "guest")
+    if role == "admin":
+        instruction = (
+            "You are an admin. You may create domains and write, edit, update, "
+            "connect, or delete knowledge in any domain."
+        )
+    elif role == "guest":
+        instruction = (
+            "You are a guest. You have no write abilities: do not create, edit, "
+            "update, connect, or delete knowledge. You may only search/read "
+            "accessible knowledge."
+        )
+    else:
+        instruction = (
+            "You only have access to the domains listed here. Keep all of your "
+            "adds, edits, updates, connections, and deletes within writable domains."
+        )
+    return {
+        "instruction": instruction,
+        "role": role,
+        "writable_domains": writable_domains,
+        "domains": domains,
+    }
+
+
+@mcp.tool()
 def project_context(workspace_id: str) -> dict[str, Any]:
     """Get aggregated knowledge context for a workspace.
 
@@ -225,9 +272,11 @@ def store(
                   technology | project | concept | repo | session | issue |
                   person | operation | organization
                   Default: 'insight'
-                  Only admins may use 'domain'. If you are not an admin and
-                  need to capture a new business area or idea, use 'concept'
-                  and connect it to an existing domain when appropriate.
+                  Only admins may use 'domain'. Before storing, call
+                  `my_domains()` to see which domains you may write to. If
+                  `connections` does not include a domain, the server links
+                  this node to all of your writable domains automatically.
+                  Unauthorized-domain errors name the allowed domains.
     graph_type:   Optional classification for which knowledge graph/namespace
                   this node belongs to. Use this to organize nodes into logical
                   groups beyond node_type. Examples: 'business' (client/partner

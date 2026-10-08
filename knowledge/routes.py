@@ -178,6 +178,10 @@ def create_node():
     if not ok:
         return jsonify({"error": err}), 403
 
+    connection_domains, connection_error = _requested_connection_domains(data.get("connections"), user_id)
+    if connection_error:
+        return jsonify({"error": connection_error}), 403
+
     title = (data.get("title") or "").strip()[:MAX_TITLE_LEN]
     if not title:
         return jsonify({"error": "title is required"}), 400
@@ -200,11 +204,86 @@ def create_node():
             # Domains are admin-created shared roots. All active non-admins
             # receive an explicit read-only assignment by default.
             node["read_only_assignments_created"] = UserDB.assign_domain_read_only_to_non_admins(node["node_id"])
+        else:
+            _link_node_to_domains(node["node_id"], data.get("connections"), connection_domains, user_id)
         return jsonify(node)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:
         return jsonify({"error": "internal error", "detail": str(e)}), 500
+
+
+def _requested_connection_domains(connections, user_id: str) -> tuple[set[str], str | None]:
+    """Return domains already supplied through connections and enforce write scope."""
+    if not isinstance(connections, list):
+        return set(), None
+
+    connected_domains: set[str] = set()
+    for connection in connections:
+        if not isinstance(connection, dict) or not connection.get("node_id"):
+            continue
+        target_id = str(connection["node_id"])
+        target = KnowledgeGraphDB.get_node(target_id)
+        if not target:
+            continue
+        if target.get("node_type") == "domain":
+            connected_domains.add(target_id)
+        else:
+            connected_domains.update(KnowledgeGraphDB.find_root_domains(target_id))
+
+    user = UserDB.get_by_id(user_id) if user_id else None
+    if user and user.get("role") == "admin":
+        return connected_domains, None
+
+    writable_domains = [
+        assignment for assignment in UserDB.get_assigned_domains(user_id)
+        if assignment.get("can_write")
+    ]
+    writable_domain_ids = {assignment["domain_node_id"] for assignment in writable_domains}
+    allowed = [
+        assignment.get("domain_title") or assignment["domain_node_id"]
+        for assignment in writable_domains
+    ]
+    if not connected_domains and writable_domain_ids:
+        return connected_domains, None
+    if not writable_domain_ids:
+        return set(), (
+            "Access denied. You can only add nodes into the following domains: none."
+        )
+    if connected_domains <= writable_domain_ids:
+        return connected_domains, None
+
+    return set(), (
+        "Access denied. You can only add nodes into the following domains: "
+        f"{', '.join(allowed) or 'none'}."
+    )
+
+
+def _link_node_to_domains(node_id: str, connections, connection_domains: set[str], user_id: str) -> None:
+    """Preserve requested connections and ensure every non-domain node has domain roots."""
+    if isinstance(connections, list):
+        _create_experience_connections(node_id, connections)
+
+    if connection_domains:
+        return
+
+    user = UserDB.get_by_id(user_id) if user_id else None
+    if user and user.get("role") == "admin":
+        domain_ids = {
+            domain["node_id"] for domain in KnowledgeGraphDB.list_nodes(node_type="domain", limit=1000)
+        }
+    else:
+        domain_ids = {
+            assignment["domain_node_id"] for assignment in UserDB.get_assigned_domains(user_id)
+            if assignment.get("can_write")
+        }
+
+    for domain_id in domain_ids:
+        KnowledgeGraphDB.create_edge({
+            "source_id": node_id,
+            "target_id": domain_id,
+            "edge_type": "applies_to",
+        })
 
 
 @knowledge_bp.route("/api/knowledge/experiences", methods=["GET", "POST"])
@@ -715,7 +794,6 @@ def generate_prompt():
 
 
 @knowledge_bp.route("/api/knowledge/store", methods=["POST"])
-@admin_required
 @require_savant_app
 def store_experience():
     """Store a curated experience and its optional graph connections."""
@@ -725,9 +803,21 @@ def store_experience():
         return jsonify({"error": "content is required"}), 400
     workspace_id = _text_value(data.get("workspace_id"), 200)
     payload = _experience_node_payload(data, content, workspace_id)
-    payload["created_by"] = getattr(g, "user_id", "")
+    user_id = getattr(g, "user_id", "")
+    is_domain = payload["node_type"] == "domain"
+    ok, err = check_domain_write_access(user_id, is_domain_creation=is_domain)
+    if not ok:
+        return jsonify({"error": err}), 403
+    connection_domains, connection_error = _requested_connection_domains(data.get("connections"), user_id)
+    if connection_error:
+        return jsonify({"error": connection_error}), 403
+
+    payload["created_by"] = user_id
     node = KnowledgeGraphDB.create_node(payload)
-    _create_experience_connections(node["node_id"], data.get("connections"))
+    if is_domain:
+        node["read_only_assignments_created"] = UserDB.assign_domain_read_only_to_non_admins(node["node_id"])
+    else:
+        _link_node_to_domains(node["node_id"], data.get("connections"), connection_domains, user_id)
     _store_legacy_experience(node["node_id"], data, content, workspace_id)
     return jsonify(node)
 

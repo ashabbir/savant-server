@@ -35,6 +35,15 @@ def auth_validate():
 api_auth_validate = auth_validate
 
 
+@users_bp.route("/api/users/me/domains", methods=["GET"])
+def api_current_user_domains():
+    """Return the authenticated user's domain assignments for MCP clients."""
+    user_id = getattr(g, "user_id", "")
+    if not UserDB.get_by_id(user_id):
+        return jsonify({"error": "User not found"}), 404
+    return jsonify(UserDB.get_assigned_domains(user_id))
+
+
 @users_bp.route("/api/users", methods=["GET", "POST"])
 def api_users():
     err = _require_admin()
