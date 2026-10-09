@@ -118,8 +118,23 @@ def api_user_domain_delete(user_id, domain_node_id):
     return jsonify({"status": "unassigned"}), 200
 
 
+@users_bp.route("/api/users/leaderboard", methods=["GET"])
+def api_users_leaderboard():
+    """Return user activity leaderboard with game point scoring."""
+    err = _require_admin()
+    if err:
+        return err
+    try:
+        days = min(365, max(1, int(request.args.get("days", 7))))
+    except ValueError:
+        return jsonify({"error": "days must be an integer"}), 400
+    leaderboard = McpUsageDB.get_leaderboard(days=days)
+    return jsonify(leaderboard)
+
+
 @users_bp.route("/api/users/<user_id>", methods=["GET", "PUT", "DELETE"])
 def api_user_detail(user_id):
+
     user = UserDB.get_by_id(user_id)
     if not user:
         return jsonify({"error": "User not found"}), 404

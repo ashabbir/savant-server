@@ -94,6 +94,56 @@ def test_contributions_endpoint_returns_creator_attributed_node_counts(client):
     assert client.get("/api/users/lex/contributions", headers=LEX).status_code == 403
 
 
+def test_leaderboard_calculation_and_endpoint(client):
+    from db.knowledge_graph import KnowledgeGraphDB
+
+    # Setup 3 users:
+    # 1. ahmed: logged in, 1 knowledge addition (10 pts) + 1 research (5 pts) = 15 pts
+    # 2. lex: logged in, 2 searches (2*2 = 4 pts) = 4 pts
+    # 3. bob: created but never logged in (has_logged_in = False), ranked at the bottom
+    UserDB.create({"user_id": "bob", "name": "Bob Lazy", "email": "bob@example.com", "role": "user"})
+
+    # ahmed activities
+    UserDB.touch_last_login("ahmed")
+    KnowledgeGraphDB.create_node({"title": "Ahmed insight", "node_type": "insight", "created_by": "ahmed", "status": "committed"})
+    McpUsageDB.record_call("ahmed", "savant-context", "research")
+
+    # lex activities
+    UserDB.touch_last_login("lex")
+    McpUsageDB.record_call("lex", "savant-context", "code_search")
+    McpUsageDB.record_call("lex", "savant-context", "structure_search")
+
+    resp = client.get("/api/users/leaderboard?days=7")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["days"] == 7
+    lb = data["leaderboard"]
+
+    # Filter to our tested users
+    u_map = {u["user_id"]: u for u in lb}
+    assert u_map["ahmed"]["points"] == 15  # 10 + 5
+    assert u_map["ahmed"]["knowledge_additions"] == 1
+    assert u_map["ahmed"]["research"] == 1
+    assert u_map["ahmed"]["has_logged_in"] is True
+
+    assert u_map["lex"]["points"] == 4  # 2 * 2
+    assert u_map["lex"]["search"] == 2
+    assert u_map["lex"]["has_logged_in"] is True
+
+    assert u_map["bob"]["has_logged_in"] is False
+    assert u_map["bob"]["points"] == 0
+
+    # Ensure ranking order: ahmed first, lex second, bob at bottom
+    ahmed_rank = u_map["ahmed"]["rank"]
+    lex_rank = u_map["lex"]["rank"]
+    bob_rank = u_map["bob"]["rank"]
+    assert ahmed_rank < lex_rank < bob_rank
+
+    # Non-admin forbidden
+    assert client.get("/api/users/leaderboard", headers=LEX).status_code == 403
+
+
+
 def _age_last_login(user_id, minutes):
     from postgres_client import get_connection, release_connection
     conn = get_connection()
