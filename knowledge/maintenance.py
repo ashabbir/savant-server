@@ -23,8 +23,9 @@ MAINTENANCE_LOCK_ID = 0x4B474D  # "KGM"; transaction-scoped and shared by every 
 DEFAULT_BATCH_SIZE = 500
 _scheduler: BackgroundScheduler | None = None
 _scheduler_lock = threading.Lock()
-_manual_run_lock = threading.Lock()
-_status: dict[str, Any] = {"running": False, "last_run": None, "next_run_at": None}
+CONTEMPLATE_JOB_TYPE = "contemplate"
+CONTEMPLATE_TARGET = "knowledge-graph"
+_status: dict[str, Any] = {"last_enqueued": None, "next_run_at": None}
 
 
 def _normalise(text: str) -> str:
@@ -146,8 +147,13 @@ def _process_staged_node(cur, staged: dict, summary: dict, *, now: str) -> None:
     summary["clusters_assigned"] += 1
 
 
-def run_maintenance_now(trigger: str = "manual") -> dict:
-    """Run one atomic maintenance pass. A busy peer returns a no-op, never overlaps."""
+def run_contemplate_now(trigger: str = "manual") -> dict:
+    """Reconcile the graph in one atomic, evidence-preserving contemplation pass.
+
+    This is deliberately deterministic: it promotes pending knowledge, merges only
+    exact canonical duplicates, resolves explicit supersession, and removes invalid
+    self-edges. It never invents new facts or silently discards unique evidence.
+    """
     started = perf_counter()
     summary = {key: 0 for key in (
         "nodes_promoted", "duplicates_merged", "contradictions_resolved", "nodes_expired",
@@ -241,31 +247,40 @@ def get_maintenance_status() -> dict:
         return dict(_status)
 
 
-def _scheduled_run() -> None:
+def queue_contemplate(trigger: str = "manual") -> dict:
+    """Durably queue one contemplation job, without overlapping an active pass."""
+    from db.jobs import JobDB
+
+    existing = JobDB.find_active(CONTEMPLATE_JOB_TYPE, CONTEMPLATE_TARGET)
+    if existing:
+        return {"accepted": True, "reused": True, "job": existing}
+    job = JobDB.create_job(
+        CONTEMPLATE_JOB_TYPE,
+        CONTEMPLATE_TARGET,
+        payload={"trigger": trigger, "source_app": "savant-server"},
+    )
     with _scheduler_lock:
-        _status["running"] = True
-    try:
-        result = run_maintenance_now("scheduled")
-        with _scheduler_lock:
-            _status["last_run"] = result
-    finally:
-        with _scheduler_lock:
-            _status["running"] = False
+        _status["last_enqueued"] = job
+    return {"accepted": True, "reused": False, "job": job}
+
+
+def _scheduled_run() -> None:
+    queue_contemplate("scheduled")
 
 
 def start_maintenance_scheduler() -> None:
-    """Start a single UTC cron scheduler; APScheduler never blocks Flask/SSE threads."""
+    """Queue a contemplation job every four hours; execution belongs to the worker."""
     global _scheduler
     with _scheduler_lock:
         if _scheduler and _scheduler.running:
             return
         _scheduler = BackgroundScheduler(timezone="UTC", daemon=True)
-        _scheduler.add_job(_scheduled_run, CronTrigger(hour="*/4", minute=0), id="kg-maintenance", replace_existing=True,
+        _scheduler.add_job(_scheduled_run, CronTrigger(hour="*/4", minute=0), id="contemplate", replace_existing=True,
                            max_instances=1, coalesce=True, misfire_grace_time=3600)
         _scheduler.start()
-        job = _scheduler.get_job("kg-maintenance")
+        job = _scheduler.get_job("contemplate")
         _status["next_run_at"] = job.next_run_time.isoformat() if job and job.next_run_time else None
-        logger.info("Knowledge graph maintenance scheduler started (UTC cron: 0 */4 * * *)")
+        logger.info("Knowledge graph contemplation scheduler started (UTC cron: 0 */4 * * *)")
 
 
 def stop_maintenance_scheduler() -> None:
@@ -278,21 +293,10 @@ def stop_maintenance_scheduler() -> None:
 
 
 def trigger_maintenance_async() -> dict:
-    """Queue a manual run without making the authenticated HTTP request wait."""
-    if not _manual_run_lock.acquire(blocking=False):
-        return {"accepted": False, "reason": "already_running"}
+    """Compatibility name for manually queueing the durable contemplation job."""
+    return queue_contemplate("manual")
 
-    def execute() -> None:
-        try:
-            with _scheduler_lock:
-                _status["running"] = True
-            result = run_maintenance_now("manual")
-            with _scheduler_lock:
-                _status["last_run"] = result
-        finally:
-            with _scheduler_lock:
-                _status["running"] = False
-            _manual_run_lock.release()
 
-    threading.Thread(target=execute, daemon=True, name="kg-maintenance-manual").start()
-    return {"accepted": True, "status": "queued"}
+# Kept for API callers while the observable queued job is named ``contemplate``.
+def run_maintenance_now(trigger: str = "manual") -> dict:
+    return run_contemplate_now(trigger)

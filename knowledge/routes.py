@@ -149,7 +149,7 @@ def maintenance_runs():
 @admin_required
 @require_savant_app
 def trigger_maintenance():
-    """Queue graph maintenance in a background thread, preserving SSE responsiveness."""
+    """Queue a durable contemplation job without blocking the API request."""
     from knowledge.maintenance import trigger_maintenance_async
     result = trigger_maintenance_async()
     return jsonify(result), (202 if result.get("accepted") else 409)

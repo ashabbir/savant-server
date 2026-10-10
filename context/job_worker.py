@@ -273,6 +273,12 @@ def _execute_job(job_id: str, job_type: str, target: str, payload: dict | None =
         return _run_initial_repo_sync(target, payload, progress_cb)
     elif job_type == "initial_repo_processing":
         return _run_initial_repo_processing(target, progress_cb)
+    elif job_type == "contemplate":
+        progress_cb(10, "Contemplating", "Reconciling pending knowledge and graph duplicates")
+        from knowledge.maintenance import run_contemplate_now
+        result = run_contemplate_now(str(payload.get("trigger") or "manual"))
+        progress_cb(100, "Complete", "Knowledge graph contemplation complete")
+        return result
     else:
         raise ValueError(f"Unknown job type: {job_type}")
 

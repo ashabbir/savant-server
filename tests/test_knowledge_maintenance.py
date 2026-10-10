@@ -1,7 +1,14 @@
 """Integration coverage for the scheduled institutional graph maintenance engine."""
 
 from db.knowledge_graph import KnowledgeGraphDB
-from knowledge.maintenance import run_maintenance_now, start_maintenance_scheduler, stop_maintenance_scheduler
+from knowledge.maintenance import (
+    CONTEMPLATE_JOB_TYPE,
+    CONTEMPLATE_TARGET,
+    queue_contemplate,
+    run_maintenance_now,
+    start_maintenance_scheduler,
+    stop_maintenance_scheduler,
+)
 
 
 def _node(title: str, *, metadata=None, content="", node_type="concept"):
@@ -68,12 +75,42 @@ def test_maintenance_records_audit_and_maintenance_api(client):
     response = client.get("/api/knowledge/maintenance/status")
     assert response.status_code == 200
     assert response.get_json()["runs"][0]["status"] == "success"
+    queued = client.post("/api/knowledge/maintenance/run")
+    assert queued.status_code == 202
+    assert queued.get_json()["job"]["job_type"] == CONTEMPLATE_JOB_TYPE
 
 
-def test_scheduler_has_a_single_four_hour_cron_job():
+def test_scheduler_has_a_single_four_hour_contemplate_cron_job():
     stop_maintenance_scheduler()
     start_maintenance_scheduler()
     from knowledge import maintenance
-    job = maintenance._scheduler.get_job("kg-maintenance")
+    job = maintenance._scheduler.get_job("contemplate")
     assert str(job.trigger) == "cron[hour='*/4', minute='0']"
     stop_maintenance_scheduler()
+
+
+def test_contemplate_queue_is_durable_and_deduplicates_active_jobs():
+    first = queue_contemplate("test")
+    second = queue_contemplate("test")
+
+    assert first["accepted"] is True
+    assert first["reused"] is False
+    assert first["job"]["job_type"] == CONTEMPLATE_JOB_TYPE
+    assert first["job"]["target"] == CONTEMPLATE_TARGET
+    assert second["accepted"] is True
+    assert second["reused"] is True
+    assert second["job"]["id"] == first["job"]["id"]
+
+
+def test_worker_executes_contemplate_and_commits_staged_knowledge():
+    from context.job_worker import _process_next_job
+    from db.jobs import JobDB
+
+    pending = _node("Contemplate me", content="Durable knowledge")
+    queued = queue_contemplate("test")
+    _process_next_job()
+
+    job = JobDB.get_job(queued["job"]["id"])
+    assert job["status"] == "done"
+    assert job["result"]["status"] == "success"
+    assert KnowledgeGraphDB.get_node(pending["node_id"])["status"] == "committed"

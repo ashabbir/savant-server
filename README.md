@@ -360,12 +360,14 @@ Seed data is embedded in `abilities/bootstrap.py`. On first startup, abilities a
 
 ### Knowledge Graph Maintenance
 
-The dedicated `knowledge.maintenance_runner` process runs the institutional
-knowledge graph optimization job at `0 */4 * * *` UTC. Each pass takes a
-PostgreSQL advisory transaction lock, promotes staged workspace knowledge in
-bounded batches, resolves explicit supersession records, consolidates exact
-canonical entities, applies a taxonomy cluster, expires time-bound records,
-and writes an audit row. The work is isolated from Flask/MCP SSE workers.
+The dedicated `knowledge.maintenance_runner` queues one durable `contemplate`
+job every four hours at minute zero (`0 */4 * * *` UTC). The normal job worker
+executes it with a PostgreSQL advisory transaction lock:
+pending knowledge is committed in bounded batches, exact canonical duplicates
+are merged without losing their evidence, explicit supersession is resolved,
+and invalid self-edges and expired entries are reconciled. Every execution
+writes an audit row; the durable queue prevents work from disappearing on a
+process restart.
 
 - `GET /api/knowledge/maintenance/status` — scheduler state and recent runs (admin)
 - `GET /api/knowledge/maintenance/runs` — audit history (admin)
