@@ -804,15 +804,38 @@ class KnowledgeGraphDB:
             release_connection(conn)
 
     @staticmethod
-    def list_maintenance_runs(limit: int = 50) -> list[dict]:
+    def list_maintenance_runs(limit: int = 50, offset: int = 0) -> list[dict]:
         """Return the most recent background graph-maintenance executions."""
         conn = get_connection()
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT * FROM kg_maintenance_runs ORDER BY started_at DESC LIMIT %s",
-                    (max(1, min(int(limit), 500)),),
+                    """SELECT r.*, EXISTS (SELECT 1 FROM kg_maintenance_reports p WHERE p.run_id = r.id)
+                       AS report_available FROM kg_maintenance_runs r
+                       ORDER BY started_at DESC, id DESC LIMIT %s OFFSET %s""",
+                    (max(1, min(int(limit), 500)), max(0, int(offset))),
                 )
                 return [_base_row(row, json_fields={"details": {}}) for row in cur.fetchall()]
+        finally:
+            release_connection(conn)
+
+    @staticmethod
+    def count_maintenance_runs() -> int:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT count(*) AS count FROM kg_maintenance_runs")
+                return cur.fetchone()["count"]
+        finally:
+            release_connection(conn)
+
+    @staticmethod
+    def get_maintenance_report(run_id: int) -> dict | None:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT report FROM kg_maintenance_reports WHERE run_id = %s", (run_id,))
+                row = cur.fetchone()
+                return row["report"] if row else None
         finally:
             release_connection(conn)

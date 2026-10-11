@@ -58,6 +58,7 @@ def test_current_postgres_schema_initializes_notebook_tables():
     assert any("CREATE TABLE IF NOT EXISTS engram_snapshots" in sql for sql in statements)
     assert any("CREATE TABLE IF NOT EXISTS conversation_compactions" in sql for sql in statements)
     assert any("CREATE TABLE IF NOT EXISTS app_variables" in sql for sql in statements)
+    assert any("CREATE TABLE IF NOT EXISTS kg_maintenance_reports" in sql for sql in statements)
     assert not any("CREATE TABLE IF NOT EXISTS tool_packages" in sql for sql in statements)
 
 
@@ -85,7 +86,9 @@ def test_existing_deployments_receive_pending_schema_migrations():
 
     applied = _run_pending_migrations(cursor)
 
-    assert applied == [5, 7, 8, 9, 10, 11, 8, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
+    assert applied == [5, 7, 8, 9, 10, 11, 8, 12, 13, 14, 15, 16, 17, 18, 19, 20, 23, 21, 22]
+    assert any("ADD COLUMN IF NOT EXISTS job_id" in sql for sql, _ in cursor.executed)
+    assert any("CREATE TABLE IF NOT EXISTS kg_maintenance_reports" in sql for sql, _ in cursor.executed)
     assert any("DROP CONSTRAINT IF EXISTS kg_nodes_node_type_check" in sql for sql, _ in cursor.executed)
     assert any("ADD CONSTRAINT kg_nodes_node_type_check" in sql for sql, _ in cursor.executed)
     assert any("idx_notebook_memberships_user" in sql for sql, _ in cursor.executed)

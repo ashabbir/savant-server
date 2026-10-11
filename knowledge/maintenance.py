@@ -5,9 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import threading
-from datetime import datetime, timezone
 from time import perf_counter
 from typing import Any
 
@@ -20,16 +18,11 @@ from postgres_client import get_connection, release_connection
 logger = logging.getLogger(__name__)
 
 MAINTENANCE_LOCK_ID = 0x4B474D  # "KGM"; transaction-scoped and shared by every container.
-DEFAULT_BATCH_SIZE = 500
 _scheduler: BackgroundScheduler | None = None
 _scheduler_lock = threading.Lock()
 CONTEMPLATE_JOB_TYPE = "contemplate"
 CONTEMPLATE_TARGET = "knowledge-graph"
 _status: dict[str, Any] = {"last_enqueued": None, "next_run_at": None}
-
-
-def _normalise(text: str) -> str:
-    return re.sub(r"\s+", " ", (text or "").strip().casefold())
 
 
 def _metadata(raw: Any) -> dict:
@@ -43,22 +36,27 @@ def _metadata(raw: Any) -> dict:
 
 
 def _merge_metadata(canonical: dict, staged: dict, *, now: str) -> dict:
+    from knowledge.contemplate_matching import workspaces as metadata_workspaces
     result = _metadata(canonical.get("metadata"))
     incoming = _metadata(staged.get("metadata"))
-    workspaces = set(result.get("workspaces") or []) | set(incoming.get("workspaces") or [])
+    workspaces = metadata_workspaces(result) | metadata_workspaces(incoming)
     if workspaces:
         result["workspaces"] = sorted(workspaces)
     for key, value in incoming.items():
         if key not in result and value not in (None, "", [], {}):
             result[key] = value
     result["last_consolidated_at"] = now
+    sources = list(result.get("consolidation_sources") or [])
+    sources.append({"node_id": staged["node_id"], "title": staged["title"], "created_by": staged.get("created_by", ""),
+                    "metadata": incoming})
+    result["consolidation_sources"] = sources
     return result
 
 
 def _rewire_edges(cur, survivor_id: str, absorbed_id: str) -> None:
     """Move edges to survivor, retaining the strongest duplicate edge."""
     cur.execute(
-        "SELECT edge_id, source_id, target_id, edge_type, weight FROM kg_edges WHERE source_id = %s OR target_id = %s",
+        "SELECT edge_id, source_id, target_id, edge_type, weight, label FROM kg_edges WHERE source_id = %s OR target_id = %s",
         (absorbed_id, absorbed_id),
     )
     for edge in cur.fetchall():
@@ -69,13 +67,15 @@ def _rewire_edges(cur, survivor_id: str, absorbed_id: str) -> None:
         source_id = survivor_id if edge["source_id"] == absorbed_id else external_id
         target_id = external_id if edge["source_id"] == absorbed_id else survivor_id
         cur.execute(
-            "SELECT edge_id, weight FROM kg_edges WHERE source_id = %s AND target_id = %s AND edge_type = %s",
+            "SELECT edge_id, weight, label FROM kg_edges WHERE source_id = %s AND target_id = %s AND edge_type = %s",
             (source_id, target_id, edge["edge_type"]),
         )
         existing = cur.fetchone()
         if existing:
-            if edge["weight"] > existing["weight"]:
-                cur.execute("UPDATE kg_edges SET weight = %s WHERE edge_id = %s", (edge["weight"], existing["edge_id"]))
+            labels = "\n".join(dict.fromkeys(label for label in (existing["label"], edge["label"]) if label))
+            weights = [weight for weight in (edge["weight"], existing["weight"]) if weight is not None]
+            cur.execute("UPDATE kg_edges SET weight = %s, label = %s WHERE edge_id = %s",
+                        (max(weights) if weights else None, labels, existing["edge_id"]))
             cur.execute("DELETE FROM kg_edges WHERE edge_id = %s", (edge["edge_id"],))
         else:
             column = "source_id" if edge["source_id"] == absorbed_id else "target_id"
@@ -116,130 +116,127 @@ def _finish_run(cur, run_id: int, status: str, summary: dict, error: str = "") -
     )
 
 
-def _process_staged_node(cur, staged: dict, summary: dict, *, now: str) -> None:
-    meta = _metadata(staged["metadata"])
-    supersedes = str(meta.get("supersedes_node_id") or meta.get("contradicts_node_id") or "")
-    canonical = None
-    contradiction = False
-    if supersedes:
-        cur.execute("SELECT * FROM kg_nodes WHERE node_id = %s AND status = 'committed' FOR UPDATE", (supersedes,))
-        canonical = cur.fetchone()
-        contradiction = canonical is not None
-    if canonical is None:
-        cur.execute(
-            """SELECT * FROM kg_nodes WHERE status = 'committed' AND node_type = %s
-               AND lower(btrim(title)) = %s ORDER BY updated_at DESC LIMIT 1 FOR UPDATE""",
-            (staged["node_type"], _normalise(staged["title"])),
-        )
-        canonical = cur.fetchone()
-    if canonical:
-        _absorb(cur, canonical, staged, now=now, contradiction=contradiction)
-        summary["duplicates_merged"] += 1
-        summary["contradictions_resolved"] += int(contradiction)
-        return
-    meta["cluster"] = meta.get("cluster") or f"{staged['node_type']}-knowledge"
-    meta["promoted_at"] = now
-    cur.execute(
-        "UPDATE kg_nodes SET status = 'committed', metadata = %s, updated_at = %s WHERE node_id = %s",
-        (json.dumps(meta), now, staged["node_id"]),
-    )
-    summary["nodes_promoted"] += 1
-    summary["clusters_assigned"] += 1
-
-
-def run_contemplate_now(trigger: str = "manual") -> dict:
-    """Reconcile the graph in one atomic, evidence-preserving contemplation pass.
-
-    This is deliberately deterministic: it promotes pending knowledge, merges only
-    exact canonical duplicates, resolves explicit supersession, and removes invalid
-    self-edges. It never invents new facts or silently discards unique evidence.
-    """
-    started = perf_counter()
-    summary = {key: 0 for key in (
+def _summary(trigger: str) -> dict:
+    return {**{key: 0 for key in (
         "nodes_promoted", "duplicates_merged", "contradictions_resolved", "nodes_expired",
         "edges_pruned", "nodes_pruned", "clusters_assigned",
-    )}
-    summary["trigger"] = trigger
+    )}, "trigger": trigger, "affected_node_count": 0, "affected_node_ids": [],
+        "affected_node_limit": 20, "limit_reached": False, "deferred_operations": 0}
+
+
+def run_contemplate_now(trigger: str = "manual", job_id: str | None = None) -> dict:
+    """Run bounded cosine reconciliation and atomically persist its undo report."""
+    from knowledge.contemplate_engine import Contemplation
+    from knowledge.contemplate_matching import SimilarityMatcher
+    from knowledge.contemplate_report import (
+        RESTORE_INSTRUCTIONS, change_set, json_value, persist_report, snapshot,
+    )
+    started = perf_counter()
+    summary = _summary(trigger)
     conn = get_connection()
-    run_id: int | None = None
+    run_id = None
+    locked = False
+    matcher = SimilarityMatcher()
+    report = {"schema_version": 1, "job_id": job_id, "trigger": trigger,
+              "started_at": _now(), "configuration": {"affected_node_limit": 20,
+              "requested_similarity_threshold": os.getenv("KG_CONTEMPLATE_SIMILARITY_THRESHOLD", "0.95"),
+              "embedding_model": matcher.model_identity},
+              "restore_instructions": RESTORE_INSTRUCTIONS,
+              "changes": {"kg_nodes": [], "kg_edges": []}, "incident_edges": {}, "actions": []}
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT pg_try_advisory_xact_lock(%s) AS locked", (MAINTENANCE_LOCK_ID,))
-            if not cur.fetchone()["locked"]:
-                conn.rollback()
-                return {"status": "skipped", "reason": "already_running", **summary}
+            cur.execute("SELECT current_database() AS database, inet_server_addr()::text AS server_address, inet_server_port() AS server_port")
+            report["target_database"] = dict(cur.fetchone())
             run_id = _create_run(cur, trigger)
-            now = _now()
-            batch_size = max(1, min(int(os.environ.get("KG_MAINTENANCE_BATCH_SIZE", DEFAULT_BATCH_SIZE)), 5000))
-            while True:
-                cur.execute(
-                    """SELECT * FROM kg_nodes WHERE status = 'staged'
-                       ORDER BY created_at ASC LIMIT %s FOR UPDATE SKIP LOCKED""",
-                    (batch_size,),
-                )
-                staged_nodes = list(cur.fetchall())
-                if not staged_nodes:
-                    break
-                for staged in staged_nodes:
-                    _process_staged_node(cur, staged, summary, now=now)
-
-            # Canonicalise pre-existing committed exact-name duplicates as well.
-            cur.execute(
-                """SELECT node_type, lower(btrim(title)) AS normalised_title, array_agg(node_id ORDER BY created_at ASC) AS ids
-                   FROM kg_nodes WHERE status = 'committed' GROUP BY node_type, lower(btrim(title)) HAVING count(*) > 1"""
-            )
-            for group in cur.fetchall():
-                ids = group["ids"]
-                cur.execute("SELECT * FROM kg_nodes WHERE node_id = ANY(%s) ORDER BY created_at ASC FOR UPDATE", (ids,))
-                nodes = list(cur.fetchall())
-                if not nodes:
-                    continue
-                for duplicate in nodes[1:]:
-                    _absorb(cur, nodes[0], duplicate, now=now)
-                    summary["duplicates_merged"] += 1
-
-            # Time-bound entries decay without destructive loss; a later review can restore them.
-            cur.execute(
-                """UPDATE kg_nodes SET metadata = jsonb_set(metadata::jsonb, '{is_active}', 'false'::jsonb)::text,
-                    updated_at = %s WHERE status = 'committed' AND COALESCE((metadata::jsonb ->> 'expires_at')::timestamptz,
-                    'infinity'::timestamptz) <= CURRENT_TIMESTAMP AND COALESCE(metadata::jsonb ->> 'is_active', 'true') <> 'false'""",
-                (now,),
-            )
-            summary["nodes_expired"] = cur.rowcount
-            cur.execute("DELETE FROM kg_edges WHERE source_id = target_id")
-            summary["edges_pruned"] = cur.rowcount
-            _finish_run(cur, run_id, "success", summary)
+            cur.execute("UPDATE kg_maintenance_runs SET job_id = %s WHERE id = %s", (job_id, run_id))
         conn.commit()
-        summary.update({"status": "success", "run_id": run_id, "duration_ms": round((perf_counter() - started) * 1000)})
-        return summary
+        report["run_id"] = run_id
+        with conn.cursor() as cur:
+            # Session lock covers preparation as well as the mutation transaction.
+            cur.execute("SELECT pg_try_advisory_lock(%s) AS locked", (MAINTENANCE_LOCK_ID,))
+            locked = cur.fetchone()["locked"]
+        conn.commit()
+        if not locked:
+            summary.update(status="skipped", reason="already_running")
+        else:
+            threshold = float(os.getenv("KG_CONTEMPLATE_SIMILARITY_THRESHOLD", "0.95"))
+            if not 0 <= threshold <= 1:
+                raise ValueError("KG_CONTEMPLATE_SIMILARITY_THRESHOLD must be in [0, 1]")
+            report["configuration"]["similarity_threshold"] = threshold
+            # Holding the maintenance lock proves an earlier abandoned graph transaction is over.
+            with conn.cursor() as cur:
+                cur.execute("""SELECT r.* FROM kg_maintenance_runs r LEFT JOIN jobs j ON j.id = r.job_id
+                    WHERE r.status = 'running' AND r.id < %s
+                    AND (r.job_id IS NULL OR j.id IS NULL OR j.status NOT IN ('queued', 'running'))""", (run_id,))
+                abandoned = list(cur.fetchall())
+                for old in abandoned:
+                    failure = _summary(old["trigger"])
+                    failure.update(status="failed", reason="interrupted", run_id=old["id"])
+                    _finish_run(cur, old["id"], "failed", failure, "Interrupted before graph/report commit")
+                    persist_report(cur, old["id"], {
+                        **report, "run_id": old["id"], "job_id": old["job_id"], "trigger": old["trigger"],
+                        "started_at": json_value(old["started_at"]), "finished_at": _now(),
+                        "status": "failed", "summary": failure, "error": "Interrupted before graph/report commit",
+                    })
+                cur.execute("SELECT * FROM kg_nodes ORDER BY created_at, node_id")
+                initial_nodes = list(cur.fetchall())
+            conn.commit()
+            matcher.prepare(initial_nodes)
+            with conn.cursor() as cur:
+                cur.execute("LOCK TABLE kg_nodes, kg_edges IN SHARE ROW EXCLUSIVE MODE")
+                before = snapshot(cur)
+                engine = Contemplation(cur, matcher, summary, before, _now(), threshold)
+                engine.reconcile()
+                after = snapshot(cur)
+                report["changes"], report["incident_edges"] = change_set(before, after, engine.affected)
+                report["actions"] = engine.actions
+                summary["status"] = "success"
+                report.update(status="success", finished_at=_now(), summary=dict(summary))
+                _finish_run(cur, run_id, "success", summary)
+                persist_report(cur, run_id, report)
+            conn.commit()
+        if not locked:
+            with conn.cursor() as cur:
+                report.update(status="skipped", finished_at=_now(), summary=dict(summary))
+                _finish_run(cur, run_id, "skipped", summary)
+                persist_report(cur, run_id, report)
+            conn.commit()
     except Exception as exc:
         conn.rollback()
-        logger.exception("Knowledge graph maintenance failed")
-        failure = {**summary, "status": "failed", "duration_ms": round((perf_counter() - started) * 1000)}
-        # Persist a failed audit separately because the graph transaction deliberately rolled back.
-        try:
-            with conn.cursor() as cur:
-                if run_id is None:
-                    run_id = _create_run(cur, trigger)
-                _finish_run(cur, run_id, "failed", summary, str(exc))
-            conn.commit()
-            failure["run_id"] = run_id
-        except Exception:
-            conn.rollback()
-        failure["error"] = str(exc)
+        logger.exception("Knowledge graph contemplation failed")
+        attempted = dict(summary)
+        summary = {**_summary(trigger), "status": "failed", "error": str(exc)}
+        if run_id is not None:
+            report.update(status="failed", finished_at=_now(), summary=dict(summary),
+                          attempted_summary=attempted, error=str(exc),
+                          changes={"kg_nodes": [], "kg_edges": []}, incident_edges={}, actions=[])
+            try:
+                with conn.cursor() as cur:
+                    _finish_run(cur, run_id, "failed", summary, str(exc))
+                    persist_report(cur, run_id, report)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                logger.exception("Could not persist failed contemplation report")
         try:
             from db.notifications import NotificationDB
-            NotificationDB.notify(
-                message=f"Knowledge graph maintenance failed: {str(exc)[:300]}",
-                event_type="kg_maintenance_failed",
-                level="warning",
-                detail={"error": str(exc), "trigger": trigger, "summary": summary},
-            )
+            NotificationDB.notify(message=f"Knowledge graph maintenance failed: {str(exc)[:300]}",
+                                  event_type="kg_maintenance_failed", level="warning",
+                                  detail={"error": str(exc), "trigger": trigger, "run_id": run_id})
         except Exception:
-            pass
-        return failure
+            logger.warning("Could not notify about contemplation failure", exc_info=True)
     finally:
+        if locked:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT pg_advisory_unlock(%s)", (MAINTENANCE_LOCK_ID,))
+                conn.commit()
+            except Exception:
+                # Never return a session holding an advisory lock to the pool.
+                conn.close()
+                logger.exception("Could not release contemplation advisory lock")
         release_connection(conn)
+    return {**summary, "run_id": run_id, "duration_ms": round((perf_counter() - started) * 1000)}
 
 
 def get_maintenance_status() -> dict:

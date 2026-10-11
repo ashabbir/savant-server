@@ -276,7 +276,9 @@ def _execute_job(job_id: str, job_type: str, target: str, payload: dict | None =
     elif job_type == "contemplate":
         progress_cb(10, "Contemplating", "Reconciling pending knowledge and graph duplicates")
         from knowledge.maintenance import run_contemplate_now
-        result = run_contemplate_now(str(payload.get("trigger") or "manual"))
+        result = run_contemplate_now(str(payload.get("trigger") or "manual"), job_id=job_id)
+        if result.get("status") == "failed":
+            raise RuntimeError(f"Contemplate run {result.get('run_id')} failed: {result.get('error', 'unknown error')}")
         progress_cb(100, "Complete", "Knowledge graph contemplation complete")
         return result
     else:

@@ -142,7 +142,22 @@ def maintenance_status():
 @knowledge_bp.route("/api/knowledge/maintenance/runs", methods=["GET"])
 @admin_required
 def maintenance_runs():
-    return jsonify({"runs": KnowledgeGraphDB.list_maintenance_runs(limit=_safe_int(request.args.get("limit"), 50, 1, 500))})
+    limit = _safe_int(request.args.get("limit"), 20, 1, 100)
+    page = _safe_int(request.args.get("page"), 1, 1, 1_000_000)
+    return jsonify({"runs": KnowledgeGraphDB.list_maintenance_runs(limit=limit, offset=(page - 1) * limit),
+                    "total": KnowledgeGraphDB.count_maintenance_runs(), "page": page, "page_size": limit})
+
+
+@knowledge_bp.route("/api/knowledge/maintenance/runs/<int:run_id>/report", methods=["GET"])
+@admin_required
+def maintenance_report(run_id):
+    report = KnowledgeGraphDB.get_maintenance_report(run_id)
+    if report is None:
+        return jsonify({"error": "Undo report unavailable"}), 404
+    response = jsonify(report)
+    response.headers["Content-Disposition"] = f'attachment; filename="contemplate-run-{run_id}.json"'
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @knowledge_bp.route("/api/knowledge/maintenance/run", methods=["POST"])

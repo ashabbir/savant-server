@@ -1,4 +1,4 @@
-# Savant Server (Version 20.0.0)
+# Savant Server (Version 21.0.0)
 
 License Owned by Project X. This repository is private and proprietary.
 
@@ -362,16 +362,41 @@ Seed data is embedded in `abilities/bootstrap.py`. On first startup, abilities a
 
 The dedicated `knowledge.maintenance_runner` queues one durable `contemplate`
 job every four hours at minute zero (`0 */4 * * *` UTC). The normal job worker
-executes it with a PostgreSQL advisory transaction lock:
-pending knowledge is committed in bounded batches, exact canonical duplicates
-are merged without losing their evidence, explicit supersession is resolved,
-and invalid self-edges and expired entries are reconciled. Every execution
-writes an audit row; the durable queue prevents work from disappearing on a
-process restart.
+executes it with a PostgreSQL advisory lock covering embedding preparation and
+the atomic graph/report transaction. Duplicate merges require cosine similarity
+of at least `KG_CONTEMPLATE_SIMILARITY_THRESHOLD` (default `0.95`), matching
+normalized titles or identical non-empty content, matching node types, and
+compatible domain/workspace scope. Domain nodes never merge automatically.
+Explicit supersession remains separate from similarity matching.
+
+Each run may involve at most **20 distinct merge/delete nodes**, including both
+survivors and absorbed nodes. Ten separate pair merges or one survivor absorbing
+nineteen nodes reaches the ceiling. Remaining candidates wait for the next run;
+the limit does not trigger extra queued runs. Promotions, expiration and
+self-edge cleanup are also audited, but do not consume the merge/delete budget.
+Unavailable embeddings or oversized model inputs defer merges; title matching
+alone is never a fallback.
 
 - `GET /api/knowledge/maintenance/status` — scheduler state and recent runs (admin)
-- `GET /api/knowledge/maintenance/runs` — audit history (admin)
+- `GET /api/knowledge/maintenance/runs?page=1&limit=20` — paginated audit history (admin)
+- `GET /api/knowledge/maintenance/runs/<id>/report` — downloadable undo report (admin)
 - `POST /api/knowledge/maintenance/run` — queue an immediate run (admin)
+
+Olympus Knowledge → **RUN HISTORY** shows individual runs and downloads reports.
+Schema-v1 JSON reports include matching configuration, action reasons/scores,
+complete before/after rows, incident-edge inventories, SHA-256 integrity and
+restoration instructions. Raw metadata, node/edge IDs, creator attribution,
+labels, weights and timestamps are retained. Failed runs report zero committed
+changes, separately from attempted counts. Older runs without snapshots show
+"Undo report unavailable".
+
+Give the downloaded JSON to an AI agent with privileged access to the correct
+PostgreSQL database. The agent must validate integrity and target identity,
+acquire the maintenance and graph locks, verify the recorded after-state, and
+restore the before-state in one transaction. Later edits, newly added incident
+edges or missing external endpoints are conflicts: abort instead of overwriting
+them. Already-restored reports are no-ops. Normal create-node APIs cannot restore
+original identifiers and timestamps; there is deliberately no revert API.
 
 ### Version Info
 

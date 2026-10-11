@@ -626,6 +626,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_kge_unique ON kg_edges(source_id, target_i
 -- the source of truth. This table makes every automated mutation observable.
 CREATE TABLE IF NOT EXISTS kg_maintenance_runs (
     id                      BIGSERIAL PRIMARY KEY,
+    job_id                  TEXT,
     trigger                 TEXT NOT NULL DEFAULT 'scheduled',
     status                  TEXT NOT NULL DEFAULT 'running',
     started_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -641,6 +642,11 @@ CREATE TABLE IF NOT EXISTS kg_maintenance_runs (
     details                 JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 CREATE INDEX IF NOT EXISTS idx_kg_maintenance_runs_started ON kg_maintenance_runs(started_at DESC);
+
+CREATE TABLE IF NOT EXISTS kg_maintenance_reports (
+    run_id BIGINT PRIMARY KEY REFERENCES kg_maintenance_runs(id) ON DELETE CASCADE,
+    report JSONB NOT NULL
+);
 
 -- -------------------------------------------------------------------------
 -- Context / Embedding tables (replaces sqlite-vec)
@@ -1382,6 +1388,17 @@ _SCHEMA_MIGRATIONS = (
         (
             "ALTER TABLE kg_nodes ADD COLUMN IF NOT EXISTS created_by TEXT NOT NULL DEFAULT ''",
             "CREATE INDEX IF NOT EXISTS idx_kgn_created_by ON kg_nodes(created_by)",
+        ),
+    ),
+    (
+        23,
+        "add lossless contemplation reports and job identity",
+        (
+            "ALTER TABLE kg_maintenance_runs ADD COLUMN IF NOT EXISTS job_id TEXT",
+            """CREATE TABLE IF NOT EXISTS kg_maintenance_reports (
+                run_id BIGINT PRIMARY KEY REFERENCES kg_maintenance_runs(id) ON DELETE CASCADE,
+                report JSONB NOT NULL
+            )""",
         ),
     ),
 )
