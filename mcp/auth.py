@@ -318,6 +318,11 @@ def _usage_details(arguments) -> dict:
         if isinstance(value, str) and value.strip():
             details["query"] = value.strip()
             break
+    if not details.get("query"):
+        if "persona" in arguments and isinstance(arguments["persona"], str) and arguments["persona"].strip():
+            details["query"] = f"persona:{arguments['persona'].strip()}"
+        elif "asset_id" in arguments and isinstance(arguments["asset_id"], str) and arguments["asset_id"].strip():
+            details["query"] = f"ability:{arguments['asset_id'].strip()}"
     return details
 
 

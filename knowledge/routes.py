@@ -1216,6 +1216,18 @@ def kg_info():
     """Return grouped node and edge summaries for the info modal."""
     workspace_id = request.args.get("workspace_id", "").strip()
     include_staged = request.args.get("include_staged", "").lower() in ("true", "1", "yes")
+    summary_only = request.args.get("summary", "").lower() in ("true", "1", "yes")
+    if summary_only:
+        summary = KnowledgeGraphDB.get_graph_summary(
+            include_staged=include_staged,
+            workspace_id=workspace_id,
+        )
+        return jsonify({
+            "total_nodes": summary["total_nodes"],
+            "total_edges": summary["total_edges"],
+            "nodes_by_type": [{**group, "items": []} for group in summary["nodes_by_type"]],
+            "edges_by_type": [{**group, "items": []} for group in summary["edges_by_type"]],
+        })
     graph = KnowledgeGraphDB.get_full_graph(limit=1000, include_staged=include_staged)
     nodes = graph["nodes"]
     edges = graph["edges"]

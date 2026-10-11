@@ -369,6 +369,19 @@ class TestInfoEndpoint:
         assert domain_group[0]["count"] >= 2
         assert len(domain_group[0]["items"]) >= 2
 
+    def test_info_summary_returns_database_aggregated_counts(self, client):
+        _create_node(client, "Summary A", "domain")
+        _create_node(client, "Summary B", "domain")
+        _create_node(client, "Summary C", "service")
+
+        resp = client.get("/api/knowledge/info?summary=true")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        by_type = {group["type"]: group["count"] for group in data["nodes_by_type"]}
+        assert by_type["domain"] >= 2
+        assert by_type["service"] >= 1
+        assert data["total_nodes"] == sum(by_type.values())
+
     def test_info_with_workspace_filter(self, client):
         ws_id = _create_workspace(client, "Info WS")
         n1 = _create_node(client, "WS Info Node", "insight")

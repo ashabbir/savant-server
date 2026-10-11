@@ -3,6 +3,7 @@
 from flask import Blueprint, g, jsonify, request
 from db.mcp_usage import McpUsageDB
 from db.knowledge_graph import KnowledgeGraphDB
+from db.topic_modeling import TopicModelingDB
 from db.users import UserDB
 from db.workspaces import WorkspaceDB
 from utils.auth import check_domain_write_access, admin_required
@@ -214,7 +215,33 @@ def api_user_usage(user_id):
     last_login = user.get("last_login_at")
     usage["user_id"] = user_id
     usage["last_login_at"] = last_login.isoformat() if last_login else None
+    try:
+        usage["topic_model"] = TopicModelingDB.get_user_topic_model(user_id, days=days)
+    except Exception:
+        usage["topic_model"] = None
     return jsonify(usage)
+
+
+@users_bp.route("/api/users/<user_id>/topic-model", methods=["GET"])
+def api_user_topic_model(user_id):
+    """Return semantic topic modeling and user activity intelligence."""
+    err = _require_admin()
+    if err:
+        return err
+    user = UserDB.get_by_id(user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    try:
+        days = min(365, max(1, int(request.args.get("days", 30))))
+    except ValueError:
+        return jsonify({"error": "days must be an integer"}), 400
+    try:
+        max_topics = min(10, max(2, int(request.args.get("topics", 5))))
+    except ValueError:
+        max_topics = 5
+
+    topic_model = TopicModelingDB.get_user_topic_model(user_id, days=days, max_topics=max_topics)
+    return jsonify(topic_model)
 
 
 @users_bp.route("/api/users/<user_id>/contributions", methods=["GET"])

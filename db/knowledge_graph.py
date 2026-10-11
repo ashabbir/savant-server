@@ -458,6 +458,69 @@ class KnowledgeGraphDB:
         finally:
             release_connection(conn)
 
+    @staticmethod
+    def get_graph_summary(include_staged: bool = False, workspace_id: str = "") -> dict:
+        """Return uncapped graph totals grouped by node and edge type.
+
+        Unlike ``get_full_graph``, this deliberately aggregates in PostgreSQL so
+        status panels do not turn a graph-display page limit into a fake total.
+        """
+        node_conditions: list[str] = []
+        node_params: list[str] = []
+        if not include_staged:
+            node_conditions.append("status = 'committed'")
+        if workspace_id:
+            node_conditions.append("COALESCE(metadata::jsonb -> 'workspaces', '[]'::jsonb) ? %s")
+            node_params.append(workspace_id)
+        node_where = f" WHERE {' AND '.join(node_conditions)}" if node_conditions else ""
+
+        def scoped(alias: str) -> tuple[str, list[str]]:
+            conditions: list[str] = []
+            params: list[str] = []
+            if not include_staged:
+                conditions.append(f"{alias}.status = 'committed'")
+            if workspace_id:
+                conditions.append(
+                    f"COALESCE({alias}.metadata::jsonb -> 'workspaces', '[]'::jsonb) ? %s"
+                )
+                params.append(workspace_id)
+            return (f" WHERE {' AND '.join(conditions)}" if conditions else "", params)
+
+        source_where, source_params = scoped("source")
+        target_where, target_params = scoped("target")
+        edge_conditions = [clause.removeprefix(" WHERE ") for clause in (source_where, target_where) if clause]
+        edge_where = f" WHERE {' AND '.join(edge_conditions)}" if edge_conditions else ""
+
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT node_type AS type, COUNT(*) AS count FROM kg_nodes{node_where} "
+                    "GROUP BY node_type ORDER BY node_type",
+                    node_params,
+                )
+                node_rows = cur.fetchall()
+                cur.execute(
+                    "SELECT edge_type AS type, COUNT(*) AS count "
+                    "FROM kg_edges edge "
+                    "JOIN kg_nodes source ON source.node_id = edge.source_id "
+                    "JOIN kg_nodes target ON target.node_id = edge.target_id"
+                    f"{edge_where} GROUP BY edge_type ORDER BY edge_type",
+                    source_params + target_params,
+                )
+                edge_rows = cur.fetchall()
+
+            nodes_by_type = [dict(row) for row in node_rows]
+            edges_by_type = [dict(row) for row in edge_rows]
+            return {
+                "total_nodes": sum(row["count"] for row in nodes_by_type),
+                "total_edges": sum(row["count"] for row in edges_by_type),
+                "nodes_by_type": nodes_by_type,
+                "edges_by_type": edges_by_type,
+            }
+        finally:
+            release_connection(conn)
+
     # -----------------------------------------------------------------------
     # Edges
     # -----------------------------------------------------------------------
