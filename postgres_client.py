@@ -1401,6 +1401,16 @@ _SCHEMA_MIGRATIONS = (
             )""",
         ),
     ),
+    (
+        24,
+        "independent semantic freshness and contemplation review cache",
+        (
+            "ALTER TABLE ctx_files ADD COLUMN IF NOT EXISTS semantic_mtime_ns BIGINT",
+            "ALTER TABLE ctx_files ADD COLUMN IF NOT EXISTS semantic_indexed_at TIMESTAMPTZ",
+            "CREATE TABLE IF NOT EXISTS kg_embedding_cache (cache_key TEXT PRIMARY KEY, vector JSONB NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS kg_review_progress (node_id TEXT PRIMARY KEY REFERENCES kg_nodes(node_id) ON DELETE CASCADE, fingerprint TEXT NOT NULL, reviewed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+        ),
+    ),
 )
 
 

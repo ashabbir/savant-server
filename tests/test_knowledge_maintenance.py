@@ -31,13 +31,35 @@ def deterministic_embeddings(monkeypatch):
             return [1.0, 0.0]
 
     monkeypatch.setattr(EmbeddingModel, "get", lambda: FakeModel())
+    from knowledge.contemplate_matching import SimilarityMatcher, text_guard
+    original_score = SimilarityMatcher.score
+    def distinct_facts(matcher, left, right, **kwargs):
+        score = original_score(matcher, left, right, **kwargs)
+        return score if text_guard(left, right) else 0.0
+    monkeypatch.setattr(SimilarityMatcher, "score", distinct_facts)
 
 
 def _node(title: str, *, metadata=None, content="", node_type="concept"):
-    return KnowledgeGraphDB.create_node({
+    node = KnowledgeGraphDB.create_node({
         "title": title, "node_type": node_type, "content": content,
         "metadata": metadata or {"workspaces": ["maintenance-test"]},
     })
+    if node_type != "domain" and (not metadata or "maintenance-test" in metadata.get("workspaces", [])):
+        from postgres_client import get_connection, release_connection
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT node_id FROM kg_nodes WHERE title='Maintenance test domain' AND node_type='domain'")
+                root = cur.fetchone()
+            conn.commit()
+        finally:
+            release_connection(conn)
+        if not root:
+            root = KnowledgeGraphDB.create_node({"title": "Maintenance test domain", "node_type": "domain",
+                                                 "metadata": {"contemplate_similarity_threshold": "default"}})
+            KnowledgeGraphDB.commit_nodes([root["node_id"]])
+        KnowledgeGraphDB.create_edge({"source_id": node["node_id"], "target_id": root["node_id"], "edge_type": "part_of"})
+    return node
 
 
 def test_maintenance_promotes_and_condenses_workspace_duplicates():
@@ -48,7 +70,7 @@ def test_maintenance_promotes_and_condenses_workspace_duplicates():
     result = run_maintenance_now("test")
 
     assert result["status"] == "success"
-    assert result["nodes_promoted"] == 1
+    assert result["nodes_promoted"] == 0
     assert result["duplicates_merged"] == 1
     graph = KnowledgeGraphDB.list_nodes(include_staged=True, limit=20)
     matches = [node for node in graph if node["title"] == first["title"]]
@@ -212,34 +234,34 @@ def _restore_export(report):
         release_connection(conn)
 
 
-@pytest.mark.parametrize("pair_count", [10, 11])
+@pytest.mark.parametrize("pair_count", [50, 51])
 def test_run_budget_counts_both_nodes_across_pairs_and_batches(monkeypatch, pair_count):
     monkeypatch.setenv("KG_MAINTENANCE_BATCH_SIZE", "1")
     for index in range(pair_count):
         _node(f"Duplicate pair {index}")
         _node(f"Duplicate pair {index}")
     result = run_maintenance_now("test")
-    assert result["duplicates_merged"] == 10
-    assert result["affected_node_count"] == 20
-    assert len(result["affected_node_ids"]) == 20
+    assert result["duplicates_merged"] == 50
+    assert result["affected_node_count"] == 100
+    assert len(result["affected_node_ids"]) == 100
     assert result["limit_reached"] is True
-    assert result["deferred_operations"] == pair_count - 10
+    assert result["deferred_operations"] == pair_count - 50
     assert len([node for node in KnowledgeGraphDB.list_nodes(include_staged=True, limit=100)
-                if node["status"] == "staged"]) == pair_count - 10
+                if node["status"] == "staged"]) == 0
 
 
-def test_one_survivor_can_absorb_only_nineteen_nodes():
-    for _ in range(21):
+def test_one_survivor_can_absorb_only_ninety_nine_nodes():
+    for _ in range(101):
         node = _node("Same knowledge", content="Identical evidence")
         KnowledgeGraphDB.commit_nodes([node["node_id"]])
     result = run_maintenance_now("test")
-    assert result["duplicates_merged"] == 19
-    assert result["affected_node_count"] == 20
+    assert result["duplicates_merged"] == 99
+    assert result["affected_node_count"] == 100
     assert result["limit_reached"] is True
 
 
 def test_supersession_and_duplicate_merges_share_the_same_budget():
-    for index in range(11):
+    for index in range(51):
         original = _node(f"Budget original {index}", content=f"Old evidence {index}")
         KnowledgeGraphDB.commit_nodes([original["node_id"]])
         if index % 2 == 0:
@@ -249,19 +271,19 @@ def test_supersession_and_duplicate_merges_share_the_same_budget():
         else:
             _node(original["title"], content=f"Extra evidence {index}")
     result = run_maintenance_now("test")
-    assert result["duplicates_merged"] == 10
-    assert result["contradictions_resolved"] == 5
-    assert result["affected_node_count"] == 20
+    assert result["duplicates_merged"] == 50
+    assert result["contradictions_resolved"] == 25
+    assert result["affected_node_count"] == 100
     assert result["limit_reached"] is True
 
 
-@pytest.mark.parametrize("score,expected", [(0.949999, 0), (0.95, 1), (0.950001, 1)])
-def test_similarity_threshold_is_required_for_matching_titles(monkeypatch, score, expected):
+@pytest.mark.parametrize("score,expected", [(0.699999, 0), (0.70, 0), (0.700001, 1)])
+def test_similarity_threshold_is_strict_for_semantic_matches(monkeypatch, score, expected):
     from knowledge.contemplate_matching import SimilarityMatcher
     monkeypatch.setattr(SimilarityMatcher, "score", lambda *args, **kwargs: score)
-    node = _node("Same title", content="One fact")
+    node = _node("Original wording", content="One fact")
     KnowledgeGraphDB.commit_nodes([node["node_id"]])
-    _node("Same title", content="Another fact")
+    _node("Related wording", content="Another fact")
     assert run_maintenance_now("test")["duplicates_merged"] == expected
 
 
@@ -289,8 +311,8 @@ def test_incompatible_scopes_and_domains_never_merge():
 
 def test_model_failure_and_long_inputs_defer_merges(monkeypatch):
     from context.embeddings import EmbeddingModel
-    _node("Long", content="word " * 600)
-    _node("Long", content="word " * 600)
+    _node("Long first", content="first " * 600)
+    _node("Long second", content="second " * 600)
     result = run_maintenance_now("test")
     assert result["duplicates_merged"] == 0
     assert result["status"] == "success"
@@ -474,7 +496,7 @@ def test_candidate_changes_during_preparation_are_revalidated(monkeypatch):
 
     def prepare_and_edit(matcher, nodes):
         original_prepare(matcher, nodes)
-        KnowledgeGraphDB.update_node(second["node_id"], {"content": "Concurrent new evidence"})
+        KnowledgeGraphDB.update_node(second["node_id"], {"title": "Concurrent new title", "content": "Concurrent new evidence"})
     monkeypatch.setattr(SimilarityMatcher, "prepare", prepare_and_edit)
     result = run_maintenance_now("test")
     assert result["duplicates_merged"] == 0

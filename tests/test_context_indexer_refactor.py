@@ -22,6 +22,7 @@ def test_incremental_reindex_replaces_generated_rows_instead_of_duplicating(monk
     indexer = Indexer()
 
     try:
+        indexer.generate_ast_for_repository(tmp_path, repo_name=repo_name, clear=True)
         indexer.index_repository(tmp_path, repo_name=repo_name, clear=True)
         first = next(row for row in ContextDB.get_repo_stats() if row["name"] == repo_name)
         assert first["chunk_count"] > 0

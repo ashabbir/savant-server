@@ -1,5 +1,6 @@
 """UserDB — PostgreSQL backend for user management and API key auth."""
 
+import os
 import hashlib
 import secrets
 from db.base import _now, _row_to_dict
@@ -212,6 +213,8 @@ class UserDB:
                     "is_active": 1,
                 },
             ]
+            if os.getenv("SAVANT_SEED_LEG_USER", "1") == "0":
+                defaults = [user for user in defaults if user["user_id"] != "lex"]
             now = _now()
             with conn.cursor() as cur:
                 for user in defaults:
@@ -220,12 +223,7 @@ class UserDB:
                         """INSERT INTO users
                            (user_id, name, email, api_key, api_key_hash, role, is_active, created_at, updated_at)
                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                           ON CONFLICT (user_id) DO UPDATE SET
-                             name = EXCLUDED.name,
-                             email = EXCLUDED.email,
-                             role = EXCLUDED.role,
-                             is_active = EXCLUDED.is_active,
-                             updated_at = EXCLUDED.updated_at""",
+                           ON CONFLICT (user_id) DO NOTHING""",
                         (
                             user["user_id"],
                             user["name"],

@@ -11,6 +11,7 @@ from .chunker import ContentChunker
 from .db import ContextDB
 from .language import MemoryBankDetector
 from .walker import FileWalker
+from .semantic_filter import semantic_source_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +235,7 @@ class Indexer:
         ".yaml": "yaml",
         ".md": "markdown",
         ".mdx": "markdown",
+        ".markdown": "markdown",
     }
 
     AST_QUERIES = {
@@ -452,6 +454,8 @@ class Indexer:
             return
 
         lang_name = self.EXTENSION_TO_LANG[suffix]
+        if lang_name == "markdown":
+            return
 
         if suffix == ".py":
             nodes = self._extract_python_native_ast(file_id, file_rel_path, content)
@@ -568,15 +572,18 @@ class Indexer:
             logger.warning(f"AST insert failed for {file_rel_path}:{start_line} ({name}): {e}")
 
     def _index_file(self, repo_id, repo_path, file_rel_path, embedder, conn, replace_generated=False):
-        if MemoryBankDetector.should_skip_in_memory_dir(str(file_rel_path)):
+        if (MemoryBankDetector.should_skip_in_memory_dir(str(file_rel_path)) or
+                not semantic_source_allowed(str(file_rel_path))):
             return None
         file_abs_path = repo_path / file_rel_path
         stat = file_abs_path.stat()
         if stat.st_size > 50_000_000:
             return None
-        with open(file_abs_path, "r", encoding="utf-8", errors="ignore") as handle:
-            content = handle.read()
-        if "\x00" in content:
+        try:
+            content = file_abs_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            return None
+        if not semantic_source_allowed(str(file_rel_path), content):
             return None
         language, is_memory_bank = self._detect_language(str(file_rel_path))
         file_id = ContextDB.insert_file(
@@ -584,11 +591,10 @@ class Indexer:
             int(stat.st_mtime_ns), datetime.now(timezone.utc).isoformat(), conn=conn,
         )
         if replace_generated:
-            ContextDB.clear_file_generated_data(file_id, conn=conn)
-        self._store_lossless_tree(file_id, str(file_rel_path), content, conn=conn)
-        self._extract_and_store_ast(file_id, str(file_rel_path), content, conn=conn)
+            ContextDB.clear_file_semantic_data(file_id, conn=conn)
         chunks = list(self.chunker.chunk_with_metadata(content))
         if not chunks:
+            ContextDB.mark_file_semantic_indexed(file_id, int(stat.st_mtime_ns), conn)
             return {"chunks": 0, "language": language, "is_memory_bank": is_memory_bank}
         chunk_texts = [text for idx, text in chunks]
         if hasattr(embedder, "embed"):
@@ -599,7 +605,10 @@ class Indexer:
             (idx, text, emb.tolist() if hasattr(emb, "tolist") else list(emb))
             for (idx, text), emb in zip(chunks, embeddings)
         ]
+        if len(chunk_records) != len(chunks):
+            raise ValueError("Embedding model returned an incomplete batch")
         ContextDB.insert_chunks_batch(file_id, chunk_records, conn=conn)
+        ContextDB.mark_file_semantic_indexed(file_id, int(stat.st_mtime_ns), conn)
         return {"chunks": len(chunk_records), "language": language, "is_memory_bank": is_memory_bank}
 
     def _generate_file_ast(self, repo_id, repo_path, file_rel_path, conn, replace_generated=False):
@@ -652,7 +661,6 @@ class Indexer:
             if clear:
                 _set_status(repo_name, phase="Clearing old generated data")
                 ContextDB.clear_index_data(repo_id, conn=conn)
-                ContextDB.clear_ast_data(repo_id, conn=conn)
 
             if _is_cancelled(repo_name):
                 raise _CancelledError(repo_name)
@@ -680,7 +688,7 @@ class Indexer:
                     files_to_remove = set(deleted_files)
                     removed_ids = [stored_files[rel_path]["id"] for rel_path in files_to_remove if rel_path in stored_files]
                     if removed_ids:
-                        files_removed = ContextDB.delete_files_by_id(removed_ids, conn=conn)
+                        files_removed = ContextDB.clear_semantic_files(removed_ids, conn=conn)
                         logger.info(f"Differential indexing removed {files_removed} deleted files for {repo_name}")
                     files_to_index = [Path(f) for f in (set(added_files) | set(modified_files))]
                     total_files = len(files_to_index)
@@ -696,7 +704,7 @@ class Indexer:
                     files_to_index_set = {str(f) for f in files_to_index}
                     removed_ids = [info["id"] for rel_path, info in stored_files.items() if rel_path not in files_to_index_set]
                     if removed_ids:
-                        files_removed = ContextDB.delete_files_by_id(removed_ids, conn=conn)
+                        files_removed = ContextDB.clear_semantic_files(removed_ids, conn=conn)
                         logger.info(f"Differential indexing removed {files_removed} deleted files for {repo_name}")
 
             embedder = self._get_embedder()
@@ -716,10 +724,16 @@ class Indexer:
                 str_rel = str(file_rel_path)
                 file_abs_path = repo_path / file_rel_path
 
+                if not semantic_source_allowed(str_rel):
+                    if str_rel in stored_files:
+                        ContextDB.clear_file_semantic_data(stored_files[str_rel]["id"], conn=conn)
+                    files_skipped += 1
+                    continue
+
                 if not clear and str_rel in stored_files:
                     try:
                         stat = file_abs_path.stat()
-                        if stored_files[str_rel]["mtime_ns"] == int(stat.st_mtime_ns):
+                        if stored_files[str_rel].get("semantic_mtime_ns") == int(stat.st_mtime_ns):
                             files_skipped += 1
                             pct = int((idx + 1) / total_files * 100) if total_files else 100
                             if job_progress_cb and (idx + 1) % 10 == 0:
@@ -734,6 +748,8 @@ class Indexer:
                         replace_generated=not clear,
                     )
                     if not indexed:
+                        if str_rel in stored_files:
+                            ContextDB.clear_file_semantic_data(stored_files[str_rel]["id"], conn=conn)
                         files_skipped += 1
                         continue
                     if indexed["is_memory_bank"]:
@@ -879,7 +895,7 @@ class Indexer:
                     time.sleep(0.002)
 
             _set_status(repo_name, status="indexed", phase="Complete", progress=100)
-            if not differential:
+            if not differential and repo.get("status") != "indexed":
                 ContextDB.update_repo_status(repo_name, "ast_only", conn=conn)
             return {
                 "repo_name": repo_name,
@@ -968,11 +984,8 @@ class Indexer:
                         skipped += 1
                         continue
                     language, is_memory_bank = self._detect_language(str(file_rel_path))
-                    if is_memory_bank:
-                        skipped += 1
-                        continue
                     file_id = ContextDB.insert_file(
-                        repo_id, str(file_rel_path), language, False,
+                        repo_id, str(file_rel_path), language, is_memory_bank,
                         int(path.stat().st_mtime_ns), datetime.now(timezone.utc).isoformat(), conn=conn,
                     )
                     if differential:

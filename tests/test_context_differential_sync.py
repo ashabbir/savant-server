@@ -27,6 +27,7 @@ def test_differential_indexing_removes_deleted_and_skips_unchanged(tmp_path, _is
     # Mock embedder
     mock_embedder = MagicMock()
     mock_embedder.embed_one.return_value = [0.1] * 768
+    mock_embedder.embed.side_effect = lambda texts: [[0.1] * 768 for _ in texts]
     monkeypatch.setattr("context.embeddings.EmbeddingModel.get", lambda: mock_embedder)
 
     # Initial full index (clear=True)
@@ -62,7 +63,7 @@ def test_differential_indexing_removes_deleted_and_skips_unchanged(tmp_path, _is
     assert res2["files_skipped"] == 0
 
     stored_after = ContextDB.get_repo_files_mtime(repo_id)
-    assert "file_a.py" not in stored_after
+    assert stored_after["file_a.py"]["semantic_mtime_ns"] is None
     assert "file_b.py" in stored_after
     assert "file_c.py" in stored_after
 
@@ -149,6 +150,7 @@ def test_differential_indexing_with_commits(tmp_path, _isolated_db, monkeypatch)
     # Mock embedder
     mock_embedder = MagicMock()
     mock_embedder.embed_one.return_value = [0.1] * 768
+    mock_embedder.embed.side_effect = lambda texts: [[0.1] * 768 for _ in texts]
     monkeypatch.setattr("context.embeddings.EmbeddingModel.get", lambda: mock_embedder)
 
     # Initial full index

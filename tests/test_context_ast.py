@@ -132,7 +132,7 @@ def test_ast_support_matrix_covers_framework_aliases_and_generic_grammars(monkey
     assert ("function", "greet") in captured
 
 
-def test_index_generates_ast_and_repo_overview_count(client, tmp_path, monkeypatch):
+def test_structural_generation_and_semantic_index_have_independent_counts(client, tmp_path, monkeypatch):
     from context.db import ContextDB, init_context_schema
     from context.indexer import Indexer
 
@@ -147,6 +147,7 @@ def test_index_generates_ast_and_repo_overview_count(client, tmp_path, monkeypat
     repo_dir = _seed_python_repo(tmp_path, "repo-overview")
     ContextDB.add_repo("repo-overview", str(repo_dir))
 
+    Indexer().generate_ast_for_repository(repo_dir, repo_name="repo-overview")
     Indexer().index_repository(repo_dir, repo_name="repo-overview")
 
     repos = client.get("/api/context/repos").get_json()["repos"]
@@ -199,7 +200,7 @@ def test_ast_list_returns_generated_nodes(client, tmp_path, monkeypatch):
     repo_dir = _seed_python_repo(tmp_path, "repo-ast-list")
     ContextDB.add_repo("repo-ast-list", str(repo_dir))
 
-    Indexer().index_repository(repo_dir, repo_name="repo-ast-list")
+    Indexer().generate_ast_for_repository(repo_dir, repo_name="repo-ast-list")
 
     resp = client.get("/api/context/ast/list?repo=repo-ast-list")
     assert resp.status_code == 200
@@ -213,7 +214,7 @@ def test_ast_list_returns_generated_nodes(client, tmp_path, monkeypatch):
     assert ("function", "helper") in names
 
 
-def test_generate_ast_marks_repo_ast_only_even_if_indexed(client, tmp_path, monkeypatch):
+def test_generate_ast_preserves_existing_indexed_status(client, tmp_path, monkeypatch):
     from context.db import ContextDB, init_context_schema
     from context.indexer import Indexer
 
@@ -233,7 +234,7 @@ def test_generate_ast_marks_repo_ast_only_even_if_indexed(client, tmp_path, monk
     idx.generate_ast_for_repository(repo_dir, repo_name="repo-status-ast")
 
     repo = ContextDB.get_repo("repo-status-ast")
-    assert repo["status"] == "ast_only"
+    assert repo["status"] == "indexed"
 
 
 def test_extract_ast_retries_transient_lock(tmp_path, monkeypatch):
@@ -340,7 +341,7 @@ def test_lossless_tree_preserves_source_and_links_ast(client, tmp_path, monkeypa
     monkeypatch.setattr(Indexer, "_get_embedder", lambda self: _FakeEmbedder())
     repo_dir = _seed_python_repo(tmp_path, "repo-lossless")
     ContextDB.add_repo("repo-lossless", str(repo_dir))
-    Indexer().index_repository(repo_dir, repo_name="repo-lossless")
+    Indexer().generate_ast_for_repository(repo_dir, repo_name="repo-lossless")
 
     response = client.get(
         "/api/context/lossless-tree?repo=repo-lossless&path=sample.py&start_line=1&end_line=5"
@@ -374,7 +375,7 @@ def test_lossless_tree_search_supports_multi_repo(client, tmp_path, monkeypatch)
     subprocess.run(["git", "-C", str(second), "add", "sample.py"], check=True, capture_output=True)
     for repo_name, repo_dir in (("repo-lossless-a", first), ("repo-lossless-b", second)):
         ContextDB.add_repo(repo_name, str(repo_dir))
-        Indexer().index_repository(repo_dir, repo_name=repo_name)
+        Indexer().generate_ast_for_repository(repo_dir, repo_name=repo_name)
 
     response = client.get(
         "/api/context/lossless-tree/search?q=shared-lst-token&repo=repo-lossless-a,repo-lossless-b"

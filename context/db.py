@@ -359,10 +359,44 @@ class ContextDB:
                     DELETE FROM ctx_chunks
                     WHERE file_id IN (SELECT id FROM ctx_files WHERE repo_id = %s)
                 """, (repo_id,))
+                cur.execute("UPDATE ctx_files SET semantic_mtime_ns = NULL, semantic_indexed_at = NULL WHERE repo_id = %s", (repo_id,))
             conn.commit()
         finally:
             if local_conn:
                 release_connection(conn)
+
+    @staticmethod
+    def clear_file_semantic_data(file_id: int, conn=None):
+        ContextDB.clear_semantic_files([file_id], conn=conn)
+
+    @staticmethod
+    def clear_semantic_files(file_ids: list[int], conn=None) -> int:
+        if not file_ids:
+            return 0
+        local_conn = conn is None
+        conn = conn or get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT id FROM ctx_files WHERE id = ANY(%s)
+                       AND (semantic_mtime_ns IS NOT NULL OR EXISTS
+                            (SELECT 1 FROM ctx_chunks WHERE file_id = ctx_files.id))""",
+                    (file_ids,),
+                )
+                removed = len(cur.fetchall())
+                cur.execute("DELETE FROM ctx_chunks WHERE file_id = ANY(%s)", (file_ids,))
+                cur.execute("UPDATE ctx_files SET semantic_mtime_ns = NULL, semantic_indexed_at = NULL WHERE id = ANY(%s)", (file_ids,))
+            conn.commit()
+            return removed
+        finally:
+            if local_conn:
+                release_connection(conn)
+
+    @staticmethod
+    def mark_file_semantic_indexed(file_id: int, mtime_ns: int, conn):
+        with conn.cursor() as cur:
+            cur.execute("UPDATE ctx_files SET semantic_mtime_ns = %s, semantic_indexed_at = CURRENT_TIMESTAMP WHERE id = %s", (mtime_ns, file_id))
+        conn.commit()
 
     @staticmethod
     def clear_ast_data(repo_id: int, conn=None):
@@ -459,11 +493,11 @@ class ContextDB:
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT id, rel_path, mtime_ns FROM ctx_files WHERE repo_id = %s",
+                    "SELECT id, rel_path, mtime_ns, semantic_mtime_ns FROM ctx_files WHERE repo_id = %s",
                     (repo_id,),
                 )
                 rows = cur.fetchall()
-            return {row["rel_path"]: {"id": row["id"], "mtime_ns": row["mtime_ns"]} for row in rows}
+            return {row["rel_path"]: {"id": row["id"], "mtime_ns": row["mtime_ns"], "semantic_mtime_ns": row["semantic_mtime_ns"]} for row in rows}
         finally:
             if local_conn:
                 release_connection(conn)
@@ -657,12 +691,12 @@ class ContextDB:
             try:
                 with conn.cursor() as cur:
                     from psycopg2.extras import execute_values
-                    execute_values(
+                    rows = execute_values(
                         cur,
                         "INSERT INTO ctx_chunks (file_id, chunk_index, content) VALUES %s RETURNING id, chunk_index",
                         [(file_id, idx, text) for idx, text, _ in chunks],
+                        fetch=True,
                     )
-                    rows = cur.fetchall()
                     chunk_id_by_index = {row["chunk_index"]: row["id"] for row in rows}
                     vec_data = [(chunk_id_by_index[idx], _coerce_vec(emb)) for idx, text, emb in chunks if idx in chunk_id_by_index]
                     if vec_data:
@@ -851,6 +885,7 @@ class ContextDB:
         conn = get_connection()
         try:
             sql = """
+                WITH candidates AS MATERIALIZED (
                 SELECT c.id AS chunk_id, c.chunk_index, c.content,
                        f.rel_path, f.language, f.is_memory_bank,
                        r.name AS repo,
@@ -873,7 +908,7 @@ class ContextDB:
             elif exclude_memory_bank:
                 sql += " AND f.is_memory_bank = 0"
 
-            sql += " ORDER BY distance ASC LIMIT %s"
+            sql += ") SELECT * FROM candidates ORDER BY distance ASC LIMIT %s"
             params.append(limit)
 
             with conn.cursor() as cur:

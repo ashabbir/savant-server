@@ -43,13 +43,15 @@ if [ "${SAVANT_ROLE:-}" = "worker" ] || [ "${SAVANT_ROLE:-}" = "jobs" ] || [ "${
   JOB_WORKER_PID="$!"
   CHILD_PIDS="$CHILD_PIDS $JOB_WORKER_PID"
 
-  nice -n 10 python -m context.periodic_runner &
-  PERIODIC_RUNNER_PID="$!"
-  CHILD_PIDS="$CHILD_PIDS $PERIODIC_RUNNER_PID"
+  if [ "${SAVANT_WORKER_SCHEDULER_ENABLED:-1}" != "0" ]; then
+    nice -n 10 python -m context.periodic_runner &
+    PERIODIC_RUNNER_PID="$!"
+    CHILD_PIDS="$CHILD_PIDS $PERIODIC_RUNNER_PID"
 
-  nice -n 10 python -m knowledge.maintenance_runner &
-  KG_MAINTENANCE_PID="$!"
-  CHILD_PIDS="$CHILD_PIDS $KG_MAINTENANCE_PID"
+    nice -n 10 python -m knowledge.maintenance_runner &
+    KG_MAINTENANCE_PID="$!"
+    CHILD_PIDS="$CHILD_PIDS $KG_MAINTENANCE_PID"
+  fi
 
   while :; do
     for pid in $CHILD_PIDS; do
@@ -99,15 +101,17 @@ if [ "${SAVANT_ROLE:-}" != "server" ] && [ "${SAVANT_EXTERNAL_JOB_WORKER:-0}" !=
   JOB_WORKER_PID="$!"
   CHILD_PIDS="$CHILD_PIDS $JOB_WORKER_PID"
 
-  nice -n 10 python -m context.periodic_runner &
-  PERIODIC_RUNNER_PID="$!"
-  CHILD_PIDS="$CHILD_PIDS $PERIODIC_RUNNER_PID"
+  if [ "${SAVANT_WORKER_SCHEDULER_ENABLED:-1}" != "0" ]; then
+    nice -n 10 python -m context.periodic_runner &
+    PERIODIC_RUNNER_PID="$!"
+    CHILD_PIDS="$CHILD_PIDS $PERIODIC_RUNNER_PID"
 
-  # One dedicated scheduler process owns the four-hour graph optimization cron.
-  # The transaction advisory lock remains a cross-container guard during deploys.
-  nice -n 10 python -m knowledge.maintenance_runner &
-  KG_MAINTENANCE_PID="$!"
-  CHILD_PIDS="$CHILD_PIDS $KG_MAINTENANCE_PID"
+    # One dedicated scheduler process owns the four-hour graph optimization cron.
+    # The transaction advisory lock remains a cross-container guard during deploys.
+    nice -n 10 python -m knowledge.maintenance_runner &
+    KG_MAINTENANCE_PID="$!"
+    CHILD_PIDS="$CHILD_PIDS $KG_MAINTENANCE_PID"
+  fi
 fi
 gunicorn \
   --bind "${FLASK_HOST:-0.0.0.0}:${FLASK_PORT:-8090}" \
