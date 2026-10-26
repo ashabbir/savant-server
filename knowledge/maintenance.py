@@ -43,7 +43,7 @@ def _merge_metadata(canonical: dict, staged: dict, *, now: str) -> dict:
     if workspaces:
         result["workspaces"] = sorted(workspaces)
     for key, value in incoming.items():
-        if key not in result and value not in (None, "", [], {}):
+        if key not in {"supersedes_node_id", "contradicts_node_id"} and key not in result and value not in (None, "", [], {}):
             result[key] = value
     result["last_consolidated_at"] = now
     sources = list(result.get("consolidation_sources") or [])
@@ -121,7 +121,7 @@ def _summary(trigger: str) -> dict:
         "nodes_promoted", "duplicates_merged", "contradictions_resolved", "nodes_expired",
         "edges_pruned", "nodes_pruned", "clusters_assigned",
     )}, "trigger": trigger, "affected_node_count": 0, "affected_node_ids": [],
-        "affected_node_limit": 20, "limit_reached": False, "deferred_operations": 0}
+        "affected_node_limit": 100, "limit_reached": False, "deferred_operations": 0}
 
 
 def run_contemplate_now(trigger: str = "manual", job_id: str | None = None) -> dict:
@@ -138,8 +138,8 @@ def run_contemplate_now(trigger: str = "manual", job_id: str | None = None) -> d
     locked = False
     matcher = SimilarityMatcher()
     report = {"schema_version": 1, "job_id": job_id, "trigger": trigger,
-              "started_at": _now(), "configuration": {"affected_node_limit": 20,
-              "requested_similarity_threshold": os.getenv("KG_CONTEMPLATE_SIMILARITY_THRESHOLD", "0.95"),
+              "started_at": _now(), "configuration": {"affected_node_limit": 100,
+              "requested_similarity_threshold": os.getenv("KG_CONTEMPLATE_SIMILARITY_THRESHOLD", "0.70"),
               "embedding_model": matcher.model_identity},
               "restore_instructions": RESTORE_INSTRUCTIONS,
               "changes": {"kg_nodes": [], "kg_edges": []}, "incident_edges": {}, "actions": []}
@@ -159,7 +159,7 @@ def run_contemplate_now(trigger: str = "manual", job_id: str | None = None) -> d
         if not locked:
             summary.update(status="skipped", reason="already_running")
         else:
-            threshold = float(os.getenv("KG_CONTEMPLATE_SIMILARITY_THRESHOLD", "0.95"))
+            threshold = float(os.getenv("KG_CONTEMPLATE_SIMILARITY_THRESHOLD", "0.70"))
             if not 0 <= threshold <= 1:
                 raise ValueError("KG_CONTEMPLATE_SIMILARITY_THRESHOLD must be in [0, 1]")
             report["configuration"]["similarity_threshold"] = threshold
@@ -185,11 +185,17 @@ def run_contemplate_now(trigger: str = "manual", job_id: str | None = None) -> d
             with conn.cursor() as cur:
                 cur.execute("LOCK TABLE kg_nodes, kg_edges IN SHARE ROW EXCLUSIVE MODE")
                 before = snapshot(cur)
+                report["configuration"]["domain_policies"] = {
+                    key: {"title": row["title"], "threshold": _metadata(row.get("metadata")).get("contemplate_similarity_threshold")}
+                    for key, row in before["kg_nodes"].items() if row["node_type"] == "domain"
+                }
                 engine = Contemplation(cur, matcher, summary, before, _now(), threshold)
                 engine.reconcile()
                 after = snapshot(cur)
                 report["changes"], report["incident_edges"] = change_set(before, after, engine.affected)
                 report["actions"] = engine.actions
+                report["configuration"].update(seed_ids=engine.seed_ids, seed_limit=200, nearest_candidates=20,
+                                                domain_threshold_field="contemplate_similarity_threshold")
                 summary["status"] = "success"
                 report.update(status="success", finished_at=_now(), summary=dict(summary))
                 _finish_run(cur, run_id, "success", summary)
@@ -267,6 +273,8 @@ def _scheduled_run() -> None:
 
 def start_maintenance_scheduler() -> None:
     """Queue a contemplation job every four hours; execution belongs to the worker."""
+    if os.getenv("SAVANT_WORKER_SCHEDULER_ENABLED", "1") == "0":
+        return
     global _scheduler
     with _scheduler_lock:
         if _scheduler and _scheduler.running:

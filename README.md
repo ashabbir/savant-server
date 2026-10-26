@@ -363,19 +363,40 @@ Seed data is embedded in `abilities/bootstrap.py`. On first startup, abilities a
 The dedicated `knowledge.maintenance_runner` queues one durable `contemplate`
 job every four hours at minute zero (`0 */4 * * *` UTC). The normal job worker
 executes it with a PostgreSQL advisory lock covering embedding preparation and
-the atomic graph/report transaction. Duplicate merges require cosine similarity
-of at least `KG_CONTEMPLATE_SIMILARITY_THRESHOLD` (default `0.95`), matching
-normalized titles or identical non-empty content, matching node types, and
-compatible domain/workspace scope. Domain nodes never merge automatically.
-Explicit supersession remains separate from similarity matching.
+the atomic graph/report transaction. Automatic merges require matching node types
+and identical, non-empty domain names. Every root domain must explicitly set
+`metadata.contemplate_similarity_threshold` to a number in `[0, 1]`, or to
+`"default"` to use `KG_CONTEMPLATE_SIMILARITY_THRESHOLD` (default `0.70`). A domain
+without this policy is excluded. When several domains apply, the strictest
+threshold wins. Within an eligible scope, normalized exact title/content matches
+merge directly; other pairs require cosine similarity **strictly above** the
+threshold. Explicit supersession bypasses similarity but retains type/scope checks.
+Domain nodes never merge automatically.
 
-Each run may involve at most **20 distinct merge/delete nodes**, including both
-survivors and absorbed nodes. Ten separate pair merges or one survivor absorbing
-nineteen nodes reaches the ceiling. Remaining candidates wait for the next run;
-the limit does not trigger extra queued runs. Promotions, expiration and
-self-edge cleanup are also audited, but do not consume the merge/delete budget.
-Unavailable embeddings or oversized model inputs defer merges; title matching
-alone is never a fallback.
+Each run reviews up to **200 seeds, newest first**, excluding insights and domains.
+Candidates include 20 nearest same-type nodes, exact matches, and connected
+neighbors. Insights remain available as related graph neighbors. Each run may
+involve at most **100 distinct merge/delete nodes**, including survivors and
+absorbed nodes. Remaining candidates wait for a subsequent run; the limit does
+not enqueue extra jobs. All remaining staged nodes are published independently
+of this review limit. Promotions, expiration and self-edge cleanup are audited.
+
+Embeddings persist by model/text SHA-256 identity. Per-node review fingerprints
+include content, relationships, candidate identities and matching policy, so
+later edits and policy/threshold changes trigger review. Deferred operations stay
+retryable. Unavailable embeddings defer semantic matches; exact matches remain
+available.
+
+`SAVANT_WORKER_SCHEDULER_ENABLED=0` disables automatic repository and graph
+schedulers while retaining queued-job consumption. `SAVANT_SEED_LEG_USER=0`
+omits initial creation of the legacy `lex` user. Startup seeding leaves every
+existing user unchanged.
+
+Semantic jobs manage chunks/vectors and their own successful-source timestamps;
+AST and LST jobs retain independent artifacts and repository status. Semantic
+search excludes conventional tests, generated paths/headers, binary control
+content and EICAR test content. Markdown native parsing runs in a subprocess with
+a 30-second timeout; parser faults retain exact source with a warning.
 
 - `GET /api/knowledge/maintenance/status` — scheduler state and recent runs (admin)
 - `GET /api/knowledge/maintenance/runs?page=1&limit=20` — paginated audit history (admin)

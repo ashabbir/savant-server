@@ -1,7 +1,6 @@
 """Deterministic candidate selection and conservative cosine matching."""
 
 import math
-from collections import defaultdict
 
 from knowledge.contemplate_report import json_value
 
@@ -38,28 +37,6 @@ def workspaces(metadata: dict) -> set[str]:
     return {item for item in values if isinstance(item, str) and item} if isinstance(values, list) else set()
 
 
-class CandidateIndex:
-    """Text-guard indexes avoid an all-pairs similarity matrix."""
-
-    def __init__(self) -> None:
-        self.titles = defaultdict(set)
-        self.contents = defaultdict(set)
-
-    def add(self, node: dict) -> None:
-        for field, index in (("title", self.titles), ("content", self.contents)):
-            value = normalise(node.get(field))
-            if value:
-                index[(node["node_type"], value)].add(node["node_id"])
-
-    def remove(self, node: dict) -> None:
-        for field, index in (("title", self.titles), ("content", self.contents)):
-            index[(node["node_type"], normalise(node.get(field)))].discard(node["node_id"])
-
-    def candidates(self, node: dict) -> set[str]:
-        return (self.titles.get((node["node_type"], normalise(node.get("title"))), set()) |
-                self.contents.get((node["node_type"], normalise(node.get("content"))), set())) - {node["node_id"]}
-
-
 def root_domains(node_id: str, nodes: dict, adjacency: dict) -> set[str]:
     """Match KnowledgeGraphDB's undirected, five-hop domain scope."""
     visited = {node_id}
@@ -82,55 +59,70 @@ class SimilarityMatcher:
                                "revision": REVISION, "dimensions": EMBEDDING_DIM}
         self.cache = {}
         self.model = None
-        self.error = None
 
     def prepare(self, nodes: list[dict]) -> None:
-        """Encode only possible strict-guard duplicates, outside graph write locks."""
-        index = CandidateIndex()
-        for node in nodes:
-            if node["node_type"] != "domain":
-                index.add(node)
-        candidates = [node for node in nodes if node["node_type"] != "domain" and index.candidates(node)]
-        if not candidates:
+        """Reuse durable model/text identities; encode missing candidate vectors."""
+        from db.contemplate import ContemplateDB, fingerprint
+        texts = sorted({node_text(node) for node in nodes if node["node_type"] != "domain"})
+        identities = {text: fingerprint([self.model_identity, text]) for text in texts}
+        cached = ContemplateDB.cached_vectors(list(identities.values()))
+        self.cache.update({text: cached[key] for text, key in identities.items() if key in cached})
+        missing = [text for text in texts if text not in self.cache]
+        if not missing:
             return
         try:
             from context.embeddings import EmbeddingModel
             self.model = EmbeddingModel.get()
         except Exception as exc:
-            self.error = f"embedding_unavailable: {exc}"
+            for text in missing:
+                self.cache[text] = f"embedding_unavailable: {exc}"
             return
-        texts = sorted({node_text(node) for node in candidates})
-        for offset in range(0, len(texts), 32):
+        vectors = {}
+        for offset in range(0, len(missing), 32):
             eligible = []
-            for value in texts[offset:offset + 32]:
+            for value in missing[offset:offset + 32]:
                 try:
                     self._validate_length(value)
                     eligible.append(value)
                 except ValueError as exc:
                     self.cache[value] = str(exc)
-            if eligible:
-                try:
-                    for value, vector in zip(eligible, self.model.embed(eligible)):
-                        self.cache[value] = vector.tolist()
-                except Exception as exc:
-                    for value in eligible:
-                        self.cache[value] = f"embedding_failed: {exc}"
+            if not eligible:
+                continue
+            try:
+                encoded = list(self.model.embed(eligible))
+                if len(encoded) != len(eligible):
+                    raise ValueError("incomplete_embedding_batch")
+                for value, vector in zip(eligible, encoded):
+                    vector = vector.tolist() if hasattr(vector, "tolist") else list(vector)
+                    cosine(vector, vector)
+                    self.cache[value] = vector
+                    vectors[identities[value]] = vector
+            except Exception as exc:
+                for value in eligible:
+                    self.cache[value] = f"embedding_failed: {exc}"
+        ContemplateDB.save_vectors(vectors)
 
     def _validate_length(self, text: str) -> None:
         if not text.strip():
             raise ValueError("empty_text")
-        transformer = self.model._model
+        transformer = getattr(self.model, "_model", None)
+        if transformer is None:
+            return
         tokens = transformer.tokenizer(text, truncation=False)["input_ids"]
         if len(tokens) > transformer.max_seq_length:
             raise ValueError("input_too_long")
 
     def vector(self, node: dict, *, refresh: bool = False) -> list[float]:
         value = node_text(node)
-        if self.error:
-            raise ValueError(self.error)
         if value not in self.cache:
-            if not refresh or self.model is None:
+            if not refresh:
                 raise ValueError("candidate_changed_since_preparation")
+            if self.model is None:
+                from context.embeddings import EmbeddingModel
+                try:
+                    self.model = EmbeddingModel.get()
+                except Exception as exc:
+                    raise ValueError(f"embedding_unavailable: {exc}") from exc
             self._validate_length(value)
             try:
                 self.cache[value] = self.model.embed_one(value)

@@ -61,6 +61,8 @@ def get_sync_interval_seconds() -> float:
 
 def start_periodic_runner():
     """Start the 2-hour periodic sync runner thread."""
+    if os.getenv("SAVANT_WORKER_SCHEDULER_ENABLED", "1") == "0":
+        return
     global _runner_thread
     with _runner_lock:
         if _runner_status["running"]:

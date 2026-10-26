@@ -8,6 +8,9 @@ agent can request exact, bounded source context without reparsing a checkout.
 from __future__ import annotations
 
 import hashlib
+import json
+import subprocess
+import sys
 import warnings
 from pathlib import Path
 from typing import Any
@@ -32,7 +35,7 @@ EXTENSION_TO_LANGUAGE = {
     ".sol": "solidity", ".graphql": "graphql", ".gql": "graphql",
     ".hcl": "hcl", ".tf": "hcl", ".tfvars": "hcl", ".json": "json",
     ".jsonc": "json", ".toml": "toml", ".yml": "yaml", ".yaml": "yaml",
-    ".md": "markdown", ".mdx": "markdown",
+    ".md": "markdown", ".mdx": "markdown", ".markdown": "markdown",
 }
 
 
@@ -65,7 +68,7 @@ def _end_point(source: str) -> list[int]:
     return [source.count("\n") + 1, len(final_line.encode("utf-8"))]
 
 
-def build_lossless_tree(file_path: str, source: str) -> dict[str, Any]:
+def _build_lossless_tree(file_path: str, source: str, *, isolate_markdown: bool) -> dict[str, Any]:
     """Build a compact concrete tree while preserving reconstructible source.
 
     Tree-sitter intentionally treats whitespace as extras.  The source is
@@ -83,6 +86,25 @@ def build_lossless_tree(file_path: str, source: str) -> dict[str, Any]:
         artifact["tree"] = _source_only_tree(None, "No Tree-sitter grammar is configured for this extension")
         artifact["tree"]["nodes"][0]["end_byte"] = len(source.encode("utf-8"))
         artifact["tree"]["nodes"][0]["end_point"] = _end_point(source)
+        return artifact
+
+    if language_name == "markdown" and isolate_markdown:
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "context.markdown_parser"],
+                input=source, text=True, capture_output=True, timeout=30,
+                cwd=str(Path(__file__).resolve().parent.parent),
+            )
+            if result.returncode:
+                raise ValueError(f"Markdown parser exited with status {result.returncode}")
+            tree = json.loads(result.stdout)
+            if not isinstance(tree, dict) or not isinstance(tree.get("nodes"), list):
+                raise ValueError("Invalid Markdown parser response")
+            artifact["tree"] = tree
+        except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+            artifact["tree"] = _source_only_tree(language_name, str(exc))
+            artifact["tree"]["nodes"][0]["end_byte"] = len(source.encode("utf-8"))
+            artifact["tree"]["nodes"][0]["end_point"] = _end_point(source)
         return artifact
 
     try:
@@ -126,6 +148,11 @@ def build_lossless_tree(file_path: str, source: str) -> dict[str, Any]:
         "nodes": nodes,
     }
     return artifact
+
+
+def build_lossless_tree(file_path: str, source: str) -> dict[str, Any]:
+    """Keep native Markdown scanner faults outside the worker process."""
+    return _build_lossless_tree(file_path, source, isolate_markdown=True)
 
 
 def bounded_tree(artifact: dict[str, Any], start_line: int | None = None,

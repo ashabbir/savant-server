@@ -86,7 +86,7 @@ def test_existing_deployments_receive_pending_schema_migrations():
 
     applied = _run_pending_migrations(cursor)
 
-    assert applied == [5, 7, 8, 9, 10, 11, 8, 12, 13, 14, 15, 16, 17, 18, 19, 20, 23, 21, 22]
+    assert applied == [5, 7, 8, 9, 10, 11, 8, 12, 13, 14, 15, 16, 17, 18, 19, 20, 23, 24, 21, 22]
     assert any("ADD COLUMN IF NOT EXISTS job_id" in sql for sql, _ in cursor.executed)
     assert any("CREATE TABLE IF NOT EXISTS kg_maintenance_reports" in sql for sql, _ in cursor.executed)
     assert any("DROP CONSTRAINT IF EXISTS kg_nodes_node_type_check" in sql for sql, _ in cursor.executed)
